@@ -1,0 +1,10 @@
+/*
+ * Primary widget styles are injected within the widget Shadow DOM.
+ * This file intentionally remains minimal for compatibility with asset pipelines.
+ */
+#wooagent-host {
+    all: initial;
+    position: fixed;
+    z-index: 2147483646;
+    pointer-events: none;
+}

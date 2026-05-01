@@ -1,0 +1,21 @@
+.wooagent-admin-wrap .wooagent-panel {
+    margin-top: 24px;
+    padding: 16px;
+    background: #fff;
+    border: 1px solid #dcdcde;
+    border-radius: 8px;
+    max-width: 900px;
+}
+
+#wooagent-test-result {
+    margin-top: 10px;
+    font-weight: 600;
+}
+
+#wooagent-test-result.success {
+    color: #007017;
+}
+
+#wooagent-test-result.error {
+    color: #b32d2e;
+}
