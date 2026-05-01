@@ -1,5 +1,20 @@
-"""Pytest configuration and shared fixtures.
+"""Shared pytest fixtures."""
 
-Provides test database session, mock adapters, in-memory cache,
-and HTTP test client. Populated incrementally as modules are added.
-"""
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.main import create_app
+
+
+@pytest.fixture
+def app():
+    return create_app()
+
+
+@pytest.fixture
+async def client(app):
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as ac:
+        yield ac
