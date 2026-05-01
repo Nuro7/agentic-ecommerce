@@ -11,11 +11,12 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from app.core.config import settings
 from app.infrastructure.persistence.database import Base
 
-# Import all ORM models so Alembic sees them.
-# Imports added by later modules will be appended here.
+# Import all ORM models so their tables appear in Base.metadata.
+# Append new model module imports here as each migration adds tables.
+import app.infrastructure.persistence.models  # noqa: F401
 
 config = context.config
-# Use DIRECT URL for migrations (port 5432), not the pooler URL
+# Use DIRECT URL for migrations (port 5432), not the pooler URL.
 config.set_main_option(
     "sqlalchemy.url",
     settings.database_direct_url.replace("+asyncpg", ""),
