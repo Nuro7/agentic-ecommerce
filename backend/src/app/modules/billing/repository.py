@@ -1,0 +1,35 @@
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
+from .models import Plan, Subscription, UsageRecord
+
+
+class BillingRepository:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_plan_by_name(self, name: str) -> Plan | None:
+        result = await self.db.execute(select(Plan).where(Plan.name == name))
+        return result.scalar_one_or_none()
+
+    async def list_plans(self) -> list[Plan]:
+        result = await self.db.execute(select(Plan))
+        return list(result.scalars().all())
+
+    async def get_subscription(self, tenant_id: str) -> Subscription | None:
+        result = await self.db.execute(
+            select(Subscription).where(Subscription.tenant_id == tenant_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def record_usage(self, record: UsageRecord) -> None:
+        self.db.add(record)
+        await self.db.commit()
+
+    async def get_usage_total(self, tenant_id: str, metric: str) -> int:
+        result = await self.db.execute(
+            select(func.sum(UsageRecord.value)).where(
+                UsageRecord.tenant_id == tenant_id,
+                UsageRecord.metric == metric,
+            )
+        )
+        return result.scalar_one_or_none() or 0

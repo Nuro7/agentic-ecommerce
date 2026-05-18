@@ -1,0 +1,43 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: wooagent-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  app:
+    build: .
+    container_name: wooagent-app
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8001:8000"
+    extra_hosts:
+      - "ecomify.local:host-gateway"
+    volumes:
+      # Mount the widget JS/CSS so /static/wooagent-widget.js is always current.
+      # Shopify Script Tags load the widget directly from this FastAPI endpoint.
+      - ../wooagent/widget:/app/static:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: wooagent-ngrok
+    command: http app:8000 --request-header-add="ngrok-skip-browser-warning:true"
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040"
+    depends_on:
+      - app
+    restart: unless-stopped

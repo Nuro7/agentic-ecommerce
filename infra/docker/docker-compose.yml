@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agentic_commerce
+      POSTGRES_USER: agentic
+      POSTGRES_PASSWORD: agentic
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentic"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build:
+      context: ../../backend
+      dockerfile: ../infra/docker/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file: ../../backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  migrate:
+    build:
+      context: ../../backend
+      dockerfile: ../infra/docker/Dockerfile
+    command: alembic upgrade head
+    env_file: ../../backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["migrate"]
+
+volumes:
+  postgres_data:
