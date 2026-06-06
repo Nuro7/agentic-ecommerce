@@ -31,20 +31,35 @@ class Settings(BaseSettings):
     shopify_api_key: str = ""
     shopify_api_secret: str = ""
 
+    custom_api_base_url: str = ""
+    custom_api_key: str = ""
+
     openai_api_key: str = ""
     groq_api_key: str = ""
     gemini_api_key: str = ""
+    grok_api_key: str = ""       # xAI Grok STT (Pipeline B streaming STT)
+    stt_provider: str = "grok"   # grok | groq | deepgram
 
     google_tts_api_key: str = ""
     elevenlabs_api_key: str = ""
     tts_provider: str = "google"
 
-    store_name: str = "My Store"
     store_currency: str = "$"
 
     encryption_key: str = ""
     shared_secret: str = "change-me"
     ngrok_authtoken: str = ""
+
+    # ── Object Storage (Phase 11) — all optional, storage disabled when unset ──
+    # OBJECT_STORAGE_PROVIDER: s3 | r2 | gcs | disabled
+    object_storage_provider: str = "disabled"
+    object_storage_bucket: str = ""
+    object_storage_region: str = "us-east-1"
+    object_storage_endpoint: str = ""   # required for R2 / GCS
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    # Set to "true" to persist raw voice I/O audio to object storage
+    audio_logging_enabled: bool = False
 
     @property
     def is_shopify(self) -> bool:

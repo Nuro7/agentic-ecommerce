@@ -1,15 +1,20 @@
 """
 services/tts_service_v2.py
-TTS service with Redis cache. Google Cloud TTS is the primary provider
-for all languages (Neural2 voices for Indian languages).
+TTS service with two-tier cache:
+  L1  Redis  — hot cache, base64 strings, 24 h TTL, fast (~3 ms)
+  L2  Object Storage (S3/R2/GCS) — warm cache, raw MP3 bytes, 30 d TTL
 
-Redis cache: 5,000 entries, 24h TTL (vs old 300-entry in-memory dict).
+Phase 11 adds the L2 tier so large audio blobs are kept out of Redis memory.
 Falls back to in-memory LRU when Redis is unavailable.
+
+Cache read order:  Redis → Object Storage → Generate → store both
+Cache write order: Object Storage first (durable), then Redis (fast lookup)
 
 Drop-in replacement: same synthesize() signature as TTSService.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import os
@@ -41,18 +46,21 @@ GOOGLE_VOICE_MAP: dict[str, tuple[str, str]] = {
 
 # ── Cache constants ───────────────────────────────────────────────────────────
 
-TTS_CACHE_TTL = 86_400      # 24 h
-TTS_CACHE_MAX = 5_000       # Redis key cap (enforced as LRU in memory fallback)
-_MEM_CACHE_MAX = 500        # memory fallback size
+TTS_CACHE_TTL     = 86_400          # Redis TTL: 24 h
+TTS_S3_CACHE_TTL  = 30 * 86_400    # S3 TTL: 30 days (informational — not enforced by S3 by default)
+TTS_CACHE_MAX     = 5_000           # Redis key cap (enforced as LRU in memory fallback)
+_MEM_CACHE_MAX    = 500             # memory fallback size
+_S3_PREFIX        = "tts-cache"     # S3 key prefix for TTS audio blobs
 
 
 class TTSServiceV2:
     """
-    Extended TTS service with Redis cache and language-aware routing.
+    Extended TTS service with two-tier cache (Redis + Object Storage) and language-aware routing.
     """
 
-    def __init__(self, redis_client=None):
+    def __init__(self, redis_client=None, storage_client=None):
         self._r = redis_client
+        self._storage = storage_client  # ObjectStorageClient or None
 
         self.provider       = os.getenv("TTS_PROVIDER", "google").lower()
         self.google_api_key = os.getenv("GOOGLE_TTS_API_KEY", "")
@@ -98,15 +106,14 @@ class TTSServiceV2:
         cache_key = self._cache_key(speech_text, language)
 
         if not skip_cache:
-            hit = await self._cache_get(cache_key)
+            hit = await self._cache_get(cache_key, language)
             if hit is not None:
-                logger.debug("TTS cache hit lang=%s", language)
                 return hit
 
         audio_b64 = await self._route(speech_text, language)
 
         if audio_b64:
-            await self._cache_set(cache_key, audio_b64)
+            await self._cache_set(cache_key, audio_b64, language)
 
         return audio_b64
 
@@ -209,27 +216,63 @@ class TTSServiceV2:
         digest = hashlib.md5(f"{self.provider}:{text}:{language}".encode()).hexdigest()
         return f"tts:{digest}"
 
-    async def _cache_get(self, key: str) -> Optional[str]:
-        # Try Redis first
+    def _s3_key(self, redis_key: str, language: str) -> str:
+        """Derive a structured S3 key from the Redis cache key."""
+        digest = redis_key.removeprefix("tts:")
+        # Shard by first 2 chars to avoid flat namespace in S3
+        return f"{_S3_PREFIX}/{language}/{digest[:2]}/{digest}.mp3"
+
+    async def _cache_get(self, key: str, language: str = "en") -> Optional[str]:
+        # L1: Redis (fast)
         if self._r is not None:
             try:
                 raw = await self._r.get(key)
                 if raw:
+                    logger.debug("TTS L1 Redis hit lang=%s", language)
                     return raw
             except Exception as e:
                 logger.debug("TTS Redis GET failed: %s", e)
-        # Memory fallback
+
+        # L2: Object Storage (warm, only if L1 missed)
+        if self._storage is not None and self._storage.enabled:
+            try:
+                s3_key = self._s3_key(key, language)
+                data = await self._storage.download(s3_key)
+                if data is not None:
+                    b64 = base64.b64encode(data).decode()
+                    # Backfill L1 Redis so the next hit is fast
+                    await self._cache_set_redis_only(key, b64)
+                    logger.debug("TTS L2 S3 hit lang=%s", language)
+                    return b64
+            except Exception as e:
+                logger.debug("TTS S3 GET failed: %s", e)
+
+        # L3: Memory fallback
         if key in self._mem:
             self._mem.move_to_end(key)
             return self._mem[key]
+
         return None
 
-    async def _cache_set(self, key: str, value: str) -> None:
-        # Redis
+    async def _cache_set(self, key: str, value: str, language: str = "en") -> None:
+        # L2: Object Storage first (durable, larger capacity)
+        if self._storage is not None and self._storage.enabled:
+            try:
+                s3_key = self._s3_key(key, language)
+                raw_bytes = base64.b64decode(value)
+                await self._storage.upload(s3_key, raw_bytes, content_type="audio/mpeg")
+                logger.debug("TTS L2 S3 stored lang=%s key=%s", language, s3_key)
+            except Exception as e:
+                logger.debug("TTS S3 SET failed: %s", e)
+
+        # L1: Redis
+        await self._cache_set_redis_only(key, value)
+
+    async def _cache_set_redis_only(self, key: str, value: str) -> None:
+        """Write only to Redis + memory (used for S3→Redis backfill)."""
         if self._r is not None:
             try:
                 await self._r.setex(key, TTS_CACHE_TTL, value)
-                # Trim old keys lazily — just log; Redis handles eviction via maxmemory-policy
             except Exception as e:
                 logger.debug("TTS Redis SET failed: %s", e)
         # Memory fallback (LRU eviction)
@@ -244,10 +287,13 @@ class TTSServiceV2:
 _instance: Optional[TTSServiceV2] = None
 
 
-def get_tts_service_v2(redis_client=None) -> TTSServiceV2:
+def get_tts_service_v2(redis_client=None, storage_client=None) -> TTSServiceV2:
     global _instance
     if _instance is None:
-        _instance = TTSServiceV2(redis_client=redis_client)
-    elif redis_client is not None and _instance._r is None:
-        _instance._r = redis_client
+        _instance = TTSServiceV2(redis_client=redis_client, storage_client=storage_client)
+    else:
+        if redis_client is not None and _instance._r is None:
+            _instance._r = redis_client
+        if storage_client is not None and _instance._storage is None:
+            _instance._storage = storage_client
     return _instance

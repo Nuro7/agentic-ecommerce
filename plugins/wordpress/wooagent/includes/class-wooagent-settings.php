@@ -100,9 +100,103 @@ class WooAgent_Settings {
 
         if (empty($output['backend_url'])) {
             add_settings_error(WOOAGENT_OPTION_KEY, 'backend_url', __('Agent Backend URL is required.', 'wooagent'), 'error');
+            return $output;
+        }
+
+        // Auto-register this store with the Speako backend on first save (or if backend URL changes).
+        $prev        = get_option(WOOAGENT_OPTION_KEY, array());
+        $prev_url    = isset($prev['backend_url']) ? $prev['backend_url'] : '';
+        $tenant_id   = get_option('wooagent_tenant_id', '');
+        $url_changed = ($prev_url !== $output['backend_url']);
+
+        if (empty($tenant_id) || $url_changed) {
+            $this->_register_with_speako($output['backend_url']);
         }
 
         return $output;
+    }
+
+    /**
+     * Call POST /api/v1/onboard/ to register this WooCommerce store with Speako.
+     * Generates WC REST API keys programmatically — no manual copy needed.
+     *
+     * @param string $backend_url
+     */
+    private function _register_with_speako($backend_url) {
+        global $wpdb;
+
+        // Generate WooCommerce REST API key pair for Speako backend.
+        $consumer_key    = 'ck_' . wc_rand_hash();
+        $consumer_secret = 'cs_' . wc_rand_hash();
+
+        $wpdb->insert(
+            $wpdb->prefix . 'woocommerce_api_keys',
+            array(
+                'user_id'         => get_current_user_id(),
+                'description'     => 'Speako Integration (auto-generated)',
+                'permissions'     => 'read_write',
+                'consumer_key'    => wc_api_hash($consumer_key),
+                'consumer_secret' => $consumer_secret,
+                'truncated_key'   => substr($consumer_key, -7),
+                'last_access'     => null,
+            )
+        );
+
+        $onboard_url = trailingslashit($backend_url) . 'api/v1/onboard/';
+        $body        = wp_json_encode(array(
+            'store_name'                  => get_bloginfo('name'),
+            'email'                       => get_option('admin_email'),
+            'platform'                    => 'woocommerce',
+            'woocommerce_store_url'       => get_site_url(),
+            'woocommerce_consumer_key'    => $consumer_key,
+            'woocommerce_consumer_secret' => $consumer_secret,
+        ));
+
+        $response = wp_remote_post($onboard_url, array(
+            'timeout' => 15,
+            'headers' => array('Content-Type' => 'application/json'),
+            'body'    => $body,
+        ));
+
+        if (is_wp_error($response)) {
+            add_settings_error(
+                WOOAGENT_OPTION_KEY,
+                'speako_register',
+                __('Could not reach Speako backend. Check Backend URL and try again.', 'wooagent'),
+                'error'
+            );
+            return;
+        }
+
+        $code = wp_remote_retrieve_response_code($response);
+        $data = json_decode(wp_remote_retrieve_body($response), true);
+
+        if ($code === 201 && isset($data['tenant_id'])) {
+            update_option('wooagent_tenant_id', sanitize_text_field($data['tenant_id']));
+            add_settings_error(
+                WOOAGENT_OPTION_KEY,
+                'speako_register',
+                __('Store registered with Speako. Aria widget is now active.', 'wooagent'),
+                'success'
+            );
+        } elseif ($code === 409) {
+            // Already registered — look up existing tenant_id
+            $lookup_url = trailingslashit($backend_url) . 'api/v1/onboard/lookup?api_key=' . urlencode(get_option('admin_email'));
+            $lu_res     = wp_remote_get($lookup_url, array('timeout' => 10));
+            if (!is_wp_error($lu_res)) {
+                $lu_data = json_decode(wp_remote_retrieve_body($lu_res), true);
+                if (isset($lu_data['tenant_id'])) {
+                    update_option('wooagent_tenant_id', sanitize_text_field($lu_data['tenant_id']));
+                }
+            }
+        } else {
+            add_settings_error(
+                WOOAGENT_OPTION_KEY,
+                'speako_register',
+                sprintf(__('Speako registration failed (HTTP %d). Check your Backend URL.', 'wooagent'), $code),
+                'error'
+            );
+        }
     }
 
     /**

@@ -14,6 +14,8 @@ from ...modules.analytics.router import router as analytics_router
 from .health import router as health_router
 from .chat import router as chat_router
 from .public import router as public_router
+from .onboarding import router as onboarding_router
+from .ingest import router as ingest_router
 
 # voice_router is intentionally NOT included here — it is mounted at root in server.py
 # so the WebSocket lives at /wooagent/stream, not /api/v1/wooagent/stream
@@ -34,3 +36,5 @@ api_router.include_router(webhooks_router)
 api_router.include_router(analytics_router)
 api_router.include_router(chat_router)
 api_router.include_router(public_router)
+api_router.include_router(onboarding_router)
+api_router.include_router(ingest_router)

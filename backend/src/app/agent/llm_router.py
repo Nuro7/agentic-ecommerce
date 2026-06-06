@@ -24,15 +24,31 @@ import logging
 import uuid
 from typing import Any
 
+from .schemas import LLMRawResponse
 from .llm_clients import (
     groq_client, GROQ_MODEL,
     gpt_mini_client, GPT_MINI_MODEL,
     gpt4o_client, GPT4O_MODEL,
-    gemini_client,
-    DRAVIDIAN_LANGS, GPT_MINI_TOOL_THRESHOLD, CART_KEYWORDS,
+    gemini_client, BRAIN_MODEL,
+    GPT_MINI_TOOL_THRESHOLD, CART_KEYWORDS,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── Response validator ─────────────────────────────────────────────────────
+
+def _validated_response(raw: dict) -> dict:
+    """Parse a provider dict through LLMRawResponse and return a clean dict.
+
+    On validation failure the raw dict is returned unchanged so the caller
+    always gets something — a malformed response is better than a crash.
+    """
+    try:
+        return LLMRawResponse.model_validate(raw).to_dict()
+    except Exception as exc:
+        logger.debug("LLMRawResponse validation failed (using raw): %s", exc)
+        return raw
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -88,6 +104,7 @@ def _openai_tools_to_gemini(openai_tools: list[dict]) -> list[dict]:
 # ── Per-provider call functions ────────────────────────────────────────────
 
 async def _call_groq(messages: list[dict], tools: list[dict]) -> dict:
+    """xAI Grok via OpenAI-compatible API (GROK_API_KEY / grok-4.3)."""
     kwargs: dict = dict(model=GROQ_MODEL, messages=messages, temperature=0.2, max_tokens=512)
     if tools:
         kwargs["tools"] = tools
@@ -105,7 +122,7 @@ async def _call_groq(messages: list[dict], tools: list[dict]) -> dict:
     return {
         "text": msg.content or "",
         "tool_calls": tool_calls or None,
-        "llm_route": "groq",
+        "llm_route": f"grok:{GROQ_MODEL}",
     }
 
 
@@ -150,6 +167,65 @@ async def _call_gemini(
         "text": text,
         "tool_calls": tool_calls or None,
         "llm_route": "gemini",
+    }
+
+
+async def _call_gemini_brain(messages: list[dict], tools: list[dict]) -> dict:
+    """
+    Gemini 2.5 Flash as the Brain — uses generate_content (new google-genai SDK).
+    Model is configurable via BRAIN_MODEL env var.
+    Same GEMINI_API_KEY used for both this and Gemini Live voice.
+    """
+    from google.genai import types as gtypes
+
+    system_instruction: str | None = None
+    contents: list = []
+
+    for m in messages:
+        role    = m.get("role", "")
+        content = m.get("content") or ""
+        if role == "system":
+            system_instruction = content
+        elif role == "user":
+            contents.append(
+                gtypes.Content(role="user", parts=[gtypes.Part.from_text(text=content)])
+            )
+        elif role == "assistant" and content:
+            contents.append(
+                gtypes.Content(role="model", parts=[gtypes.Part.from_text(text=content)])
+            )
+
+    config_kwargs: dict = {"temperature": 0.1, "max_output_tokens": 512}
+    if system_instruction:
+        config_kwargs["system_instruction"] = system_instruction
+    if tools:
+        gemini_tools = _openai_tools_to_gemini(tools)
+        config_kwargs["tools"] = [{"function_declarations": gemini_tools}]
+
+    response = await gemini_client.aio.models.generate_content(
+        model=BRAIN_MODEL,
+        contents=contents,
+        config=gtypes.GenerateContentConfig(**config_kwargs),
+    )
+
+    text = ""
+    tool_calls: list[dict] = []
+
+    if response.candidates:
+        for part in response.candidates[0].content.parts:
+            if hasattr(part, "text") and part.text:
+                text = part.text
+            elif hasattr(part, "function_call") and part.function_call:
+                tool_calls.append({
+                    "id":        str(uuid.uuid4())[:8],
+                    "name":      part.function_call.name,
+                    "arguments": dict(part.function_call.args or {}),
+                })
+
+    return {
+        "text":       text,
+        "tool_calls": tool_calls or None,
+        "llm_route":  f"gemini-brain:{BRAIN_MODEL}",
     }
 
 
@@ -202,13 +278,13 @@ async def _call_gpt4o(messages: list[dict], tools: list[dict]) -> dict:
 # ── Best-available fallback ────────────────────────────────────────────────
 
 async def _best_available(messages: list[dict], tools: list[dict]) -> dict:
-    if gpt_mini_client:
-        return await _call_gpt_mini(messages, tools)
     if groq_client:
         return await _call_groq(messages, tools)
+    if gpt_mini_client:
+        return await _call_gpt_mini(messages, tools)
     if gemini_client:
-        return await _call_gemini(messages, tools)
-    raise RuntimeError("No LLM clients configured — set GROQ_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY")
+        return await _call_gemini_brain(messages, tools)
+    raise RuntimeError("No LLM clients configured — set GROK_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY")
 
 
 # ── Main routing entry point ───────────────────────────────────────────────
@@ -227,48 +303,53 @@ async def route_and_call(
     Route a message to the best LLM and return a unified response dict.
 
     Args:
-        force_text: When True, strip tools so the LLM must generate spoken
-                    text instead of calling more tools (final synthesis round).
+        address_active: Checkout address FSM is collecting fields — escalate for
+                        reliable structured extraction.
+        turn_count:     Conversation turn depth (reserved for future throttling).
+        force_text:     Strip tools so the LLM generates spoken text, not more tool calls.
     """
     if force_text:
         tools = []
 
+    # Address collection needs precise field extraction — escalate automatically
+    if address_active:
+        escalate = True
+
     tool_count = _estimate_tool_count(message_text)
 
     if escalate:
-        logger.info("LLM route: GPT-4o [escalation]")
+        # Escalation: try GPT-4o first for maximum accuracy, fall back to Grok
+        logger.info("LLM route: escalation [lang=%s]", lang)
         if gpt4o_client:
-            return await _call_gpt4o(messages, tools)
-        logger.warning("GPT-4o not available, falling back to best available")
-        return await _best_available(messages, tools)
+            return _validated_response(await _call_gpt4o(messages, tools))
+        return _validated_response(await _best_available(messages, tools))
 
-    if _needs_gpt(message_text, address_active, tool_count):
+    # ── Primary: xAI Grok (grok-4.3) ─────────────────────────────────────────
+    # Flagship model — leading tool calling, low hallucination, 1M context.
+    # Falls back to GPT-4o-mini → Gemini if Grok is unavailable.
+    if groq_client:
         logger.info(
-            "LLM route: GPT-4o-mini [tool-heavy/address/cart, lang=%s, tools~%d]",
-            lang, tool_count,
+            "LLM route: xAI Grok [%s, lang=%s, tools~%d]",
+            GROQ_MODEL, lang, tool_count,
         )
-        if gpt_mini_client:
-            try:
-                return await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=12.0)
-            except Exception as e:
-                logger.warning("GPT-4o-mini failed (%s), trying Groq fallback", e)
-                if groq_client:
-                    return await _call_groq(messages, tools)
-                raise
-        return await _best_available(messages, tools)
-
-    logger.info("LLM route: GPT-4o-mini [primary, lang=%s, tools~%d]", lang, tool_count)
-    if gpt_mini_client:
         try:
-            return await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=12.0)
+            raw = await asyncio.wait_for(
+                _call_groq(messages, tools), timeout=15.0
+            )
+            return _validated_response(raw)
         except Exception as e:
-            logger.warning("GPT-4o-mini failed (%s), trying fallback", e)
-            if groq_client:
-                try:
-                    return await asyncio.wait_for(_call_groq(messages, tools), timeout=8.0)
-                except Exception as e2:
-                    logger.warning("Groq fallback also failed (%s)", e2)
-            if gemini_client:
-                return await _call_gemini(messages, tools)
-            raise
-    return await _best_available(messages, tools)
+            logger.warning("xAI Grok Brain failed (%s), falling back to GPT-4o-mini", e)
+
+    if gpt_mini_client:
+        logger.info("LLM route: GPT-4o-mini [fallback, lang=%s]", lang)
+        try:
+            raw = await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=12.0)
+            return _validated_response(raw)
+        except Exception as e:
+            logger.warning("GPT-4o-mini fallback failed (%s), trying Gemini", e)
+
+    if gemini_client:
+        logger.info("LLM route: Gemini [last-resort fallback, lang=%s]", lang)
+        return _validated_response(await _call_gemini_brain(messages, tools))
+
+    raise RuntimeError("All LLM backends failed — check GROK_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY")

@@ -15,11 +15,24 @@ class Tenant(Base):
     plan: Mapped[str] = mapped_column(String(50), default="free")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Platform: "shopify" | "woocommerce" | "custom_api"
+    platform: Mapped[str] = mapped_column(String(50), default="shopify")
+
     # Shopify OAuth fields
     shopify_domain: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True)
     shopify_access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    shopify_storefront_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     shopify_scope: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     shopify_installed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # WooCommerce fields
+    woocommerce_store_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    woocommerce_consumer_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    woocommerce_consumer_secret: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Custom API fields (any store with a custom REST API)
+    custom_api_base_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    custom_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

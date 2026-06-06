@@ -17,23 +17,37 @@ if (! defined('ABSPATH')) {
         ?>
     </form>
 
+    <?php
+    $tenant_id = get_option('wooagent_tenant_id', '');
+    if ($tenant_id) : ?>
+    <div class="wooagent-panel" style="border-left: 4px solid #00a32a;">
+        <h2><?php esc_html_e('Registration Status', 'wooagent'); ?></h2>
+        <p style="color:#00a32a; font-weight:600;">
+            <?php esc_html_e('Store registered with Speako.', 'wooagent'); ?>
+        </p>
+        <p>
+            <strong><?php esc_html_e('Tenant ID:', 'wooagent'); ?></strong>
+            <code><?php echo esc_html($tenant_id); ?></code>
+        </p>
+        <p><?php esc_html_e('The Aria widget is live on your store. Products sync automatically.', 'wooagent'); ?></p>
+    </div>
+    <?php else : ?>
+    <div class="wooagent-panel" style="border-left: 4px solid #dba617;">
+        <h2><?php esc_html_e('Registration Status', 'wooagent'); ?></h2>
+        <p style="color:#dba617; font-weight:600;">
+            <?php esc_html_e('Not registered yet.', 'wooagent'); ?>
+        </p>
+        <p><?php esc_html_e('Enter your Backend URL above and click Save Settings — registration happens automatically.', 'wooagent'); ?></p>
+    </div>
+    <?php endif; ?>
+
     <div class="wooagent-panel">
         <h2><?php esc_html_e('Connection Test', 'wooagent'); ?></h2>
-        <p><?php esc_html_e('Verify that your backend is reachable from WordPress by calling /health.', 'wooagent'); ?></p>
+        <p><?php esc_html_e('Verify that your backend is reachable from WordPress.', 'wooagent'); ?></p>
         <button type="button" class="button button-secondary" id="wooagent-test-connection">
             <?php esc_html_e('Test Connection', 'wooagent'); ?>
         </button>
         <div id="wooagent-test-result" aria-live="polite"></div>
-    </div>
-
-    <div class="wooagent-panel">
-        <h2><?php esc_html_e('WooCommerce API Key Setup', 'wooagent'); ?></h2>
-        <ol>
-            <li><?php esc_html_e('Go to WooCommerce -> Settings -> Advanced -> REST API.', 'wooagent'); ?></li>
-            <li><?php esc_html_e('Click "Add key" and set Description to "WooAgent Backend".', 'wooagent'); ?></li>
-            <li><?php esc_html_e('Set User to an admin account and Permissions to Read/Write.', 'wooagent'); ?></li>
-            <li><?php esc_html_e('Copy the Consumer Key and Consumer Secret into your backend .env file.', 'wooagent'); ?></li>
-        </ol>
     </div>
 </div>
 

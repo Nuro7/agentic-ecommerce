@@ -1130,7 +1130,7 @@ class ShopifyClient(BaseStoreClient):
         }
         """
         info: Dict[str, Any] = {
-            "store_name": os.getenv("STORE_NAME", ""),
+            "store_name": "",
             "store_url": f"https://{self.store_domain}",
             "currency": os.getenv("STORE_CURRENCY", "$"),
             "supports_voice_cart": True,
@@ -1211,7 +1211,7 @@ class ShopifyClient(BaseStoreClient):
             logger.warning("Shopify get_store_policies failed: %s", exc)
             return {
                 "success": False,
-                "store_name": os.getenv("STORE_NAME", ""),
+                "store_name": "",
                 "currency": os.getenv("STORE_CURRENCY", "$"),
                 "currency_symbol": os.getenv("STORE_CURRENCY", "$"),
                 "shipping_zones": [],

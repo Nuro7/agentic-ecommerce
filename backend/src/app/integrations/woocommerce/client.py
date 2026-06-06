@@ -439,7 +439,7 @@ class WooCommerceClient(BaseStoreClient):
 
     async def get_store_info(self) -> Dict[str, Any]:
         info: Dict[str, Any] = {
-            "store_name": os.getenv("STORE_NAME", ""),
+            "store_name": "",
             "store_url": self.base_url,
             "currency": os.getenv("STORE_CURRENCY", "₹"),
             "supports_voice_cart": True,
@@ -1168,6 +1168,73 @@ class WooCommerceClient(BaseStoreClient):
 
     async def _plugin_post(self, path: str, json_body: Optional[dict] = None) -> Any:
         return await self._request("POST", f"/wp-json/wooagent/v1{path}", json_body=json_body, auth_required=False, signed=True)
+
+    async def get_products_page(
+        self,
+        *,
+        page: int = 1,
+        per_page: int = 100,
+        status: str = "publish",
+        modified_after: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch one page of ALL products via WC v3 REST API.
+
+        Used by the product sync task to crawl all products without the
+        search/relevance bias of search_products().  Returns raw WC REST
+        product dicts.  Returns [] when the page is beyond the last page.
+
+        Args:
+            modified_after: ISO-8601 datetime string; when set only returns
+                            products modified after this timestamp (diff sync).
+        """
+        params: Dict[str, Any] = {
+            "page":     page,
+            "per_page": min(per_page, 100),
+            "status":   status,
+            "orderby":  "modified",
+            "order":    "asc",
+        }
+        if modified_after:
+            params["modified_after"] = modified_after
+        else:
+            params["orderby"] = "id"
+        try:
+            result = await self._wc_get("/products", params=params)
+            if isinstance(result, list):
+                return result
+            return []
+        except Exception as exc:
+            logger.warning("get_products_page page=%d failed: %s", page, exc)
+            return []
+
+    async def get_product_count(self, *, status: str = "publish") -> Optional[int]:
+        """Return total published product count from WC REST X-WP-Total header.
+
+        Makes a per_page=1 request and reads the X-WP-Total response header
+        rather than parsing the full product list.  Returns None on failure.
+        """
+        params: Dict[str, Any] = {"per_page": 1, "page": 1, "status": status}
+        auth = (self.consumer_key, self.consumer_secret) if self.consumer_key else None
+        url = f"{self.base_url}/wp-json/wc/v3/products"
+
+        call_params = dict(params)
+        if self.auth_method == "query" and self.consumer_key:
+            auth = None
+            call_params["consumer_key"] = self.consumer_key
+            call_params["consumer_secret"] = self.consumer_secret
+
+        try:
+            response = await self.client.request("GET", url, params=call_params, auth=auth)
+            response.raise_for_status()
+            total_header = response.headers.get("X-WP-Total")
+            if total_header is not None:
+                return int(total_header)
+            body = response.json()
+            if isinstance(body, list):
+                return len(body)
+        except Exception as exc:
+            logger.warning("get_product_count failed: %s", exc)
+        return None
 
     async def _wc_get(self, path: str, params: Optional[dict] = None) -> Any:
         return await self._request("GET", f"/wp-json/wc/v3{path}", params=params, auth_required=True)

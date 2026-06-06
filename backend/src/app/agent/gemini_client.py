@@ -83,7 +83,7 @@ def validate_ws_token(token: str, session_id: str) -> bool:
 
 # ── System Prompt ──────────────────────────────────────────────────────────────
 def build_system_prompt() -> str:
-    store_name = os.environ.get("STORE_NAME", "the store")
+    store_name = "this store"
     currency   = os.environ.get("STORE_CURRENCY", "₹")
     shipping   = os.environ.get("STORE_SHIPPING_POLICY", "Standard shipping available.")
     returns    = os.environ.get("STORE_RETURNS_POLICY", "Returns accepted within 7 days.")

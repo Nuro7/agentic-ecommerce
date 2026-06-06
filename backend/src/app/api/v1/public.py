@@ -5,11 +5,16 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...agent.prompts.filtering import detect_language
 from ...config import settings
+from ...core.database import get_db
+from ...modules.billing.dependencies import check_conversation_quota
+from ...modules.billing.service import BillingService
+from ...modules.tenants.dependencies import get_tenant_store_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["widget"])
@@ -47,13 +52,18 @@ def _cart_summary(cart: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.post("/greet")
-async def greet_endpoint(payload: GreetRequest, req: Request):
+async def greet_endpoint(
+    payload: GreetRequest,
+    req: Request,
+    store_client: Any = Depends(get_tenant_store_client),
+    _quota=Depends(check_conversation_quota),
+    db: AsyncSession = Depends(get_db),
+):
     session_service = getattr(req.app.state, "session_service", None)
-    store_client = getattr(req.app.state, "store_client", None)
     tts_service = getattr(req.app.state, "tts_service", None)
 
     session_id = payload.session_id
-    store_name = payload.store_name or settings.store_name
+    store_name = payload.store_name or "this store"
 
     session_meta = await session_service.get_meta(session_id) if session_service else {}
     history = await session_service.get_history(session_id) if session_service else []
@@ -165,6 +175,32 @@ async def greet_endpoint(payload: GreetRequest, req: Request):
     }
     suggested_replies = suggested_replies_map.get(language, suggested_replies_map["en"])
 
+    # Resolve tenant_id for credit recording (mirrors check_conversation_quota logic).
+    from ...modules.tenants.repository import TenantRepository
+    _tenant_id: Optional[str] = None
+    try:
+        _repo = TenantRepository(db)
+        _shop = req.query_params.get("shop", "").strip()
+        if _shop:
+            _t = await _repo.get_by_shopify_domain(_shop)
+            if _t:
+                _tenant_id = _t.id
+        if not _tenant_id:
+            _tid_header = req.headers.get("X-Tenant-ID", "").strip()
+            if _tid_header:
+                _t = await _repo.get_by_id(_tid_header)
+                if _t and _t.is_active:
+                    _tenant_id = _t.id
+    except Exception:
+        pass
+
+    if _tenant_id:
+        try:
+            await BillingService(db).record_usage(_tenant_id, "credits", 1)
+            await db.commit()
+        except Exception as exc:
+            logger.warning("Failed to record greet credit: tenant=%s: %s", _tenant_id, exc)
+
     return {
         "session_id": session_id,
         "greeting_text": greeting_text,
@@ -181,13 +217,15 @@ async def greet_endpoint(payload: GreetRequest, req: Request):
 
 
 @router.get("/cart")
-async def get_cart(session_id: str, req: Request):
+async def get_cart(
+    session_id: str,
+    store_client: Any = Depends(get_tenant_store_client),
+):
     """
     Public cart fetch — used by the widget on all platforms.
-    No auth required. Uses the store client from app.state.
+    No auth required. Resolves per-tenant store client.
     Returns normalized cart regardless of platform (WooCommerce or Shopify).
     """
-    store_client = getattr(req.app.state, "store_client", None)
     if not store_client:
         return {"is_empty": True, "item_count": 0, "total": "0", "items": []}
     try:

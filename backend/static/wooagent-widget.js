@@ -1098,6 +1098,11 @@
               <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/>
             </svg>
           </button>
+          <button class="wa-hbtn" id="wa-clear" title="Clear chat" aria-label="Clear chat">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+            </svg>
+          </button>
           <button class="wa-hbtn" id="wa-close" title="Close" aria-label="Close">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
@@ -1180,6 +1185,7 @@
   const badge = $('wa-badge');
   const muteBtn = $('wa-mute');
   const closeBtn = $('wa-close');
+  const clearBtn = $('wa-clear');
   const statusTxt = $('wa-status-text');
 
   function b64ToObjectUrl(b64, format) {
@@ -1399,6 +1405,30 @@
       stopCurrentAudio();
     }
   });
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      stopCurrentAudio();
+
+      // Wipe conversation from memory and localStorage
+      S.conversation = [];
+      localStorage.removeItem('_wa_conv');
+      localStorage.removeItem('_wa_greeted');
+
+      // New session ID so backend starts a fresh context (no old history leakage)
+      const newId = 'wa_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
+      S.sessionId = newId;
+      localStorage.setItem('_wa_sid_v2', newId);
+
+      // Clear message DOM
+      msgs.innerHTML = '';
+
+      // Re-run greeting through the existing path
+      S.greeted = true;
+      localStorage.setItem('_wa_greeted', '1');
+      fetchGreeting();
+    });
+  }
 
   function openPane() {
     primeAudioEngines();

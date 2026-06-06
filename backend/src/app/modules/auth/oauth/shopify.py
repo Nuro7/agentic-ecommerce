@@ -273,8 +273,8 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
     """
     backend_url = _get_backend_url(request)
 
-    # Try to load per-tenant config from DB
-    store_name = _settings.store_name
+    # Load per-tenant name from DB; no global fallback (STORE_NAME removed from settings)
+    store_name = ""
     currency = _settings.store_currency
 
     if shop:
@@ -286,7 +286,7 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
                 result = await db.execute(select(Tenant).where(Tenant.shopify_domain == shop))
                 tenant = result.scalar_one_or_none()
                 if tenant:
-                    store_name = tenant.name or store_name
+                    store_name = tenant.name or ""
         except Exception:
             pass
 

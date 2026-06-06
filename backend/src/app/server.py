@@ -58,6 +58,21 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 logger.error("Shopify connectivity FAILED: %s", exc)
         _raw_woo = None
+    elif platform == "custom_api":
+        from .integrations.custom_api.client import CustomApiClient
+        store_client = CustomApiClient(
+            base_url=settings.custom_api_base_url,
+            api_key=settings.custom_api_key,
+        )
+        if not settings.custom_api_base_url:
+            logger.warning("CUSTOM_API_BASE_URL not set — product/cart APIs will fail")
+        else:
+            try:
+                test = await store_client.search_products(query="", limit=1, in_stock_only=False)
+                logger.info("Custom API OK — %d product(s) found in connectivity test", len(test))
+            except Exception as exc:
+                logger.error("Custom API connectivity FAILED: %s", exc)
+        _raw_woo = None
     else:
         from .integrations.woocommerce.client import WooCommerceClient
         from .integrations.woocommerce.cache import CachedWooCommerceClient
@@ -77,11 +92,20 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 logger.error("WooCommerce connectivity FAILED: %s", exc)
 
-    # Pre-warm cache (background)
+    # Pre-warm Redis cache (background)
     try:
         await store_client.pre_warm()
     except Exception as exc:
         logger.debug("Store pre-warm skipped: %s", exc)
+
+    # Kick off an initial product sync so product_cache is populated on first boot.
+    # Runs asynchronously via Celery — does not block startup.
+    try:
+        from .workers.tasks.sync_products import sync_products
+        sync_products.delay()
+        logger.info("Initial product sync queued")
+    except Exception as exc:
+        logger.warning("Could not queue initial product sync (Celery unavailable?): %s", exc)
 
     # ── Session service ───────────────────────────────────────────────────────
     session_service = SessionService(redis_client=redis_client)
@@ -90,19 +114,56 @@ async def lifespan(app: FastAPI):
     beta_logger = get_beta_logger()
     await beta_logger.start()
 
+    # ── Object Storage (Phase 11) ─────────────────────────────────────────────
+    storage_client = None
+    try:
+        from .agent.voice.object_storage import ObjectStorageClient
+        storage_client = ObjectStorageClient.from_settings(settings)
+        if storage_client.enabled:
+            logger.info("Object storage enabled: provider=%s bucket=%s",
+                        settings.object_storage_provider, settings.object_storage_bucket)
+    except Exception as exc:
+        logger.warning("Object storage unavailable (TTS will use Redis-only cache): %s", exc)
+
+    # ── Audio logger (Phase 11) ───────────────────────────────────────────────
+    audio_logger = None
+    try:
+        from .agent.voice.audio_logger import AudioLogger, get_noop_audio_logger
+        if storage_client is not None and storage_client.enabled and settings.audio_logging_enabled:
+            audio_logger = AudioLogger(storage_client, enabled=True)
+            logger.info("Audio logging enabled")
+        else:
+            audio_logger = get_noop_audio_logger()
+    except Exception as exc:
+        logger.warning("Audio logger init failed: %s", exc)
+
     # ── TTS (optional — only needed for /greet audio) ─────────────────────────
     tts_service = None
     try:
         from .agent.voice.synthesis import TTSServiceV2
-        tts_service = TTSServiceV2(redis_client=redis_client)
-        logger.info("TTS service initialised")
+        tts_service = TTSServiceV2(redis_client=redis_client, storage_client=storage_client)
+        logger.info("TTS service initialised (L2 storage=%s)", storage_client.enabled if storage_client else False)
     except Exception as exc:
         logger.warning("TTS service unavailable (greet will use browser TTS): %s", exc)
+
+    # ── Agent orchestrator (shared across HTTP + WS paths) ────────────────────
+    from .agent.orchestrator import AgentOrchestrator
+    from .core.database import AsyncSessionLocal
+    orchestrator = AgentOrchestrator(
+        store_client=store_client,
+        session_service=session_service,
+        tts_service=tts_service,
+        redis=redis_client,
+        db_session_factory=AsyncSessionLocal,
+    )
 
     app.state.redis = redis_client
     app.state.store_client = store_client
     app.state.session_service = session_service
     app.state.tts_service = tts_service
+    app.state.storage_client = storage_client
+    app.state.audio_logger = audio_logger
+    app.state.orchestrator = orchestrator
 
     logger.info("Backend ready")
     try:

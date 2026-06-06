@@ -9,20 +9,30 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# ── Groq ──────────────────────────────────────────────────────────────────────
-_groq_key = os.environ.get("GROQ_API_KEY", "")
-groq_client = None
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+# ── xAI Grok (replaces Groq) ──────────────────────────────────────────────────
+# OpenAI-compatible API — uses AsyncOpenAI with xAI base URL.
+# GROK_API_KEY  → xai-...  from console.x.ai
+# GROK_MODEL    → LLM brain fallback model (default: grok-4.3)
+# GROK_CLASSIFIER_MODEL → fast model for intent classification (default: grok-3-mini-fast)
+_grok_key = os.environ.get("GROK_API_KEY", "")
+groq_client = None          # kept as groq_client so llm_router imports don't break
+GROQ_MODEL = os.environ.get("GROK_MODEL", "grok-4.3")
+GROK_CLASSIFIER_MODEL = os.environ.get("GROK_CLASSIFIER_MODEL", "grok-3-mini-fast")
 
-if _groq_key:
+if _grok_key:
     try:
-        from groq import AsyncGroq
-        groq_client = AsyncGroq(api_key=_groq_key, max_retries=0, timeout=8.0)
-        logger.info("LLM client: Groq (%s) ready", GROQ_MODEL)
+        from openai import AsyncOpenAI
+        groq_client = AsyncOpenAI(
+            api_key=_grok_key,
+            base_url="https://api.x.ai/v1",
+            max_retries=0,
+            timeout=8.0,
+        )
+        logger.info("LLM client: xAI Grok (%s) ready", GROQ_MODEL)
     except Exception as e:
-        logger.warning("Groq client init failed: %s", e)
+        logger.warning("xAI Grok client init failed: %s", e)
 else:
-    logger.info("GROQ_API_KEY not set — Groq path disabled")
+    logger.info("GROK_API_KEY not set — xAI Grok path disabled")
 
 # ── OpenAI (GPT-4o-mini + GPT-4o) ─────────────────────────────────────────────
 _openai_key = os.environ.get("OPENAI_API_KEY", "")
@@ -42,20 +52,26 @@ if _openai_key:
 else:
     logger.info("OPENAI_API_KEY not set — GPT paths disabled")
 
-# ── Gemini 2.0 Flash ──────────────────────────────────────────────────────────
+# ── Gemini Brain ──────────────────────────────────────────────────────────────
+# BRAIN_MODEL controls which Gemini model powers the reasoning/decision layer.
+# Change via .env — no code changes needed.
+#   gemini-2.5-flash   → fast, large context, best for agentic tasks (default)
+#   gemini-2.0-flash   → previous generation, slightly lighter
+#   gemini-2.5-pro     → highest quality, higher latency / cost
 _gemini_key = os.environ.get("GEMINI_API_KEY", "")
 gemini_client = None
-GEMINI_MODEL = "gemini-2.0-flash"
+BRAIN_MODEL   = os.environ.get("BRAIN_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL  = BRAIN_MODEL  # kept for backwards-compat references
 
 if _gemini_key:
     try:
         from google import genai
         gemini_client = genai.Client(api_key=_gemini_key)
-        logger.info("LLM client: Gemini 2.0 Flash ready")
+        logger.info("LLM client: Gemini Brain (%s) ready", BRAIN_MODEL)
     except Exception as e:
         logger.warning("Gemini client init failed: %s", e)
 else:
-    logger.info("GEMINI_API_KEY not set — Gemini path disabled")
+    logger.info("GEMINI_API_KEY not set — Gemini Brain disabled")
 
 # ── Routing config ────────────────────────────────────────────────────────────
 DRAVIDIAN_LANGS: set[str] = set(os.environ.get("GEMINI_DRAVIDIAN_LANGS", "ml,ta,te,kn").split(","))
