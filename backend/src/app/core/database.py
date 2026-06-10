@@ -1,5 +1,8 @@
+from contextlib import asynccontextmanager
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 from ..config import settings
 
 # ── Connection pool sizing ────────────────────────────────────────────────────
@@ -29,6 +32,22 @@ engine = create_async_engine(
 )
 
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+
+# ── Worker DB session (Celery) ────────────────────────────────────────────────
+# Each Celery task runs in its OWN asyncio.run() event loop. A module-level
+# engine (even NullPool) can leave asyncpg connection objects bound to a previous,
+# now-closed loop → "got Future attached to a different loop" / "Event loop is
+# closed". The bulletproof fix: build a fresh NullPool engine bound to the CURRENT
+# loop and dispose it before that loop exits, so nothing ever survives a task.
+@asynccontextmanager
+async def worker_session():
+    eng = create_async_engine(settings.database_url, poolclass=NullPool)
+    factory = async_sessionmaker(eng, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            yield session
+    finally:
+        await eng.dispose()
 
 
 class Base(DeclarativeBase):

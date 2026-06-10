@@ -32,7 +32,7 @@ def aggregate_daily(self) -> dict:
 
 
 async def _aggregate_async() -> dict:
-    from ...core.database import AsyncSessionLocal
+    from ...core.database import worker_session as AsyncSessionLocal
     from ...modules.analytics.repository import AnalyticsRepository
     from ...modules.tenants.service import TenantService
 

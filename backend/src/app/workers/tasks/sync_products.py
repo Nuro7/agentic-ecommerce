@@ -144,7 +144,7 @@ def sync_products_diff(self, tenant_id: Optional[str] = None) -> dict:
 # ── Full sync ─────────────────────────────────────────────────────────────────
 
 async def _sync_async(tenant_id_filter: Optional[str] = None) -> dict:
-    from ...core.database import AsyncSessionLocal
+    from ...core.database import worker_session as AsyncSessionLocal
     from ...modules.tenants.repository import TenantRepository
 
     total_upserted = 0
@@ -211,7 +211,7 @@ _COUNT_DRIFT_THRESHOLD = 0.10
 
 
 async def _diff_sync_async(tenant_id_filter: Optional[str] = None) -> dict:
-    from ...core.database import AsyncSessionLocal
+    from ...core.database import worker_session as AsyncSessionLocal
     from ...modules.tenants.repository import TenantRepository
 
     total_upserted = 0

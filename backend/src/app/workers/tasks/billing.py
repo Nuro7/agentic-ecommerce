@@ -33,7 +33,7 @@ def run_monthly_invoicing(self) -> dict:
 
 
 async def _invoice_async() -> dict:
-    from ...core.database import AsyncSessionLocal
+    from ...core.database import worker_session as AsyncSessionLocal
     from ...modules.billing.repository import BillingRepository
     from ...modules.billing.models import UsageRecord
 

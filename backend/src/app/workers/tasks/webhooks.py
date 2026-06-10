@@ -32,7 +32,7 @@ def process_pending(self) -> dict:
 
 
 async def _process_pending_async() -> int:
-    from ...core.database import AsyncSessionLocal
+    from ...core.database import worker_session as AsyncSessionLocal
     from ...modules.webhooks.service import WebhookService
 
     async with AsyncSessionLocal() as db:
