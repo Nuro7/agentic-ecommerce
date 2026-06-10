@@ -431,12 +431,20 @@ class PipelineA:
                 frontend_task = asyncio.create_task(receive_from_frontend())
                 gemini_task   = asyncio.create_task(receive_from_gemini())
 
-                done, pending = await asyncio.wait(
-                    [frontend_task, gemini_task],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for task in pending:
-                    task.cancel()
+                try:
+                    done, _pending = await asyncio.wait(
+                        [frontend_task, gemini_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    # Always cancel AND await both tasks so the loser actually
+                    # unwinds (closes its socket, frees the loop) before we return
+                    # — even when we re-raise below. Prevents zombie-task leaks on
+                    # disconnect.
+                    for task in (frontend_task, gemini_task):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(frontend_task, gemini_task, return_exceptions=True)
 
                 # Re-raise any exception so the router's circuit breaker triggers.
                 # asyncio.wait() does NOT auto-raise — we must check manually.

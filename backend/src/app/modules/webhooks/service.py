@@ -1,13 +1,15 @@
 """Webhook service — ingest and dispatch platform webhook events."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .repository import WebhookRepository
@@ -303,14 +305,33 @@ class WebhookService:
         await self.db.commit()
         return {"ok": True}
 
-    async def ingest(self, tenant_id: str, topic: str, platform: str, payload: dict) -> WebhookEvent:
+    async def ingest(self, tenant_id: str, topic: str, platform: str, payload: dict):
+        """Persist a webhook event, skipping exact redeliveries.
+
+        dedup_key = sha256(topic|payload); the unique (tenant_id, dedup_key)
+        constraint makes a redelivered webhook a no-op instead of a duplicate row.
+        """
+        payload_json = json.dumps(payload, sort_keys=True)
+        dedup_key = hashlib.sha256(f"{topic}|{payload_json}".encode("utf-8")).hexdigest()
         event = WebhookEvent(
             tenant_id=tenant_id,
             topic=topic,
             platform=platform,
-            payload=json.dumps(payload),
+            payload=payload_json,
+            dedup_key=dedup_key,
         )
-        return await self.repo.create(event)
+        try:
+            return await self.repo.create(event)
+        except IntegrityError:
+            await self.db.rollback()
+            logger.info("Duplicate webhook ignored: tenant=%s topic=%s", tenant_id, topic)
+            existing = await self.db.execute(
+                select(WebhookEvent).where(
+                    WebhookEvent.tenant_id == tenant_id,
+                    WebhookEvent.dedup_key == dedup_key,
+                )
+            )
+            return existing.scalars().first()
 
     async def process_pending(self) -> int:
         """Fetch pending events, dispatch to topic handlers, mark processed.

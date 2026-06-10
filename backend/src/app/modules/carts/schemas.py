@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
@@ -7,8 +7,9 @@ class AddToCartRequest(BaseModel):
     platform_product_id: str
     variant_id: str | None = None
     name: str
-    quantity: int = 1
-    unit_price: float
+    # Reject zero/negative quantities and absurd values (caused negative totals).
+    quantity: int = Field(default=1, ge=1, le=999)
+    unit_price: float = Field(ge=0)
 
 
 class CartItemOut(BaseModel):

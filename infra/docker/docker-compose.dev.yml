@@ -34,5 +34,33 @@ services:
       - redis
     command: uvicorn src.app.server:app --host 0.0.0.0 --port 8000 --reload
 
+  worker:
+    build:
+      context: ../../backend
+      dockerfile: ../infra/docker/Dockerfile.dev
+    env_file: ../../backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ../../backend/src:/app/src
+    depends_on:
+      - postgres
+      - redis
+    command: celery -A src.app.workers.celery_app worker -l info
+
+  beat:
+    build:
+      context: ../../backend
+      dockerfile: ../infra/docker/Dockerfile.dev
+    env_file: ../../backend/.env
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ../../backend/src:/app/src
+    depends_on:
+      - redis
+    command: celery -A src.app.workers.celery_app beat -l info
+
 volumes:
   postgres_data:

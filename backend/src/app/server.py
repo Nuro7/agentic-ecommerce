@@ -207,6 +207,20 @@ def create_app() -> FastAPI:
             response.headers["ngrok-skip-browser-warning"] = "true"
         return response
 
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next) -> Response:
+        # Safe, widget-compatible headers. CORS stays permissive by design (the
+        # widget loads cross-origin from arbitrary merchant domains, credentials
+        # off). X-Frame-Options omitted to avoid breaking Shopify-admin embedding.
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        if settings.environment.lower() in ("production", "prod"):
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
+        return response
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],

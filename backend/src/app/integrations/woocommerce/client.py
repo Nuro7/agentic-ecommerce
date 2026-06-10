@@ -1198,14 +1198,11 @@ class WooCommerceClient(BaseStoreClient):
             params["modified_after"] = modified_after
         else:
             params["orderby"] = "id"
-        try:
-            result = await self._wc_get("/products", params=params)
-            if isinstance(result, list):
-                return result
-            return []
-        except Exception as exc:
-            logger.warning("get_products_page page=%d failed: %s", page, exc)
-            return []
+        # NOTE: an empty list means "past the last page" (end of catalog). An
+        # HTTP/transport error must RAISE — returning [] here would make the sync
+        # mistake a transient failure for end-of-catalog and truncate the cache.
+        result = await self._wc_get("/products", params=params)
+        return result if isinstance(result, list) else []
 
     async def get_product_count(self, *, status: str = "publish") -> Optional[int]:
         """Return total published product count from WC REST X-WP-Total header.

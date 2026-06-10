@@ -47,6 +47,35 @@ _WOO_PAGE_SIZE = 100
 _SHOPIFY_PAGE_SIZE = 40
 _BULK_TIMEOUT = 600
 _CUSTOM_PAGE_SIZE = 100   # per page for custom API pagination
+_SYNC_LOCK_TTL = 1800     # 30 min — longer than any single sync run
+
+
+def _acquire_sync_lock(key: str, ttl: int = _SYNC_LOCK_TTL):
+    """Best-effort cross-worker lock. Returns (client, acquired).
+
+    client is None when Redis is unavailable → proceed WITHOUT a lock (fail-open,
+    so a Redis outage doesn't stop syncs). acquired is False only when another
+    run already holds the lock → caller should skip the duplicate.
+    """
+    try:
+        import redis as _redis
+        from ...config import settings
+        client = _redis.from_url(settings.redis_url)
+        acquired = bool(client.set(key, "1", nx=True, ex=ttl))
+        return client, acquired
+    except Exception as exc:
+        logger.warning("sync lock unavailable (%s) — proceeding without lock", exc)
+        return None, True
+
+
+def _close_lock(client) -> None:
+    """Release the standalone lock Redis client's connection pool."""
+    if client is None:
+        return
+    try:
+        client.close()
+    except Exception:
+        pass
 
 
 # ── Celery entry points ───────────────────────────────────────────────────────
@@ -64,6 +93,15 @@ def sync_products(self, tenant_id: Optional[str] = None) -> dict:
         tenant_id: Sync only this tenant when provided (webhook trigger).
                    When None, syncs every active tenant.
     """
+    # Idempotency: a webhook-triggered sync and the nightly run (or duplicate
+    # enqueues) must not crawl + upsert the same tenant concurrently.
+    lock_key = f"speako:sync_lock:{tenant_id or 'all'}"
+    lock_client, acquired = _acquire_sync_lock(lock_key)
+    if not acquired:
+        logger.info("Product sync already running for %s — skipping duplicate", tenant_id or "all")
+        _close_lock(lock_client)  # don't leak the connection on the skip path
+        return {"skipped_duplicate": True, "tenants": 0, "upserted": 0, "skipped": 0}
+
     try:
         result = asyncio.run(_sync_async(tenant_id_filter=tenant_id))
         logger.info(
@@ -74,6 +112,13 @@ def sync_products(self, tenant_id: Optional[str] = None) -> dict:
     except Exception as exc:
         logger.error("Product sync failed: %s", exc, exc_info=True)
         raise self.retry(exc=exc)
+    finally:
+        if lock_client is not None:
+            try:
+                lock_client.delete(lock_key)
+            except Exception:
+                pass
+            _close_lock(lock_client)
 
 
 @celery_app.task(
@@ -396,40 +441,48 @@ async def _shopify_fetch_all(store_client, tenant) -> list[dict]:
                 tenant.id, exc,
             )
 
-    # Paginated Storefront fallback
-    all_products: list[dict] = []
-    for _ in range(50):
-        batch = await store_client.search_products(
-            query="", limit=_SHOPIFY_PAGE_SIZE, in_stock_only=False,
-        )
-        if not batch:
-            break
-        all_products.extend(batch)
-        break  # Storefront has no cursor in V1 — single page
-    return all_products
+    # Cursor-paginated Storefront fallback — fetches the FULL catalog, not one page.
+    if hasattr(store_client, "fetch_all_products_storefront"):
+        try:
+            products = await store_client.fetch_all_products_storefront(page_size=250)
+            if products:
+                return products
+        except Exception as exc:
+            logger.warning(
+                "Storefront paginated fetch failed for tenant=%s (%s) — single-page fallback",
+                tenant.id, exc,
+            )
+
+    # Last-resort single page (only if cursor pagination is unavailable/failed).
+    batch = await store_client.search_products(
+        query="", limit=_SHOPIFY_PAGE_SIZE, in_stock_only=False,
+    )
+    return list(batch or [])
 
 
 async def _woo_fetch_all(store_client) -> list[dict]:
-    all_products: list[dict] = []
     raw_client = getattr(store_client, "wc", store_client)
+
+    # No cursor crawler available — single best-effort search page.
+    if not hasattr(raw_client, "get_products_page"):
+        batch = await store_client.search_products(
+            query="", limit=_WOO_PAGE_SIZE, in_stock_only=False,
+        )
+        return list(batch or [])
+
+    all_products: list[dict] = []
     page = 1
     while page <= 200:
         try:
-            if hasattr(raw_client, "get_products_page"):
-                batch = await raw_client.get_products_page(
-                    page=page, per_page=_WOO_PAGE_SIZE,
-                )
-            else:
-                batch = await store_client.search_products(
-                    query="", limit=_WOO_PAGE_SIZE, in_stock_only=False,
-                )
-                all_products.extend(batch or [])
-                break
+            batch = await raw_client.get_products_page(page=page, per_page=_WOO_PAGE_SIZE)
         except Exception as exc:
-            logger.warning("WooCommerce page=%d failed: %s", page, exc)
-            break
+            # A transient page error is NOT end-of-catalog. Abort so the sync task
+            # retries the whole run, rather than caching a truncated catalog that
+            # would silently look complete. (get_products_page already retries
+            # internally, so reaching here means a persistent failure.)
+            raise RuntimeError(f"WooCommerce sync aborted at page {page}: {exc}") from exc
         if not batch:
-            break
+            break  # genuine end of pages
         all_products.extend(batch)
         if len(batch) < _WOO_PAGE_SIZE:
             break
@@ -627,7 +680,13 @@ async def _upsert_product(db, product, embedding: Optional[list[float]]) -> None
             permalink      = EXCLUDED.permalink,
             embedding      = CASE
                                 WHEN EXCLUDED.embedding IS NOT NULL
-                                THEN EXCLUDED.embedding
+                                    THEN EXCLUDED.embedding
+                                -- Re-embed failed but the text changed: drop the
+                                -- now-stale vector (BM25 still finds it; it re-embeds
+                                -- next run) rather than matching on old text.
+                                WHEN product_cache.name IS DISTINCT FROM EXCLUDED.name
+                                  OR product_cache.description IS DISTINCT FROM EXCLUDED.description
+                                    THEN NULL
                                 ELSE product_cache.embedding
                              END,
             cached_at      = NOW()

@@ -63,7 +63,13 @@ async def bulk_ingest_products(
             detail="Invalid API key — check your custom_api_key from onboarding",
         )
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Request body must be valid JSON (a product object or a list of them).",
+        )
     products = body if isinstance(body, list) else [body]
 
     if not products:

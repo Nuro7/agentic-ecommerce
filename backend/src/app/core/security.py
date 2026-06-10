@@ -5,7 +5,6 @@ import hmac
 import re
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import jwt
 from argon2 import PasswordHasher
@@ -84,13 +83,3 @@ async def verify_hmac(request: Request, body: bytes, *, required: bool = True) -
     expected = compute_signature(shared_secret, timestamp, body, request.url.path)
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status_code=401, detail="Invalid request signature")
-
-
-def allowed_origin(origin: Optional[str]) -> bool:
-    allowed_raw = settings.shared_secret  # reuse ALLOWED_ORIGINS if added to settings
-    if not allowed_raw:
-        return True
-    allowed = [item.strip() for item in allowed_raw.split(",") if item.strip()]
-    if not origin:
-        return False
-    return origin in allowed
