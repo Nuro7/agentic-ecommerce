@@ -32,8 +32,16 @@ from .llm_clients import (
     gemini_client, BRAIN_MODEL,
     GPT_MINI_TOOL_THRESHOLD, CART_KEYWORDS,
 )
+from ..core.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
+
+# Per-provider circuit breakers: after repeated failures/timeouts we skip a
+# provider for a cooldown instead of paying its full timeout on every request
+# (which would stall every fallback below it). 30s recovery, then a probe.
+_grok_breaker = CircuitBreaker(name="llm-grok", failure_threshold=3, recovery_timeout=30.0)
+_gpt_mini_breaker = CircuitBreaker(name="llm-gpt-mini", failure_threshold=3, recovery_timeout=30.0)
+_gemini_breaker = CircuitBreaker(name="llm-gemini", failure_threshold=3, recovery_timeout=30.0)
 
 
 # ── Response validator ─────────────────────────────────────────────────────
@@ -145,10 +153,15 @@ async def _call_gemini(
             history.append({"role": "model", "parts": [content]})
 
     chat = gemini_client.start_chat(history=history[:-1] if len(history) > 1 else [])
-    response = await asyncio.to_thread(
-        chat.send_message,
-        last_user_msg,
-        tools=gemini_tools if gemini_tools else None,
+    # Bound the blocking SDK call so a hung Gemini can't stall the turn (and leak
+    # the worker thread) indefinitely.
+    response = await asyncio.wait_for(
+        asyncio.to_thread(
+            chat.send_message,
+            last_user_msg,
+            tools=gemini_tools if gemini_tools else None,
+        ),
+        timeout=15.0,
     )
 
     text = ""
@@ -202,10 +215,13 @@ async def _call_gemini_brain(messages: list[dict], tools: list[dict]) -> dict:
         gemini_tools = _openai_tools_to_gemini(tools)
         config_kwargs["tools"] = [{"function_declarations": gemini_tools}]
 
-    response = await gemini_client.aio.models.generate_content(
-        model=BRAIN_MODEL,
-        contents=contents,
-        config=gtypes.GenerateContentConfig(**config_kwargs),
+    response = await asyncio.wait_for(
+        gemini_client.aio.models.generate_content(
+            model=BRAIN_MODEL,
+            contents=contents,
+            config=gtypes.GenerateContentConfig(**config_kwargs),
+        ),
+        timeout=15.0,
     )
 
     text = ""
@@ -327,7 +343,7 @@ async def route_and_call(
     # ── Primary: xAI Grok (grok-4.3) ─────────────────────────────────────────
     # Flagship model — leading tool calling, low hallucination, 1M context.
     # Falls back to GPT-4o-mini → Gemini if Grok is unavailable.
-    if groq_client:
+    if groq_client and _grok_breaker.is_available():
         logger.info(
             "LLM route: xAI Grok [%s, lang=%s, tools~%d]",
             GROQ_MODEL, lang, tool_count,
@@ -336,20 +352,31 @@ async def route_and_call(
             raw = await asyncio.wait_for(
                 _call_groq(messages, tools), timeout=15.0
             )
+            _grok_breaker.record_success()
             return _validated_response(raw)
         except Exception as e:
+            _grok_breaker.record_failure()
             logger.warning("xAI Grok Brain failed (%s), falling back to GPT-4o-mini", e)
 
-    if gpt_mini_client:
+    if gpt_mini_client and _gpt_mini_breaker.is_available():
         logger.info("LLM route: GPT-4o-mini [fallback, lang=%s]", lang)
         try:
             raw = await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=12.0)
+            _gpt_mini_breaker.record_success()
             return _validated_response(raw)
         except Exception as e:
+            _gpt_mini_breaker.record_failure()
             logger.warning("GPT-4o-mini fallback failed (%s), trying Gemini", e)
 
-    if gemini_client:
+    if gemini_client and _gemini_breaker.is_available():
         logger.info("LLM route: Gemini [last-resort fallback, lang=%s]", lang)
-        return _validated_response(await _call_gemini_brain(messages, tools))
+        try:
+            # Gemini had no timeout before — a hung call stalled the whole turn.
+            raw = await asyncio.wait_for(_call_gemini_brain(messages, tools), timeout=15.0)
+            _gemini_breaker.record_success()
+            return _validated_response(raw)
+        except Exception as e:
+            _gemini_breaker.record_failure()
+            logger.warning("Gemini last-resort failed (%s)", e)
 
-    raise RuntimeError("All LLM backends failed — check GROK_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY")
+    raise RuntimeError("All LLM backends failed/circuit-open — check GROK_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY")

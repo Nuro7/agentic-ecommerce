@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...agent.prompts.filtering import detect_language
 from ...config import settings
 from ...core.database import get_db
+from ...core.ratelimit import rate_limit
 from ...modules.billing.dependencies import check_conversation_quota
 from ...modules.billing.service import BillingService
 from ...modules.tenants.dependencies import get_tenant_store_client
@@ -56,6 +57,7 @@ async def greet_endpoint(
     payload: GreetRequest,
     req: Request,
     store_client: Any = Depends(get_tenant_store_client),
+    _rl=Depends(rate_limit(limit=20, window=60, scope="greet")),
     _quota=Depends(check_conversation_quota),
     db: AsyncSession = Depends(get_db),
 ):
@@ -220,6 +222,7 @@ async def greet_endpoint(
 async def get_cart(
     session_id: str,
     store_client: Any = Depends(get_tenant_store_client),
+    _rl=Depends(rate_limit(limit=60, window=60, scope="cart")),
 ):
     """
     Public cart fetch — used by the widget on all platforms.

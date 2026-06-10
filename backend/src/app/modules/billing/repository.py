@@ -29,6 +29,9 @@ class BillingRepository:
 
     async def record_usage(self, record: UsageRecord) -> None:
         self.db.add(record)
+        # Commit so usage is durably persisted; quota enforcement depends on it.
+        # (Other callers in the request session have already committed their work.)
+        await self.db.commit()
 
     async def get_usage_total(self, tenant_id: str, metric: str) -> int:
         result = await self.db.execute(

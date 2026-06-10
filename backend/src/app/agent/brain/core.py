@@ -70,17 +70,34 @@ from .text_utils import (
 logger = logging.getLogger(__name__)
 
 # ── Module-level catalog cache ────────────────────────────────────────────────
-# Keyed by store base_url (or object id as fallback).
-# Shared across all sessions on the same worker process — safe for asyncio
-# single-event-loop because dict updates are atomic in CPython.
+# Keyed by a STABLE per-tenant store identifier (not id(), which churns every
+# time the per-tenant client cache rebuilds a client and can be reused after GC).
+# Bounded so a many-tenant worker can't grow it without limit.
 _catalog_cache: Dict[str, Tuple[str, float]] = {}
 _CATALOG_TTL = 300.0  # 5 minutes
+_CATALOG_MAX_ENTRIES = 500
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _store_key(store_client: Any) -> str:
-    return str(getattr(store_client, "base_url", "") or id(store_client))
+    # Prefer a tenant-stable attribute so the same store always maps to the same
+    # cache entry (avoids both cross-tenant ambiguity and cache thrash). Falls
+    # back to id() only when no stable identifier exists.
+    for attr in ("_cache_prefix", "base_url", "store_url", "store_domain"):
+        val = getattr(store_client, attr, "") or ""
+        if val:
+            return f"{attr}:{val}"
+    return f"id:{id(store_client)}"
+
+
+def _evict_catalog_cache() -> None:
+    """Drop the oldest entries when the cache exceeds its bound."""
+    if len(_catalog_cache) < _CATALOG_MAX_ENTRIES:
+        return
+    # Remove ~10% oldest by timestamp.
+    for k, _ in sorted(_catalog_cache.items(), key=lambda kv: kv[1][1])[: _CATALOG_MAX_ENTRIES // 10]:
+        _catalog_cache.pop(k, None)
 
 
 async def _get_store_catalog(store_client: Any) -> str:
@@ -130,6 +147,7 @@ async def _get_store_catalog(store_client: Any) -> str:
 
         catalog = "\n".join(parts)
         if catalog:
+            _evict_catalog_cache()
             _catalog_cache[key] = (catalog, time.monotonic())
         return catalog
 
@@ -483,14 +501,7 @@ async def ask_brain(
             logger.warning("handle_product_discovery fallback failed: %s", exc)
 
     if result is None:
-        result = {
-            "response_text": (
-                "What are you looking for? I can help you find products, "
-                "check your cart, or answer questions about the store."
-            ),
-            "ui_actions": [],
-            "suggested_replies": ["Show products", "Show my cart", "Store info"],
-        }
+        result = _help_fallback_result(lang)
 
     # ── Step 6: Post-processing ───────────────────────────────────────────────
     response_text = str(
@@ -618,6 +629,24 @@ async def ask_brain(
 
 
 # ── Private response builders ─────────────────────────────────────────────────
+
+def _help_fallback_result(lang: str) -> Dict[str, Any]:
+    """Language-aware last-resort response when every handler tier returned None."""
+    _texts = {
+        "en": "What are you looking for? I can help you find products, check your cart, or answer questions about the store.",
+        "hi": "Aap kya dhundh rahe hain? Main aapko products dhundhne, cart dekhne, ya store ke baare mein madad kar sakta hoon.",
+        "ml": "Ningal enthaanu thiranjukondirikkunnath? Products kandethaan, cart kaanaan, allengil store-nepatti chodikkaan njan sahaayikkam.",
+        "ta": "Neenga edha thedureenga? Products thedavum, cart paarkavum, store pathi kekkavum naan udavuven.",
+        "te": "Meeru emi vethukutunnaru? Products vethakadaniki, cart chudadaniki, leda store gurinchi adagadaniki nenu sahayam chestanu.",
+        "bn": "Apni ki khujchen? Ami apnake product khujte, cart dekhte, ba store somporke jante shahajjo korte pari.",
+        "kn": "Neevu enannu hudukuttiddeera? Products huduku, cart noduvudu, athava store bagge kelalu naanu sahaaya maaduttene.",
+    }
+    return {
+        "response_text": _texts.get(lang, _texts["en"]),
+        "ui_actions": [],
+        "suggested_replies": ["Show products", "Show my cart", "Store info"],
+    }
+
 
 def _no_products_result(lang: str) -> Dict[str, Any]:
     """Deterministic response when retrieval finds zero products in the catalog."""

@@ -1,3 +1,4 @@
+import base64
 import hmac
 import hashlib
 import json
@@ -10,20 +11,54 @@ from ...config import settings
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
-def _verify_woocommerce_signature(body: bytes, signature: str | None) -> None:
+def _verify_hex_signature(body: bytes, signature: str | None, *, header: str) -> None:
+    """Verify a hex-encoded HMAC-SHA256(SHARED_SECRET, body) signature (Woo / custom)."""
     if not signature:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing signature")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Missing {header}")
     expected = hmac.new(settings.shared_secret.encode(), body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid signature")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid {header}")
+
+
+def _verify_woocommerce_signature(body: bytes, signature: str | None) -> None:
+    _verify_hex_signature(body, signature, header="signature")
 
 
 def _verify_custom_signature(body: bytes, signature: str | None) -> None:
+    _verify_hex_signature(body, signature, header="X-Speako-Signature")
+
+
+def _verify_shopify_signature(body: bytes, signature: str | None) -> None:
+    """Shopify signs webhooks as base64(HMAC-SHA256(api_secret, raw_body))."""
+    secret = settings.shopify_api_secret
+    if not secret:
+        # Fail closed: refuse to ingest unverifiable Shopify webhooks in prod.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Shopify webhook verification not configured (SHOPIFY_API_SECRET unset)",
+        )
     if not signature:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-Speako-Signature")
-    expected = hmac.new(settings.shared_secret.encode(), body, hashlib.sha256).hexdigest()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-Shopify-Hmac-SHA256")
+    digest = hmac.new(secret.encode(), body, hashlib.sha256).digest()
+    expected = base64.b64encode(digest).decode()
     if not hmac.compare_digest(expected, signature):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid X-Speako-Signature")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Shopify signature")
+
+
+async def _require_tenant(db: AsyncSession, tenant_id: str):
+    """Reject webhooks for tenants that don't exist (prevents table bloat/spoofing)."""
+    from ...modules.tenants.repository import TenantRepository
+    tenant = await TenantRepository(db).get_by_id(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+    return tenant
+
+
+def _parse_json_body(body: bytes):
+    try:
+        return json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON body")
 
 
 @router.post("/woocommerce/{tenant_id}")
@@ -36,7 +71,8 @@ async def woocommerce_webhook(
 ):
     body = await request.body()
     _verify_woocommerce_signature(body, x_wc_webhook_signature)
-    payload = json.loads(body)
+    await _require_tenant(db, tenant_id)
+    payload = _parse_json_body(body)
     await WebhookService(db).ingest(tenant_id, x_wc_webhook_topic or "unknown", "woocommerce", payload)
     return {"received": True}
 
@@ -46,10 +82,26 @@ async def shopify_webhook(
     tenant_id: str,
     request: Request,
     x_shopify_topic: str = Header(None),
+    x_shopify_hmac_sha256: str = Header(None),
+    x_shopify_shop_domain: str = Header(None),
     db: AsyncSession = Depends(get_db),
 ):
     body = await request.body()
-    payload = json.loads(body)
+    _verify_shopify_signature(body, x_shopify_hmac_sha256)
+
+    # Bind the signed event to a real tenant and confirm the shop domain matches,
+    # so a valid signature for shop A cannot be replayed against tenant B.
+    from ...modules.tenants.repository import TenantRepository
+    tenant = await TenantRepository(db).get_by_id(tenant_id)
+    if not tenant or not tenant.shopify_domain:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shopify tenant not found")
+    if x_shopify_shop_domain and x_shopify_shop_domain.strip().lower() != tenant.shopify_domain.lower():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Shop domain mismatch")
+
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON body")
     await WebhookService(db).ingest(tenant_id, x_shopify_topic or "unknown", "shopify", payload)
     return {"received": True}
 
@@ -77,8 +129,9 @@ async def custom_platform_webhook(
     """
     body = await request.body()
     _verify_custom_signature(body, x_speako_signature)
+    await _require_tenant(db, tenant_id)
 
-    payload = json.loads(body)
+    payload = _parse_json_body(body)
     svc = WebhookService(db)
     topic = x_speako_topic.lower()
 

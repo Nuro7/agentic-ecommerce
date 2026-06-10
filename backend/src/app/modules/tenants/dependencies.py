@@ -23,16 +23,57 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .repository import TenantRepository
 from .service import TenantService
 from ...core.database import get_db
+from ...core.security import decode_access_token
 from ...integrations.factory import create_store_client_for_tenant, invalidate_tenant_client
 
 logger = logging.getLogger(__name__)
+
+
+async def get_authenticated_tenant(
+    authorization: str = Header(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Authenticate a merchant from a Bearer JWT and return their Tenant.
+
+    Use this on merchant/admin endpoints (tenant settings, orders, analytics,
+    billing). The tenant is derived from the signed token's `sub`, never from a
+    client-supplied X-Tenant-ID header, so it cannot be spoofed.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization[7:].strip()
+    try:
+        payload = decode_access_token(token)
+    except Exception:
+        # decode_access_token raises ValueError, but treat ANY decode failure as
+        # 401 rather than leaking a 500 on an unexpected token/lib error.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    tenant_id = payload.get("sub")
+    if not tenant_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token subject")
+    tenant = await TenantRepository(db).get_by_id(tenant_id)
+    if not tenant or not tenant.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Tenant not found or inactive")
+    return tenant
 
 
 async def require_tenant(
     x_tenant_id: str = Header(...),
     db: AsyncSession = Depends(get_db),
 ):
-    """Strict: requires X-Tenant-ID header. Used by internal/admin endpoints."""
+    """Strict: requires X-Tenant-ID header. Used by internal/admin endpoints.
+
+    DEPRECATED for anything sensitive — the header is unauthenticated. Prefer
+    get_authenticated_tenant on merchant/admin routes.
+    """
     return await TenantService(db).get_tenant(x_tenant_id)
 
 

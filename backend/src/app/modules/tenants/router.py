@@ -1,27 +1,41 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from .service import TenantService
-from .schemas import TenantCreate, TenantOut, TenantUpdate
+from .schemas import TenantOut, TenantUpdate
+from .dependencies import get_authenticated_tenant
 from ...core.database import get_db
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
 
-@router.post("/", response_model=TenantOut, status_code=201)
-async def create_tenant(data: TenantCreate, db: AsyncSession = Depends(get_db)):
-    return await TenantService(db).create_tenant(data)
+# NOTE: tenant self-service signup is handled by the public POST /api/v1/onboard
+# endpoint. These routes are the authenticated merchant dashboard surface — a
+# merchant may only read/update their OWN tenant. Creating/listing arbitrary
+# tenants is intentionally not exposed here (was an unauthenticated IDOR before).
 
 
-@router.get("/", response_model=list[TenantOut])
-async def list_tenants(skip: int = 0, limit: int = 50, db: AsyncSession = Depends(get_db)):
-    return await TenantService(db).list_tenants(skip=skip, limit=limit)
+@router.get("/me", response_model=TenantOut)
+async def get_my_tenant(tenant=Depends(get_authenticated_tenant)):
+    return tenant
 
 
 @router.get("/{tenant_id}", response_model=TenantOut)
-async def get_tenant(tenant_id: str, db: AsyncSession = Depends(get_db)):
-    return await TenantService(db).get_tenant(tenant_id)
+async def get_tenant(
+    tenant_id: str,
+    tenant=Depends(get_authenticated_tenant),
+):
+    if tenant_id != tenant.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+    return tenant
 
 
 @router.patch("/{tenant_id}", response_model=TenantOut)
-async def update_tenant(tenant_id: str, data: TenantUpdate, db: AsyncSession = Depends(get_db)):
+async def update_tenant(
+    tenant_id: str,
+    data: TenantUpdate,
+    tenant=Depends(get_authenticated_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    if tenant_id != tenant.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
     return await TenantService(db).update_tenant(tenant_id, data)

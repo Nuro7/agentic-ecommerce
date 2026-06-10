@@ -12,6 +12,24 @@ logger = logging.getLogger(__name__)
 _MEMORY_STORE: Dict[str, Any] = {}
 _MEMORY_MAX = 2000
 
+# Replayed-history bounds: cap BOTH turn count and a token budget. The old code
+# capped only turns (20), so a few very long messages still ballooned every LLM
+# call's input cost. ~4 chars/token → ~6k token ceiling.
+_MAX_HISTORY_TURNS = 16
+_MAX_HISTORY_CHARS = 24_000
+
+
+def _trim_history(history: list) -> list:
+    clean = [
+        {k: v for k, v in e.items() if v is not None}
+        for e in (history or [])[-_MAX_HISTORY_TURNS:]
+        if isinstance(e, dict)
+    ]
+    # Drop oldest turns until within the char/token budget (keep ≥2 for context).
+    while len(clean) > 2 and len(json.dumps(clean)) > _MAX_HISTORY_CHARS:
+        clean.pop(0)
+    return clean
+
 
 def _evict_memory_store() -> None:
     if len(_MEMORY_STORE) >= _MEMORY_MAX:
@@ -80,12 +98,7 @@ class SessionService:
         state = await self.get_session(session_id)
 
         if conversation_history is not None:
-            clean = [
-                {k: v for k, v in e.items() if v is not None}
-                for e in conversation_history[-20:]
-                if isinstance(e, dict)
-            ]
-            state["conversation_history"] = clean
+            state["conversation_history"] = _trim_history(conversation_history)
 
         if cart_snapshot is not None and isinstance(cart_snapshot, dict):
             state["cart_snapshot"] = cart_snapshot

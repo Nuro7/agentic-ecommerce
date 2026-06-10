@@ -22,6 +22,7 @@ import httpx
 
 from ..base.commerce import BaseStoreClient
 from ..adapters.custom_adapter import CustomAdapter
+from ...core.http_retry import request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +49,20 @@ class CustomApiClient(BaseStoreClient):
             base_url=self.base_url,
             headers=headers,
             timeout=_DEFAULT_TIMEOUT,
-            follow_redirects=True,
+            # SSRF hardening: do not follow redirects, which could bounce a
+            # validated public URL to an internal address (metadata / RFC1918).
+            follow_redirects=False,
         )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         try:
-            resp = await self._client.get(path, params={k: v for k, v in (params or {}).items() if v is not None})
+            clean = {k: v for k, v in (params or {}).items() if v is not None}
+            resp = await request_with_retries(
+                lambda: self._client.get(path, params=clean),
+                label="custom-api-get",
+            )
             resp.raise_for_status()
             return resp.json()
         except httpx.HTTPStatusError as exc:

@@ -22,6 +22,7 @@ from ...agent.gemini_client import (
 )
 from ...agent.voice.pipelines import PipelineRouter
 from ...core.database import AsyncSessionLocal
+from ...core.ratelimit import check_rate_limit
 from ...modules.billing.dependencies import enforce_conversation_quota
 from ...modules.billing.service import BillingService
 from ...modules.tenants.dependencies import resolve_tenant_store_client_for_ws
@@ -97,6 +98,18 @@ async def voice_stream(websocket: WebSocket):
         logger.warning("WebSocket rejected — bad token: session=%s", session_id)
         return
 
+    # Connection rate limit: voice sessions are the most expensive path
+    # (3 credits + LLM/STT/TTS). Cap new connections per (tenant, IP).
+    _redis = getattr(websocket.app.state, "redis", None)
+    _ip = websocket.client.host if websocket.client else "unknown"
+    if not await check_rate_limit(
+        _redis, tenant_key=(shop or tenant_id or session_id), ip=_ip,
+        limit=10, window=60, scope="voice",
+    ):
+        await websocket.close(code=4029, reason="Rate limit exceeded")
+        logger.warning("WebSocket rejected — rate limit: session=%s ip=%s", session_id, _ip)
+        return
+
     await websocket.accept()
     logger.info("Voice WebSocket accepted: session=%s shop=%s", session_id, shop or tenant_id or "global")
 
@@ -111,7 +124,10 @@ async def voice_stream(websocket: WebSocket):
             )
             if resolved_tenant_id:
                 try:
-                    await enforce_conversation_quota(resolved_tenant_id, db, is_voice=True)
+                    await enforce_conversation_quota(
+                        resolved_tenant_id, db, is_voice=True,
+                        redis=getattr(websocket.app.state, "redis", None),
+                    )
                 except HTTPException as quota_err:
                     await websocket.send_text(json.dumps({
                         "type": "pipeline_error",

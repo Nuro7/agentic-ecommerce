@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from .models import Conversation, Message
 
 
@@ -7,20 +8,33 @@ class ConversationRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_or_create(self, tenant_id: str, session_id: str, visitor_id: str | None = None) -> Conversation:
+    async def _find(self, tenant_id: str, session_id: str) -> Conversation | None:
         result = await self.db.execute(
             select(Conversation).where(
                 Conversation.tenant_id == tenant_id,
                 Conversation.session_id == session_id,
             )
         )
-        conv = result.scalar_one_or_none()
-        if not conv:
-            conv = Conversation(tenant_id=tenant_id, session_id=session_id, visitor_id=visitor_id)
-            self.db.add(conv)
+        # .first() (not scalar_one_or_none) so legacy duplicate rows never crash.
+        return result.scalars().first()
+
+    async def get_or_create(self, tenant_id: str, session_id: str, visitor_id: str | None = None) -> Conversation:
+        conv = await self._find(tenant_id, session_id)
+        if conv:
+            return conv
+        conv = Conversation(tenant_id=tenant_id, session_id=session_id, visitor_id=visitor_id)
+        self.db.add(conv)
+        try:
             await self.db.commit()
             await self.db.refresh(conv)
-        return conv
+            return conv
+        except IntegrityError:
+            # Concurrent request inserted the same (tenant_id, session_id) first.
+            await self.db.rollback()
+            existing = await self._find(tenant_id, session_id)
+            if existing is None:
+                raise
+            return existing
 
     async def add_message(self, conversation_id: str, role: str, content: str) -> Message:
         msg = Message(conversation_id=conversation_id, role=role, content=content)

@@ -7,7 +7,7 @@ from .schemas import ChatRequest, ChatResponse, MessageOut
 from ...core.database import get_db
 from ..billing.dependencies import enforce_conversation_quota
 from ..billing.service import BillingService
-from ..tenants.dependencies import require_tenant
+from ..tenants.dependencies import get_authenticated_tenant
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -17,10 +17,12 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 async def chat(
     request: Request,
     data: ChatRequest,
-    tenant=Depends(require_tenant),
+    tenant=Depends(get_authenticated_tenant),
     db: AsyncSession = Depends(get_db),
 ):
-    await enforce_conversation_quota(tenant.id, db)
+    await enforce_conversation_quota(
+        tenant.id, db, redis=getattr(request.app.state, "redis", None),
+    )
     orchestrator = getattr(request.app.state, "orchestrator", None)
     result = await ConversationService(db).chat(
         tenant.id,
@@ -38,7 +40,7 @@ async def chat(
 @router.get("/{session_id}/history", response_model=list[MessageOut])
 async def get_history(
     session_id: str,
-    tenant=Depends(require_tenant),
+    tenant=Depends(get_authenticated_tenant),
     db: AsyncSession = Depends(get_db),
 ):
     return await ConversationService(db).get_history(tenant.id, session_id)

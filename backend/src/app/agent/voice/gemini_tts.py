@@ -107,20 +107,23 @@ class GeminiTTSService:
 
         try:
             prompt = self._build_director_prompt(text, language)
-            response = await asyncio.to_thread(
-                self._client.models.generate_content,
-                model=_GEMINI_TTS_MODEL,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=voice_name
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._client.models.generate_content,
+                    model=_GEMINI_TTS_MODEL,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                    voice_name=voice_name
+                                )
                             )
-                        )
+                        ),
                     ),
                 ),
+                timeout=15.0,
             )
 
             # Extract raw PCM bytes from response

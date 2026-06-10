@@ -7,3 +7,21 @@ startCommand = "uvicorn src.app.server:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/api/v1/health"
 healthcheckTimeout = 30
 restartPolicyType = "on_failure"
+
+# ── REQUIRED: background processing (Celery) ─────────────────────────────────
+# This file deploys ONLY the web process. The async tier (product sync, webhook
+# processing, retry-drain, billing, analytics) does NOT run unless a worker and
+# beat are also deployed. On Railway, add TWO MORE services from this same repo/
+# image with these start commands (no healthcheck, share DATABASE_URL/REDIS_URL):
+#
+#   worker:  celery -A src.app.workers.celery_app worker -l info
+#   beat:    celery -A src.app.workers.celery_app beat -l info
+#
+# Locally these run automatically via docker-compose (worker + beat services).
+#
+# ── Schema migrations ────────────────────────────────────────────────────────
+# Railway has no release phase here. Set the web service's "Pre-Deploy Command"
+# (Settings → Deploy) to:  alembic upgrade head
+# so each deploy migrates the DB BEFORE the new image takes traffic. Write
+# migrations expand-then-contract so old + new code tolerate both schemas.
+# (docker-compose already gates app/worker on a one-shot `migrate` service.)

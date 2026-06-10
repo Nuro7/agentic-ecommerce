@@ -20,12 +20,28 @@ from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.database import get_db
+from ...core.net import validate_public_http_url, UnsafeUrlError
+from ...core.security import hash_password
 from ...modules.tenants.repository import TenantRepository
 from ...modules.billing.models import Subscription
 from ...modules.billing.repository import BillingRepository
 from ...modules.tenants.schemas import TenantCreate
 from ...modules.tenants.service import TenantService
 from ...core.exceptions import ConflictError
+
+
+def _validate_store_urls(platform: str, base_url: Optional[str], store_url: Optional[str]) -> None:
+    """Reject tenant-supplied store URLs that resolve to internal addresses (SSRF)."""
+    target = base_url if platform == "custom_api" else store_url if platform == "woocommerce" else None
+    if not target:
+        return
+    try:
+        validate_public_http_url(target)
+    except UnsafeUrlError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Store URL is not allowed: {exc}",
+        )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/onboard", tags=["onboarding"])
@@ -38,6 +54,8 @@ class OnboardRequest(BaseModel):
     store_name: str
     email: EmailStr
     plan: str = "free"
+    # Optional at signup; required before the merchant can log in to the dashboard.
+    password: Optional[str] = None
 
     # Which platform this store runs on
     platform: str = "custom_api"
@@ -129,6 +147,9 @@ async def onboard_merchant(
             detail=str(exc),
         )
 
+    # SSRF guard: reject store URLs pointing at internal addresses.
+    _validate_store_urls(data.platform, data.custom_api_base_url, data.woocommerce_store_url)
+
     # Create tenant (raises ConflictError if email already registered)
     tenant_data = TenantCreate(
         name=data.store_name,
@@ -152,6 +173,11 @@ async def onboard_merchant(
             status_code=status.HTTP_409_CONFLICT,
             detail="A merchant account with this email already exists.",
         )
+
+    # Store the login password (argon2). Without this the merchant cannot log in.
+    if data.password:
+        tenant.hashed_password = hash_password(data.password)
+        await db.commit()
 
     # Auto-enrol new merchant on the Starter plan (free, 200 credits/month).
     try:
@@ -266,6 +292,8 @@ async def test_store_connection(data: TestConnectionRequest) -> TestConnectionRe
     credentials before submitting the full /onboard request.
     """
     platform = data.platform.lower()
+    # SSRF guard: validate caller-supplied URLs before we make any request to them.
+    _validate_store_urls(platform, data.custom_api_base_url, data.woocommerce_store_url)
     store_client = None
     try:
         if platform == "shopify":

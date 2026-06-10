@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from ..base.commerce import BaseStoreClient
+from ...core.http_retry import request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -115,13 +116,16 @@ class ShopifyClient(BaseStoreClient):
         if variables:
             payload["variables"] = variables
 
-        resp = await self._http.post(
-            self._storefront_url,
-            json=payload,
-            headers={
-                "X-Shopify-Storefront-Access-Token": self.storefront_token,
-                "Content-Type": "application/json",
-            },
+        resp = await request_with_retries(
+            lambda: self._http.post(
+                self._storefront_url,
+                json=payload,
+                headers={
+                    "X-Shopify-Storefront-Access-Token": self.storefront_token,
+                    "Content-Type": "application/json",
+                },
+            ),
+            label="shopify-storefront",
         )
         resp.raise_for_status()
         body = resp.json()
@@ -134,10 +138,13 @@ class ShopifyClient(BaseStoreClient):
         if not self.admin_token:
             raise RuntimeError("SHOPIFY_ADMIN_TOKEN is required for admin operations")
         url = f"{self._admin_base}/{path.lstrip('/')}"
-        resp = await self._http.get(
-            url,
-            params=params,
-            headers={"X-Shopify-Access-Token": self.admin_token},
+        resp = await request_with_retries(
+            lambda: self._http.get(
+                url,
+                params=params,
+                headers={"X-Shopify-Access-Token": self.admin_token},
+            ),
+            label="shopify-admin-get",
         )
         resp.raise_for_status()
         return resp.json()
@@ -332,6 +339,60 @@ class ShopifyClient(BaseStoreClient):
         except Exception as exc:
             logger.error("Shopify search_products failed: %s", exc)
             return []
+
+    async def fetch_all_products_storefront(
+        self, *, page_size: int = 250, max_pages: int = 200
+    ) -> List[Dict[str, Any]]:
+        """Cursor-paginate the entire catalog via the Storefront API.
+
+        Used by the product-sync fallback when the Admin Bulk Operation path is
+        unavailable. Unlike search_products (single page), this follows
+        pageInfo.endCursor until hasNextPage is false, so catalogs with
+        thousands of products sync fully.
+        """
+        GQL = """
+        query AllProducts($first: Int!, $after: String) {
+          products(first: $first, after: $after, sortKey: ID) {
+            pageInfo { hasNextPage endCursor }
+            edges {
+              node {
+                id title handle description availableForSale totalInventory
+                priceRange {
+                  minVariantPrice { amount currencyCode }
+                  maxVariantPrice { amount currencyCode }
+                }
+                compareAtPriceRange { minVariantPrice { amount currencyCode } }
+                images(first: 1) { edges { node { url } } }
+                options { name values }
+                variants(first: 10) {
+                  edges {
+                    node {
+                      id availableForSale quantityAvailable
+                      price { amount }
+                      selectedOptions { name value }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        all_products: List[Dict[str, Any]] = []
+        after: Optional[str] = None
+        per_page = max(1, min(int(page_size or 250), 250))  # Storefront cap = 250
+        for _ in range(max_pages):
+            data = await self._storefront(GQL, {"first": per_page, "after": after})
+            conn = data.get("products", {})
+            edges = conn.get("edges", [])
+            all_products.extend(self._normalize_product_node(e["node"]) for e in edges)
+            page_info = conn.get("pageInfo", {})
+            if not page_info.get("hasNextPage"):
+                break
+            after = page_info.get("endCursor")
+            if not after:
+                break
+        return all_products
 
     async def get_product_details(self, product_id: int) -> Dict[str, Any]:
         cache_key = f"product:{product_id}"
@@ -960,8 +1021,10 @@ class ShopifyClient(BaseStoreClient):
 
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
-            valid = []
-
+            # Compute savings from rule fields only (no API calls). The per-rule
+            # discount_codes lookup is the N+1 — defer it and fetch only for the
+            # best candidates, early-exiting on the first with a usable code.
+            candidates = []
             for rule in price_rules:
                 if rule.get("ends_at"):
                     try:
@@ -978,35 +1041,39 @@ class ShopifyClient(BaseStoreClient):
 
                 value_type = rule.get("value_type", "")
                 amount = abs(_safe_float(rule.get("value", 0)))
+                savings = (cart_total * amount / 100) if (value_type == "percentage" and cart_total) else amount
+                candidates.append({
+                    "rule_id": rule["id"],
+                    "value_type": value_type,
+                    "amount": amount,
+                    "savings": savings,
+                })
 
-                if value_type == "percentage":
-                    savings = (cart_total * amount / 100) if cart_total else amount
-                else:
-                    savings = amount
+            candidates.sort(key=lambda c: c["savings"], reverse=True)
 
+            best = None
+            for c in candidates[:10]:  # cap Admin API calls (rate-limit ~2 req/s)
                 try:
                     codes_data = await self._admin_get(
-                        f"price_rules/{rule['id']}/discount_codes.json",
+                        f"price_rules/{c['rule_id']}/discount_codes.json",
                         params={"limit": 1},
                     )
                     code = codes_data.get("discount_codes", [{}])[0].get("code", "")
                 except Exception:
                     code = ""
+                if code:
+                    # candidates are sorted by savings desc → first with a code is best
+                    best = {
+                        "code": code,
+                        "type": "percent" if c["value_type"] == "percentage" else "fixed_cart",
+                        "amount": c["amount"],
+                        "savings": c["savings"],
+                    }
+                    break
 
-                if not code:
-                    continue
-
-                valid.append({
-                    "code": code,
-                    "type": "percent" if value_type == "percentage" else "fixed_cart",
-                    "amount": amount,
-                    "savings": savings,
-                })
-
-            if not valid:
+            if not best:
                 return {"success": True, "found": False, "message": "No applicable discounts for your cart"}
 
-            best = max(valid, key=lambda x: x["savings"])
             sym = self.currency_symbol
             display = (
                 f"{best['amount']:.0f}% off"

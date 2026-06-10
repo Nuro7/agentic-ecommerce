@@ -40,6 +40,38 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: ../../backend
+      dockerfile: ../infra/docker/Dockerfile
+    command: celery -A src.app.workers.celery_app worker -l info
+    env_file: ../../backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  beat:
+    build:
+      context: ../../backend
+      dockerfile: ../infra/docker/Dockerfile
+    command: celery -A src.app.workers.celery_app beat -l info
+    env_file: ../../backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
 
   migrate:
     build:
@@ -52,7 +84,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    profiles: ["migrate"]
 
 volumes:
   postgres_data:

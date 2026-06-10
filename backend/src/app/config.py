@@ -1,5 +1,12 @@
 from functools import lru_cache
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
+
+# Secret values that must never reach production (placeholders shipped in .env.example).
+_WEAK_SECRETS = {
+    "", "change-me", "change-me-in-production",
+    "change-me-in-production-this-is-just-for-dev", "nif@123",
+}
 
 
 class Settings(BaseSettings):
@@ -10,7 +17,14 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     database_url: str = "postgresql+asyncpg://agentic:agentic@localhost:5432/agentic_commerce"
+    # Pool sizing is now read from config (was hardcoded). Size against the DB's
+    # max_connections budget across ALL web replicas + Celery workers.
+    database_pool_size: int = 20
+    database_max_overflow: int = 40
     redis_url: str = "redis://localhost:6379/0"
+    # Optional dedicated Redis for the Celery broker/result backend. Defaults to
+    # redis_url; set separately in prod so a cache stampede can't stall the queue.
+    celery_broker_url: str = ""
 
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
@@ -64,6 +78,25 @@ class Settings(BaseSettings):
     @property
     def is_shopify(self) -> bool:
         return self.platform.lower() == "shopify"
+
+    @model_validator(mode="after")
+    def _enforce_production_secrets(self) -> "Settings":
+        """Fail fast if production is started with default/placeholder secrets."""
+        if self.environment.lower() in ("production", "prod"):
+            weak = []
+            if self.jwt_secret_key in _WEAK_SECRETS:
+                weak.append("JWT_SECRET_KEY")
+            if self.shared_secret in _WEAK_SECRETS:
+                weak.append("SHARED_SECRET")
+            if weak:
+                raise ValueError(
+                    "Refusing to start in production with default/placeholder secrets: "
+                    + ", ".join(weak)
+                    + ". Set strong random values."
+                )
+            if self.debug:
+                raise ValueError("DEBUG must be false in production.")
+        return self
 
     class Config:
         env_file = ".env"
