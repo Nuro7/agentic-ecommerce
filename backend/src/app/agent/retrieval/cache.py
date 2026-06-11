@@ -34,7 +34,23 @@ _L2_MAX_CANDIDATES = 200     # max embeddings to compare per tenant (guards late
 _L1_PREFIX = "retrieval:{tenant}:l1:{key}"
 _L2_EMB_PREFIX = "retrieval:{tenant}:l2:emb:{key}"   # embedding bytes
 _L2_RES_PREFIX = "retrieval:{tenant}:l2:res:{key}"   # result JSON
-_L2_INDEX_KEY = "retrieval:{tenant}:l2:index"        # sorted set of stored keys
+# The L2 index is bucketed by a filter signature so semantic matching only
+# compares queries that share the SAME price/stock filters. Without this, "shoes
+# under $50" and "shoes under $500" embed near-identically and the cheaper query
+# would return the pricier query's cached results (filter bypass).
+_L2_INDEX_KEY = "retrieval:{tenant}:l2:index:{fsig}"
+
+
+def l2_filter_sig(min_price=None, max_price=None, in_stock_only: bool = False) -> str:
+    """Deterministic signature of the active filters — buckets the L2 index."""
+    parts = []
+    if min_price is not None:
+        parts.append(f"min{int(min_price)}")
+    if max_price is not None:
+        parts.append(f"max{int(max_price)}")
+    if in_stock_only:
+        parts.append("instock")
+    return "-".join(parts) or "none"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -123,8 +139,14 @@ async def l2_get(
     redis,
     tenant_id: str,
     query_text: str,
+    filter_sig: str = "none",
 ) -> Optional[list[dict]]:
-    """Embed the query, compare against stored embeddings, return results on hit."""
+    """Embed the query, compare against stored embeddings, return results on hit.
+
+    Only embeddings stored under the same `filter_sig` (price/stock filters) are
+    compared, so a cache hit can never return results from a differently-filtered
+    query.
+    """
     if redis is None:
         return None
 
@@ -134,8 +156,8 @@ async def l2_get(
         return None
 
     try:
-        # Retrieve the index of stored L2 keys for this tenant
-        index_key = _L2_INDEX_KEY.format(tenant=tenant_id)
+        # Retrieve the index of stored L2 keys for this tenant + filter bucket
+        index_key = _L2_INDEX_KEY.format(tenant=tenant_id, fsig=filter_sig)
         stored_keys = await redis.smembers(index_key)
         if not stored_keys:
             return None
@@ -179,8 +201,9 @@ async def l2_set(
     cache_key: str,
     query_text: str,
     results: list[dict],
+    filter_sig: str = "none",
 ) -> None:
-    """Store embedding + results in L2 cache."""
+    """Store embedding + results in L2 cache, bucketed by filter signature."""
     if redis is None or not results:
         return
 
@@ -191,7 +214,7 @@ async def l2_set(
     try:
         emb_key = _L2_EMB_PREFIX.format(tenant=tenant_id, key=cache_key)
         res_key = _L2_RES_PREFIX.format(tenant=tenant_id, key=cache_key)
-        index_key = _L2_INDEX_KEY.format(tenant=tenant_id)
+        index_key = _L2_INDEX_KEY.format(tenant=tenant_id, fsig=filter_sig)
 
         async with redis.pipeline(transaction=True) as pipe:
             pipe.setex(emb_key, _L2_TTL, json.dumps(query_emb))

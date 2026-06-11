@@ -88,10 +88,19 @@ async def voice_stream(websocket: WebSocket):
                                  {"type":"pipeline_error",   "message":"..."}
                                  {"type":"pipeline_fallback","message":"..."}
     """
-    session_id = websocket.query_params.get("session_id", "anonymous")
+    session_id = (websocket.query_params.get("session_id") or "").strip()
     token      = websocket.query_params.get("token", "")
     shop       = websocket.query_params.get("shop", "").strip()
     tenant_id  = websocket.query_params.get("tenant_id", "").strip()
+
+    # A missing session_id must NOT collapse to a shared key (e.g. "anonymous"):
+    # session state (history, customer_email, cart) is keyed by session_id, so a
+    # shared default would leak one caller's data to every other caller without one.
+    if len(session_id) < 8:
+        await websocket.close(code=4003, reason="Missing or invalid session_id")
+        logger.warning("WebSocket rejected — missing session_id (ip=%s)",
+                       websocket.client.host if websocket.client else "unknown")
+        return
 
     if not validate_ws_token(token, session_id):
         await websocket.close(code=4003, reason="Invalid or expired token")

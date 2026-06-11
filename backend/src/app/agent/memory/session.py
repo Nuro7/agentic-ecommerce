@@ -1,6 +1,7 @@
 """Redis-backed session state with in-memory fallback."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -11,6 +12,25 @@ logger = logging.getLogger(__name__)
 
 _MEMORY_STORE: Dict[str, Any] = {}
 _MEMORY_MAX = 2000
+
+# Per-session locks serialize the read-modify-write in update_session so two
+# concurrent turns for the same session (e.g. voice pipeline tasks) can't clobber
+# each other's fields. Intra-process only — across multiple workers the same
+# session normally lands on one worker, so this removes the realistic race.
+_SESSION_LOCKS: Dict[str, "asyncio.Lock"] = {}
+_SESSION_LOCKS_MAX = 4000
+
+
+def _session_lock(session_id: str) -> "asyncio.Lock":
+    lock = _SESSION_LOCKS.get(session_id)
+    if lock is None:
+        # Opportunistically drop idle locks before the registry grows unbounded.
+        if len(_SESSION_LOCKS) >= _SESSION_LOCKS_MAX:
+            for k in [k for k, lk in _SESSION_LOCKS.items() if not lk.locked()][:_SESSION_LOCKS_MAX // 10]:
+                _SESSION_LOCKS.pop(k, None)
+        lock = asyncio.Lock()
+        _SESSION_LOCKS[session_id] = lock
+    return lock
 
 # Replayed-history bounds: cap BOTH turn count and a token budget. The old code
 # capped only turns (20), so a few very long messages still ballooned every LLM
@@ -95,40 +115,43 @@ class SessionService:
         last_products: Optional[list] = None,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        state = await self.get_session(session_id)
+        # Serialize the read-modify-write so concurrent updates for the same
+        # session don't overwrite each other's fields.
+        async with _session_lock(session_id):
+            state = await self.get_session(session_id)
 
-        if conversation_history is not None:
-            state["conversation_history"] = _trim_history(conversation_history)
+            if conversation_history is not None:
+                state["conversation_history"] = _trim_history(conversation_history)
 
-        if cart_snapshot is not None and isinstance(cart_snapshot, dict):
-            state["cart_snapshot"] = cart_snapshot
+            if cart_snapshot is not None and isinstance(cart_snapshot, dict):
+                state["cart_snapshot"] = cart_snapshot
 
-        if customer_email:
-            state["customer_email"] = str(customer_email).strip().lower()
+            if customer_email:
+                state["customer_email"] = str(customer_email).strip().lower()
 
-        if last_products is not None:
-            state["last_products"] = list(last_products)[:12]
+            if last_products is not None:
+                state["last_products"] = list(last_products)[:12]
 
-        if meta is not None and isinstance(meta, dict):
-            current_meta = state.get("meta", {})
-            if not isinstance(current_meta, dict):
-                current_meta = {}
-            state["meta"] = {**current_meta, **meta}
+            if meta is not None and isinstance(meta, dict):
+                current_meta = state.get("meta", {})
+                if not isinstance(current_meta, dict):
+                    current_meta = {}
+                state["meta"] = {**current_meta, **meta}
 
-        state["last_active"] = datetime.now(timezone.utc).isoformat()
+            state["last_active"] = datetime.now(timezone.utc).isoformat()
 
-        key = self._key(session_id)
-        encoded = json.dumps(state)
-        try:
-            if self.redis:
-                await self.redis.set(key, encoded, ex=self.ttl_seconds)
-            else:
-                _evict_memory_store()
-                _MEMORY_STORE[key] = state
-        except Exception as exc:
-            logger.warning("Session write failed: %s", exc)
+            key = self._key(session_id)
+            encoded = json.dumps(state)
+            try:
+                if self.redis:
+                    await self.redis.set(key, encoded, ex=self.ttl_seconds)
+                else:
+                    _evict_memory_store()
+                    _MEMORY_STORE[key] = state
+            except Exception as exc:
+                logger.warning("Session write failed: %s", exc)
 
-        return state
+            return state
 
     async def get_history(self, session_id: str) -> list:
         state = await self.get_session(session_id)

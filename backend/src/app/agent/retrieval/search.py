@@ -22,7 +22,7 @@ from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .normalizer import normalize, NormalizedQuery
-from .cache import l1_get, l1_set, l2_get, l2_set
+from .cache import l1_get, l1_set, l2_get, l2_set, l2_filter_sig
 from .hybrid_search import l3_search
 from .reranker import rerank, SearchResult
 from ...integrations.adapters import ShopifyAdapter, WooAdapter, CustomAdapter
@@ -93,8 +93,9 @@ async def hybrid_search(
         return results
 
     # ── L2: Semantic cache ─────────────────────────────────────────────────────
+    fsig = l2_filter_sig(nq.min_price, nq.max_price, nq.in_stock_only)
     if nq.clean:
-        cached = await l2_get(redis, tenant_id, nq.clean)
+        cached = await l2_get(redis, tenant_id, nq.clean, fsig)
         if cached is not None:
             results = _dicts_to_results(cached)[:limit]
             # Promote to L1 for next exact hit
@@ -152,7 +153,7 @@ async def hybrid_search(
         result_dicts = [r.to_dict() for r in results]
         await l1_set(redis, tenant_id, nq.cache_key, result_dicts)
         if nq.clean:
-            await l2_set(redis, tenant_id, nq.cache_key, nq.clean, result_dicts)
+            await l2_set(redis, tenant_id, nq.cache_key, nq.clean, result_dicts, fsig)
 
     return results
 

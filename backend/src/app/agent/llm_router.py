@@ -173,7 +173,7 @@ async def _call_gemini(
             tool_calls.append({
                 "id": str(uuid.uuid4())[:8],
                 "name": part.function_call.name,
-                "arguments": dict(part.function_call.args),
+                "arguments": dict(part.function_call.args or {}),
             })
 
     return {
@@ -294,12 +294,14 @@ async def _call_gpt4o(messages: list[dict], tools: list[dict]) -> dict:
 # ── Best-available fallback ────────────────────────────────────────────────
 
 async def _best_available(messages: list[dict], tools: list[dict]) -> dict:
+    # Each call is timeout-bounded so a hung provider can't stall the turn
+    # (this runs on the escalation fallback path, which has no outer wait_for).
     if groq_client:
-        return await _call_groq(messages, tools)
+        return await asyncio.wait_for(_call_groq(messages, tools), timeout=15.0)
     if gpt_mini_client:
-        return await _call_gpt_mini(messages, tools)
+        return await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=12.0)
     if gemini_client:
-        return await _call_gemini_brain(messages, tools)
+        return await asyncio.wait_for(_call_gemini_brain(messages, tools), timeout=15.0)
     raise RuntimeError("No LLM clients configured — set GROK_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY")
 
 
@@ -334,10 +336,17 @@ async def route_and_call(
     tool_count = _estimate_tool_count(message_text)
 
     if escalate:
-        # Escalation: try GPT-4o first for maximum accuracy, fall back to Grok
+        # Escalation: try GPT-4o first for maximum accuracy, fall back to Grok.
+        # Bound the call with a timeout and fall back on failure — otherwise a
+        # hung GPT-4o stalls the whole turn (escalation always fires during
+        # checkout/address collection, so this path is hot).
         logger.info("LLM route: escalation [lang=%s]", lang)
         if gpt4o_client:
-            return _validated_response(await _call_gpt4o(messages, tools))
+            try:
+                raw = await asyncio.wait_for(_call_gpt4o(messages, tools), timeout=20.0)
+                return _validated_response(raw)
+            except Exception as e:
+                logger.warning("GPT-4o escalation failed (%s), falling back", e)
         return _validated_response(await _best_available(messages, tools))
 
     # ── Primary: xAI Grok (grok-4.3) ─────────────────────────────────────────

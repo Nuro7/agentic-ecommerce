@@ -209,7 +209,7 @@ def check_output(
         ))
         normalized_retrieved = {_normalize_attr(a) for a in retrieved_attributes}
         invented = {v for v in attr_mentions if _normalize_attr(v) not in normalized_retrieved}
-        if len(invented) >= 3:
+        if len(invented) >= 2:
             msg = f"potentially invented attribute values: {invented}"
             logger.warning("Output validation FAIL — %s", msg)
             if allow_retry:
