@@ -182,7 +182,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"products": rows})
 
         if path == "/products":  # paginated bulk fetch (used by product sync)
-            return self._send(200, {"products": PRODUCTS})
+            page = max(1, int((qs.get("page", ["1"])[0]) or 1))
+            per_page = max(1, int((qs.get("per_page", ["100"])[0]) or 100))
+            start = (page - 1) * per_page
+            return self._send(200, {"products": PRODUCTS[start:start + per_page]})
 
         m = re.fullmatch(r"/products/(\d+)", path)
         if m:

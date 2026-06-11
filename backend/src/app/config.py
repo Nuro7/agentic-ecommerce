@@ -12,7 +12,10 @@ _WEAK_SECRETS = {
 class Settings(BaseSettings):
     app_name: str = "Agentic Commerce"
     version: str = "0.1.0"
-    environment: str = "dev"
+    # Fail-safe default: production. A deployment that forgets to set ENVIRONMENT
+    # must NOT silently fall back to dev (dev disables the SSRF guard in onboarding
+    # and skips the production-secret checks). Local/dev sets ENVIRONMENT=dev in .env.
+    environment: str = "production"
     debug: bool = False
     log_level: str = "INFO"
 
