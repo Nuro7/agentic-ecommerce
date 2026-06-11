@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...config import settings
 from ...core.database import get_db
 from ...core.net import validate_public_http_url, UnsafeUrlError
 from ...core.security import hash_password
@@ -34,6 +35,10 @@ def _validate_store_urls(platform: str, base_url: Optional[str], store_url: Opti
     """Reject tenant-supplied store URLs that resolve to internal addresses (SSRF)."""
     target = base_url if platform == "custom_api" else store_url if platform == "woocommerce" else None
     if not target:
+        return
+    # Dev only: allow localhost / private store URLs so a local test store can be
+    # onboarded. Production still rejects non-public targets (SSRF protection).
+    if settings.environment.lower() in ("dev", "development", "local"):
         return
     try:
         validate_public_http_url(target)

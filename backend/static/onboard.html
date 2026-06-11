@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Get Speako — Add Aria to your store</title>
+  <style>
+    :root {
+      --brand: #6366f1;
+      --brand-dark: #4f46e5;
+      --bg: #0f1117;
+      --card: #181b24;
+      --card-2: #1f2330;
+      --line: #2a2f3d;
+      --text: #e6e8ee;
+      --muted: #9aa1b1;
+      --ok: #22c55e;
+      --err: #ef4444;
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 50% -10%, #1b1f2e 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 40px 16px;
+    }
+    .wrap { max-width: 640px; margin: 0 auto; }
+    .logo {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 700; font-size: 20px; margin-bottom: 6px;
+    }
+    .logo .dot {
+      width: 28px; height: 28px; border-radius: 8px;
+      background: linear-gradient(135deg, var(--brand), #a855f7);
+      display: grid; place-items: center; font-size: 16px;
+    }
+    .sub { color: var(--muted); margin: 0 0 28px; font-size: 15px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 26px;
+    }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 16px 0 6px; font-weight: 600; }
+    label:first-of-type { margin-top: 0; }
+    input, select {
+      width: 100%; padding: 11px 13px; font-size: 14px;
+      background: var(--card-2); border: 1px solid var(--line);
+      color: var(--text); border-radius: 9px; outline: none;
+    }
+    input:focus, select:focus { border-color: var(--brand); }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
+    .row { display: flex; gap: 12px; }
+    .row > div { flex: 1; }
+    .platform-fields { display: none; }
+    .platform-fields.active { display: block; }
+    .btns { display: flex; gap: 12px; margin-top: 24px; }
+    button {
+      flex: 1; padding: 12px 16px; font-size: 14px; font-weight: 600;
+      border-radius: 10px; border: 1px solid var(--line); cursor: pointer;
+      background: var(--card-2); color: var(--text); transition: .15s;
+    }
+    button:hover { border-color: var(--brand); }
+    button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+    button.primary:hover { background: var(--brand-dark); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .msg { margin-top: 16px; padding: 11px 13px; border-radius: 9px; font-size: 13px; display: none; }
+    .msg.show { display: block; }
+    .msg.ok { background: rgba(34,197,94,.12); border: 1px solid rgba(34,197,94,.4); color: #86efac; }
+    .msg.err { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.4); color: #fca5a5; }
+    .success-card { display: none; }
+    .success-card.show { display: block; }
+    .snippet {
+      background: #0c0e14; border: 1px solid var(--line); border-radius: 10px;
+      padding: 14px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 12.5px; color: #c9d1e3; white-space: pre-wrap; word-break: break-all;
+      max-height: 220px; overflow: auto; margin-top: 8px;
+    }
+    .steps { padding-left: 20px; color: var(--muted); font-size: 14px; line-height: 1.7; }
+    .copy-btn { margin-top: 10px; flex: none; padding: 9px 16px; }
+    h2 { margin: 0 0 4px; font-size: 18px; }
+    .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #fff;
+      border-top-color: transparent; border-radius: 50%; animation: s .7s linear infinite; vertical-align: -2px; }
+    @keyframes s { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="logo"><span class="dot">🛍️</span> Speako</div>
+    <p class="sub">Add <strong>Aria</strong>, your AI shopping assistant, to your store in under a minute. No code changes on our side — just connect your store and paste one snippet.</p>
+
+    <!-- ── Signup form ─────────────────────────────────────────── -->
+    <div class="card" id="formCard">
+      <h2>Connect your store</h2>
+      <label>Store name</label>
+      <input id="store_name" placeholder="Acme Goods" />
+
+      <div class="row">
+        <div>
+          <label>Email</label>
+          <input id="email" type="email" placeholder="you@store.com" />
+        </div>
+        <div>
+          <label>Dashboard password</label>
+          <input id="password" type="password" placeholder="••••••••" />
+        </div>
+      </div>
+
+      <label>Platform</label>
+      <select id="platform">
+        <option value="custom_api">Custom platform (your own API)</option>
+        <option value="shopify">Shopify</option>
+        <option value="woocommerce">WooCommerce</option>
+      </select>
+
+      <!-- Custom API -->
+      <div class="platform-fields active" data-platform="custom_api">
+        <label>Your store API base URL</label>
+        <input id="custom_api_base_url" placeholder="https://api.your-store.com" />
+        <div class="hint">Speako calls endpoints like <code>/products/search</code> and <code>/cart/add</code> under this URL.</div>
+        <label>API key (optional)</label>
+        <input id="custom_api_key" placeholder="secret key your API checks on the Bearer header" />
+      </div>
+
+      <!-- Shopify -->
+      <div class="platform-fields" data-platform="shopify">
+        <label>Shopify domain</label>
+        <input id="shopify_domain" placeholder="your-store.myshopify.com" />
+        <label>Storefront API token</label>
+        <input id="shopify_storefront_token" placeholder="shpat_… or storefront token" />
+        <label>Admin API token (optional)</label>
+        <input id="shopify_access_token" placeholder="shpat_…" />
+      </div>
+
+      <!-- WooCommerce -->
+      <div class="platform-fields" data-platform="woocommerce">
+        <label>Store URL</label>
+        <input id="woocommerce_store_url" placeholder="https://your-store.com" />
+        <label>Consumer key</label>
+        <input id="woocommerce_consumer_key" placeholder="ck_…" />
+        <label>Consumer secret</label>
+        <input id="woocommerce_consumer_secret" placeholder="cs_…" />
+      </div>
+
+      <div class="btns">
+        <button id="testBtn">Test connection</button>
+        <button id="submitBtn" class="primary">Create account</button>
+      </div>
+      <div class="msg" id="msg"></div>
+    </div>
+
+    <!-- ── Success ─────────────────────────────────────────────── -->
+    <div class="card success-card" id="successCard">
+      <h2>🎉 You're all set!</h2>
+      <p class="sub" id="successMsg"></p>
+      <label>Paste this snippet into your store, just before <code>&lt;/body&gt;</code>:</label>
+      <div class="snippet" id="snippet"></div>
+      <button class="primary copy-btn" id="copyBtn">Copy snippet</button>
+      <label style="margin-top:22px">Next steps</label>
+      <ol class="steps" id="steps"></ol>
+    </div>
+  </div>
+
+  <script>
+    // The backend that serves THIS page is the same Speako backend we call.
+    const API = window.location.origin + "/api/v1/onboard";
+
+    const $ = (id) => document.getElementById(id);
+    const platformSel = $("platform");
+    const msg = $("msg");
+
+    // Toggle credential fields by platform
+    platformSel.addEventListener("change", () => {
+      document.querySelectorAll(".platform-fields").forEach((el) => {
+        el.classList.toggle("active", el.dataset.platform === platformSel.value);
+      });
+    });
+
+    function showMsg(text, ok) {
+      msg.textContent = text;
+      msg.className = "msg show " + (ok ? "ok" : "err");
+    }
+
+    // Collect only the fields relevant to the chosen platform
+    function collect() {
+      const p = platformSel.value;
+      const base = {
+        store_name: $("store_name").value.trim(),
+        email: $("email").value.trim(),
+        password: $("password").value || null,
+        platform: p,
+      };
+      if (p === "custom_api") {
+        base.custom_api_base_url = $("custom_api_base_url").value.trim();
+        base.custom_api_key = $("custom_api_key").value.trim() || null;
+      } else if (p === "shopify") {
+        base.shopify_domain = $("shopify_domain").value.trim();
+        base.shopify_storefront_token = $("shopify_storefront_token").value.trim();
+        base.shopify_access_token = $("shopify_access_token").value.trim() || null;
+      } else if (p === "woocommerce") {
+        base.woocommerce_store_url = $("woocommerce_store_url").value.trim();
+        base.woocommerce_consumer_key = $("woocommerce_consumer_key").value.trim();
+        base.woocommerce_consumer_secret = $("woocommerce_consumer_secret").value.trim();
+      }
+      return base;
+    }
+
+    function busy(btn, on, label) {
+      btn.disabled = on;
+      btn.innerHTML = on ? '<span class="spin"></span> ' + label : btn.dataset.label;
+    }
+    [$("testBtn"), $("submitBtn")].forEach((b) => (b.dataset.label = b.textContent));
+
+    // ── Test connection ──────────────────────────────────────────
+    $("testBtn").addEventListener("click", async () => {
+      const d = collect();
+      busy($("testBtn"), true, "Testing…");
+      try {
+        const r = await fetch(API + "/test-connection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(d),
+        });
+        const j = await r.json();
+        showMsg(j.message || (j.ok ? "Connection OK" : "Connection failed"), j.ok);
+      } catch (e) {
+        showMsg("Could not reach Speako: " + e.message, false);
+      } finally {
+        busy($("testBtn"), false);
+      }
+    });
+
+    // ── Create account ───────────────────────────────────────────
+    $("submitBtn").addEventListener("click", async () => {
+      const d = collect();
+      if (!d.store_name || !d.email) {
+        showMsg("Store name and email are required.", false);
+        return;
+      }
+      busy($("submitBtn"), true, "Creating…");
+      try {
+        const r = await fetch(API + "/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(d),
+        });
+        const j = await r.json();
+        if (!r.ok) {
+          // FastAPI validation errors come back as {detail: ...}
+          const detail = Array.isArray(j.detail)
+            ? j.detail.map((x) => x.msg).join("; ")
+            : j.detail || "Signup failed";
+          showMsg(detail, false);
+          return;
+        }
+        // Success — swap to success card
+        $("formCard").style.display = "none";
+        $("successMsg").textContent = j.message;
+        $("snippet").textContent = j.widget_snippet;
+        const steps = $("steps");
+        steps.innerHTML = "";
+        (j.next_steps || []).forEach((s) => {
+          const li = document.createElement("li");
+          li.textContent = s.replace(/^\d+[a-z]?\.\s*/, ""); // strip leading "1." numbering
+          steps.appendChild(li);
+        });
+        $("successCard").classList.add("show");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch (e) {
+        showMsg("Could not reach Speako: " + e.message, false);
+      } finally {
+        busy($("submitBtn"), false);
+      }
+    });
+
+    // ── Copy snippet ─────────────────────────────────────────────
+    $("copyBtn").addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText($("snippet").textContent);
+        $("copyBtn").textContent = "Copied ✓";
+        setTimeout(() => ($("copyBtn").textContent = "Copy snippet"), 1800);
+      } catch (e) {
+        showMsg("Copy failed — select the snippet manually.", false);
+      }
+    });
+  </script>
+</body>
+</html>
