@@ -23,7 +23,7 @@ from ...agent.gemini_client import (
 from ...agent.voice.pipelines import PipelineRouter
 from ...core.database import AsyncSessionLocal
 from ...core.ratelimit import check_rate_limit
-from ...modules.billing.dependencies import enforce_conversation_quota
+from ...modules.billing.dependencies import enforce_conversation_quota, is_voice_allowed
 from ...modules.billing.service import BillingService
 from ...modules.tenants.dependencies import resolve_tenant_store_client_for_ws
 from ...modules.tenants.repository import TenantRepository
@@ -131,13 +131,20 @@ async def voice_stream(websocket: WebSocket):
                 app_state=websocket.app.state,
                 db=db,
             )
+            # Default to voice; tenants whose plan lacks voice fall back to a
+            # text-only session instead of being rejected — otherwise a free/Starter
+            # merchant's widget (which only talks to this WS) can't chat at all.
+            voice_enabled = True
             if resolved_tenant_id:
+                voice_enabled = await is_voice_allowed(resolved_tenant_id, db)
                 try:
                     await enforce_conversation_quota(
-                        resolved_tenant_id, db, is_voice=True,
+                        resolved_tenant_id, db, is_voice=voice_enabled,
                         redis=getattr(websocket.app.state, "redis", None),
                     )
                 except HTTPException as quota_err:
+                    # Real quota exhaustion (not the voice gate, which is bypassed
+                    # for text mode) — surface and close.
                     await websocket.send_text(json.dumps({
                         "type": "pipeline_error",
                         "message": quota_err.detail,
@@ -145,22 +152,24 @@ async def voice_stream(websocket: WebSocket):
                     }))
                     await websocket.close(code=4029)
                     logger.info(
-                        "Voice WebSocket closed — quota/voice-gate: tenant=%s session=%s",
+                        "Voice WebSocket closed — quota exhausted: tenant=%s session=%s",
                         resolved_tenant_id, session_id,
                     )
                     return
                 try:
-                    # Voice sessions cost 3 credits (vs 1 for text chat).
-                    await BillingService(db).record_usage(resolved_tenant_id, "credits", 3)
+                    # Voice sessions cost 3 credits; text-only sessions cost 1.
+                    await BillingService(db).record_usage(
+                        resolved_tenant_id, "credits", 3 if voice_enabled else 1)
                     await db.commit()
                 except Exception as exc:
                     logger.warning(
-                        "Failed to record voice session credits: tenant=%s: %s",
+                        "Failed to record session credits: tenant=%s: %s",
                         resolved_tenant_id, exc,
                     )
 
         pipeline_router = _get_pipeline_router(websocket.app.state)
-        await pipeline_router.run(websocket, session_id, store_client=store_client)
+        await pipeline_router.run(
+            websocket, session_id, store_client=store_client, voice_enabled=voice_enabled)
 
     except WebSocketDisconnect:
         logger.info("Client disconnected: session=%s", session_id)

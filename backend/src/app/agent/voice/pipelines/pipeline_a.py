@@ -229,12 +229,22 @@ class PipelineA:
                                         f"First audio chunk: {len(data['bytes'])}B "
                                         f"session={session_id}"
                                     )
-                                await gemini_session.send_realtime_input(
-                                    audio=types.Blob(
-                                        mime_type="audio/pcm;rate=16000",
-                                        data=data["bytes"],
+                                # Per-chunk guard: a transient send failure (e.g. an
+                                # audio frame arriving before the Live session is
+                                # fully ready) must drop that frame, NOT tear down
+                                # the whole session.
+                                try:
+                                    await gemini_session.send_realtime_input(
+                                        audio=types.Blob(
+                                            mime_type="audio/pcm;rate=16000",
+                                            data=data["bytes"],
+                                        )
                                     )
-                                )
+                                except Exception as send_exc:
+                                    logger.debug(
+                                        "Dropped audio chunk (send failed) session=%s: %s",
+                                        session_id, send_exc,
+                                    )
 
                             # Text: typed input or widget text message
                             elif "text" in data and data["text"]:

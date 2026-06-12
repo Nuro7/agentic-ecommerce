@@ -63,12 +63,29 @@ class PipelineRouter:
 
     # ── Routing ───────────────────────────────────────────────────────────────
 
-    async def run(self, websocket: Any, session_id: str, store_client: Any = None) -> None:
+    async def run(self, websocket: Any, session_id: str, store_client: Any = None,
+                  voice_enabled: bool = True) -> None:
         """
         Route this session through the best available pipeline.
         Tries A → B → C in order, based on circuit breaker state.
         store_client is the per-tenant client resolved by the WebSocket handler.
+        voice_enabled=False (plan without voice) → skip the audio pipelines (A/B)
+        and serve text-only via Pipeline C, so the assistant still works.
         """
+        if not voice_enabled:
+            logger.info("Text-only session (plan without voice): session=%s", session_id)
+            try:
+                await self._pipeline_c.run(websocket, session_id, store_client)
+            except Exception as exc:
+                logger.error("Pipeline C (text-only) failed session=%s: %s: %s",
+                             session_id, type(exc).__name__, exc)
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "error", "message": "Service unavailable. Please refresh."}))
+                    await websocket.close(code=1011)
+                except Exception:
+                    pass
+            return
 
         # ── Pipeline A (Gemini Live) ──────────────────────────────────────────
         if self._breaker_a.is_available():

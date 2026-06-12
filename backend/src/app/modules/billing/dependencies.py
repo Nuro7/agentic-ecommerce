@@ -47,6 +47,28 @@ async def _reserve_credits(
         return usage + cost <= limit
 
 
+async def is_voice_allowed(tenant_id: str, db: AsyncSession) -> bool:
+    """Return True if the tenant's plan enables voice (features.allow_voice).
+
+    Non-raising — used by the WS handler to decide voice vs text-only mode instead
+    of rejecting the whole connection. Free tier (no subscription) → text only.
+    """
+    service = BillingService(db)
+    try:
+        sub = await service.get_subscription(tenant_id)
+    except NotFoundError:
+        return False
+    if sub.status not in ("active", "trialing"):
+        return False
+    plan = await service.get_plan(sub.plan_id)
+    if plan is None:
+        return True  # plan row missing — don't downgrade a paying customer
+    try:
+        return bool(json.loads(plan.features or "{}").get("allow_voice", False))
+    except Exception:
+        return False
+
+
 async def enforce_conversation_quota(
     tenant_id: str,
     db: AsyncSession,
