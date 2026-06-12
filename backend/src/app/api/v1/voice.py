@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
@@ -34,6 +35,14 @@ router = APIRouter(tags=["voice"])
 # Module-level router singleton — initialised on first connection.
 # store_client is NOT stored here — it's passed per run() call.
 _pipeline_router: PipelineRouter | None = None
+
+# Voice (Gemini Live) concurrency cap. The provider's live-audio path saturates
+# well before the box does — load testing showed audio holds to ~50 concurrent,
+# degrades by 100, and collapses by 200 (customers got text but NO speech).
+# Past this cap we serve TEXT instead of silently dropping the audio. Tune per
+# the provider's real concurrent-session quota.
+_VOICE_MAX_CONCURRENT = int(os.getenv("VOICE_MAX_CONCURRENT", "40"))
+_voice_active = 0
 
 
 def _get_pipeline_router(app_state) -> PipelineRouter:
@@ -122,6 +131,8 @@ async def voice_stream(websocket: WebSocket):
     await websocket.accept()
     logger.info("Voice WebSocket accepted: session=%s shop=%s", session_id, shop or tenant_id or "global")
 
+    global _voice_active
+    voice_slot = False
     try:
         # Resolve per-tenant store client + check billing quota.
         async with AsyncSessionLocal() as db:
@@ -137,6 +148,29 @@ async def voice_stream(websocket: WebSocket):
             voice_enabled = True
             if resolved_tenant_id:
                 voice_enabled = await is_voice_allowed(resolved_tenant_id, db)
+
+            # Voice concurrency cap — past the cap, serve TEXT (with a heads-up)
+            # instead of letting the audio silently fail under provider limits.
+            if voice_enabled:
+                if _voice_active < _VOICE_MAX_CONCURRENT:
+                    _voice_active += 1
+                    voice_slot = True
+                else:
+                    voice_enabled = False
+                    logger.warning(
+                        "Voice at capacity (%d active) — serving text: session=%s",
+                        _VOICE_MAX_CONCURRENT, session_id,
+                    )
+                    try:
+                        await websocket.send_text(json.dumps({
+                            "type": "pipeline_fallback",
+                            "from_pipeline": "A", "to_pipeline": "C",
+                            "message": "Voice is busy right now — I'll reply by text.",
+                        }))
+                    except Exception:
+                        pass
+
+            if resolved_tenant_id:
                 try:
                     await enforce_conversation_quota(
                         resolved_tenant_id, db, is_voice=voice_enabled,
@@ -183,3 +217,6 @@ async def voice_stream(websocket: WebSocket):
             await websocket.close(code=1011)
         except Exception:
             pass
+    finally:
+        if voice_slot:
+            _voice_active -= 1
