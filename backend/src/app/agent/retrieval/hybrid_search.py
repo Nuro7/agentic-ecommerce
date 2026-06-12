@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .normalizer import NormalizedQuery
 from .cache import embed_text
+from ...core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +101,9 @@ async def bm25_search(
             WHERE
                 tenant_id = :tenant_id
                 AND search_vector @@ plainto_tsquery('english', :query)
-                AND (:min_price IS NULL OR CAST(price AS FLOAT) >= :min_price)
-                AND (:max_price IS NULL OR CAST(price AS FLOAT) <= :max_price)
-                AND (:in_stock  IS NULL OR in_stock = :in_stock)
+                AND (CAST(:min_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) >= CAST(:min_price AS FLOAT))
+                AND (CAST(:max_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) <= CAST(:max_price AS FLOAT))
+                AND (CAST(:in_stock AS BOOLEAN) IS NULL OR in_stock = CAST(:in_stock AS BOOLEAN))
             ORDER BY rank DESC
             LIMIT :limit
         """)
@@ -141,6 +142,12 @@ async def bm25_search(
 
     except Exception as exc:
         logger.warning("BM25 tsvector search failed (%s), falling back to ILIKE", exc)
+        # The failed query aborts the transaction; clear it so the ILIKE fallback
+        # can actually run (otherwise it hits InFailedSQLTransactionError → []).
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
     # ILIKE fallback — no tsvector matches or extension missing
     return await _ilike_search(db, tenant_id, nq)
@@ -163,9 +170,9 @@ async def _ilike_search(
             WHERE
                 tenant_id = :tenant_id
                 AND (name ILIKE :pattern OR description ILIKE :pattern)
-                AND (:min_price IS NULL OR CAST(price AS FLOAT) >= :min_price)
-                AND (:max_price IS NULL OR CAST(price AS FLOAT) <= :max_price)
-                AND (:in_stock  IS NULL OR in_stock = :in_stock)
+                AND (CAST(:min_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) >= CAST(:min_price AS FLOAT))
+                AND (CAST(:max_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) <= CAST(:max_price AS FLOAT))
+                AND (CAST(:in_stock AS BOOLEAN) IS NULL OR in_stock = CAST(:in_stock AS BOOLEAN))
             ORDER BY name ASC
             LIMIT :limit
         """)
@@ -218,9 +225,9 @@ async def _browse_all(
             FROM product_cache
             WHERE
                 tenant_id = :tenant_id
-                AND (:in_stock IS NULL OR in_stock = :in_stock)
-                AND (:min_price IS NULL OR CAST(price AS FLOAT) >= :min_price)
-                AND (:max_price IS NULL OR CAST(price AS FLOAT) <= :max_price)
+                AND (CAST(:in_stock AS BOOLEAN) IS NULL OR in_stock = CAST(:in_stock AS BOOLEAN))
+                AND (CAST(:min_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) >= CAST(:min_price AS FLOAT))
+                AND (CAST(:max_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) <= CAST(:max_price AS FLOAT))
             ORDER BY cached_at DESC
             LIMIT :limit
         """)
@@ -294,9 +301,9 @@ async def vector_search(
             WHERE
                 tenant_id = :tenant_id
                 AND embedding IS NOT NULL
-                AND (:min_price IS NULL OR CAST(price AS FLOAT) >= :min_price)
-                AND (:max_price IS NULL OR CAST(price AS FLOAT) <= :max_price)
-                AND (:in_stock  IS NULL OR in_stock = :in_stock)
+                AND (CAST(:min_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) >= CAST(:min_price AS FLOAT))
+                AND (CAST(:max_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) <= CAST(:max_price AS FLOAT))
+                AND (CAST(:in_stock AS BOOLEAN) IS NULL OR in_stock = CAST(:in_stock AS BOOLEAN))
             ORDER BY embedding <=> CAST(:embedding AS vector) ASC
             LIMIT :limit
         """)
@@ -347,10 +354,26 @@ async def l3_search(
     tenant_id: str,
     nq: NormalizedQuery,
 ) -> tuple[list[RawCandidate], list[RawCandidate]]:
-    """Run BM25 + vector search concurrently. Returns (bm25_results, vec_results)."""
+    """Run BM25 + vector search concurrently. Returns (bm25_results, vec_results).
+
+    The two arms MUST use separate DB connections: a single AsyncSession/asyncpg
+    connection cannot run two queries at once ("operation in progress" — aborts the
+    transaction and kills the cached-search arm). The vector arm gets its own
+    session; one arm failing no longer kills the other.
+    """
+    async def _vector_isolated():
+        async with AsyncSessionLocal() as db2:
+            return await vector_search(db2, tenant_id, nq)
+
     bm25_results, vec_results = await asyncio.gather(
         bm25_search(db, tenant_id, nq),
-        vector_search(db, tenant_id, nq),
-        return_exceptions=False,
+        _vector_isolated(),
+        return_exceptions=True,
     )
+    if isinstance(bm25_results, Exception):
+        logger.warning("BM25 arm failed: %s", bm25_results)
+        bm25_results = []
+    if isinstance(vec_results, Exception):
+        logger.warning("Vector arm failed: %s", vec_results)
+        vec_results = []
     return bm25_results, vec_results
