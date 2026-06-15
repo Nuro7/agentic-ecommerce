@@ -34,42 +34,59 @@ from urllib.parse import urlparse, parse_qs
 PORT = int(os.getenv("PORT", "9000"))
 API_KEY = os.getenv("API_KEY", "test-key-123")
 
-# ── Sample catalog ───────────────────────────────────────────────────────────
-PRODUCTS = [
-    {"id": 101, "name": "Blue Cotton T-Shirt", "price": "19.99", "regular_price": "24.99",
-     "sale_price": "19.99", "on_sale": True, "in_stock": True, "stock_quantity": 42,
-     "image_url": "https://picsum.photos/seed/101/400", "permalink": "https://store.test/p/101",
-     "description": "Soft 100% cotton tee, unisex fit.", "short_description": "Cotton tee",
-     "category_slug": "shirts", "tags": "summer,cotton,unisex"},
-    {"id": 102, "name": "Black Hoodie", "price": "44.00", "regular_price": "44.00",
-     "sale_price": "", "on_sale": False, "in_stock": True, "stock_quantity": 18,
-     "image_url": "https://picsum.photos/seed/102/400", "permalink": "https://store.test/p/102",
-     "description": "Fleece-lined pullover hoodie with kangaroo pocket.", "short_description": "Warm hoodie",
-     "category_slug": "hoodies", "tags": "winter,fleece"},
-    {"id": 103, "name": "Running Shoes", "price": "79.95", "regular_price": "99.95",
-     "sale_price": "79.95", "on_sale": True, "in_stock": True, "stock_quantity": 7,
-     "image_url": "https://picsum.photos/seed/103/400", "permalink": "https://store.test/p/103",
-     "description": "Lightweight breathable runners with cushioned sole.", "short_description": "Runners",
-     "category_slug": "shoes", "tags": "sport,running"},
-    {"id": 104, "name": "Leather Wallet", "price": "29.50", "regular_price": "29.50",
-     "sale_price": "", "on_sale": False, "in_stock": False, "stock_quantity": 0,
-     "image_url": "https://picsum.photos/seed/104/400", "permalink": "https://store.test/p/104",
-     "description": "Genuine leather bifold wallet, 6 card slots.", "short_description": "Wallet",
-     "category_slug": "accessories", "tags": "leather"},
-    {"id": 105, "name": "Steel Water Bottle 1L", "price": "15.00", "regular_price": "15.00",
-     "sale_price": "", "on_sale": False, "in_stock": True, "stock_quantity": 120,
-     "image_url": "https://picsum.photos/seed/105/400", "permalink": "https://store.test/p/105",
-     "description": "Insulated stainless steel bottle, keeps drinks cold 24h.", "short_description": "Bottle",
-     "category_slug": "accessories", "tags": "eco,steel"},
-]
+# ── Sample catalogs ──────────────────────────────────────────────────────────
+# Each variant has DISTINCT product ids and names so multi-tenant isolation is
+# provable: a tenant backed by "beta" must never surface an "alpha" product.
+# Select with env STORE_VARIANT=alpha|beta|gamma (default alpha).
+
+def _p(pid, name, price, cat, desc, tags, stock=10, regular=None, sale="", on_sale=False):
+    return {
+        "id": pid, "name": name, "price": str(price),
+        "regular_price": str(regular if regular is not None else price),
+        "sale_price": str(sale), "on_sale": on_sale,
+        "in_stock": stock > 0, "stock_quantity": stock,
+        "image_url": f"https://picsum.photos/seed/{pid}/400",
+        "permalink": f"https://store.test/p/{pid}",
+        "description": desc, "short_description": desc[:40],
+        "category_slug": cat, "tags": tags,
+    }
+
+
+_CATALOGS = {
+    # Alpha — apparel (ids 101-105)
+    "alpha": [
+        _p(101, "Blue Cotton T-Shirt", "19.99", "shirts", "Soft 100% cotton tee, unisex fit.", "summer,cotton", 42, "24.99", "19.99", True),
+        _p(102, "Black Hoodie", "44.00", "hoodies", "Fleece-lined pullover hoodie.", "winter,fleece", 18),
+        _p(103, "Running Shoes", "79.95", "shoes", "Lightweight breathable runners.", "sport,running", 7, "99.95", "79.95", True),
+        _p(104, "Leather Wallet", "29.50", "accessories", "Genuine leather bifold wallet.", "leather", 0),
+        _p(105, "Denim Jacket", "59.00", "jackets", "Classic blue denim jacket.", "denim,casual", 12),
+    ],
+    # Beta — electronics (ids 201-205)
+    "beta": [
+        _p(201, "Wireless Earbuds Pro", "89.00", "audio", "Noise-cancelling true-wireless earbuds.", "audio,bluetooth", 30),
+        _p(202, "Mechanical Keyboard", "120.00", "computers", "Hot-swappable RGB mechanical keyboard.", "keyboard,rgb", 15),
+        _p(203, "4K Webcam", "65.00", "computers", "1080p/4K USB webcam with mic.", "webcam,video", 8, "79.00", "65.00", True),
+        _p(204, "USB-C Charger 65W", "34.99", "accessories", "GaN fast charger, 3 ports.", "charger,usb-c", 50),
+        _p(205, "Smart Watch", "149.00", "wearables", "Fitness smartwatch, AMOLED.", "watch,fitness", 0),
+    ],
+    # Gamma — home goods (ids 301-304)
+    "gamma": [
+        _p(301, "Ceramic Dinner Set", "75.00", "kitchen", "16-piece ceramic dinnerware set.", "kitchen,ceramic", 20),
+        _p(302, "Memory Foam Pillow", "39.99", "bedroom", "Ergonomic memory-foam pillow.", "bedroom,sleep", 40),
+        _p(303, "Cast Iron Skillet", "49.00", "kitchen", "Pre-seasoned 12-inch skillet.", "kitchen,cookware", 14, "59.00", "49.00", True),
+        _p(304, "Scented Candle Trio", "24.00", "decor", "Set of 3 soy scented candles.", "decor,candle", 0),
+    ],
+}
+
+STORE_VARIANT = os.getenv("STORE_VARIANT", "alpha").lower()
+PRODUCTS = _CATALOGS.get(STORE_VARIANT, _CATALOGS["alpha"])
 BY_ID = {p["id"]: p for p in PRODUCTS}
 
-CATEGORIES = [
-    {"id": "shirts", "name": "Shirts", "slug": "shirts", "count": 1},
-    {"id": "hoodies", "name": "Hoodies", "slug": "hoodies", "count": 1},
-    {"id": "shoes", "name": "Shoes", "slug": "shoes", "count": 1},
-    {"id": "accessories", "name": "Accessories", "slug": "accessories", "count": 2},
-]
+# Categories derived from the active catalog.
+_cat_counts: dict[str, int] = {}
+for _p_ in PRODUCTS:
+    _cat_counts[_p_["category_slug"]] = _cat_counts.get(_p_["category_slug"], 0) + 1
+CATEGORIES = [{"id": c, "name": c.title(), "slug": c, "count": n} for c, n in _cat_counts.items()]
 
 # session_id -> { product_id: {"product_id","name","price","quantity"} }
 CARTS: dict[str, dict] = {}
@@ -250,7 +267,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"Speako test store listening on http://0.0.0.0:{PORT}")
+    print(f"Speako test store [{STORE_VARIANT}] listening on http://0.0.0.0:{PORT}")
     print(f"API key: {API_KEY}  (send as 'Authorization: Bearer {API_KEY}')")
-    print(f"{len(PRODUCTS)} sample products loaded. Ctrl+C to stop.")
+    print(f"{len(PRODUCTS)} products loaded (variant={STORE_VARIANT}). Ctrl+C to stop.")
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
