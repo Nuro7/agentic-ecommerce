@@ -161,6 +161,59 @@ class PipelineA:
             )
         return self._orchestrators[session_id]
 
+    async def _handle_text_turn(
+        self,
+        websocket: Any,
+        session_id: str,
+        text: str,
+        language: str,
+        cart_context: Any,
+        store_client: Any,
+    ) -> None:
+        """Typed text → Brain DIRECTLY (deterministic), bypassing Gemini Live.
+
+        Gemini frequently answers typed product questions conversationally instead
+        of calling ask_brain, so product search never runs. Routing typed text
+        straight to the Brain (like Pipeline B) guarantees real search/cart results.
+        The voice/audio path is unchanged — it still flows through Gemini below.
+        """
+        orchestrator = self._get_orchestrator(session_id, store_client)
+        try:
+            result = await orchestrator.run(
+                session_id=session_id,
+                user_message=text,
+                language=language,
+                cart_context=cart_context,
+            )
+            response_text = result.get("response_text") or result.get("text") or ""
+            ui_actions = result.get("ui_actions") or result.get("actions") or []
+            suggestions = result.get("suggested_replies") or []
+        except Exception as e:
+            logger.error("Brain error (text) session=%s: %s", session_id, e, exc_info=True)
+            response_text = "Sorry, I had trouble with that. Could you try again?"
+            ui_actions, suggestions = [], []
+
+        for action in ui_actions:
+            if action and action.get("type") not in (None, "noop"):
+                try:
+                    await websocket.send_text(json.dumps({"type": "ui_action", "action": action}))
+                except Exception:
+                    pass
+        if suggestions:
+            try:
+                await websocket.send_text(json.dumps({"type": "suggestions", "items": suggestions}))
+            except Exception:
+                pass
+        if response_text:
+            try:
+                await websocket.send_text(json.dumps({"type": "transcript", "text": response_text}))
+            except Exception:
+                pass
+        try:
+            await websocket.send_text(json.dumps({"type": "turn_complete"}))
+        except Exception:
+            pass
+
     async def run(self, websocket: Any, session_id: str, store_client: Any) -> None:
         """
         Run Pipeline A for one WebSocket session.
@@ -251,15 +304,19 @@ class PipelineA:
                                         session_id, send_exc,
                                     )
 
-                            # Text: typed input or widget text message
+                            # Text: typed input → Brain directly (reliable product
+                            # search). NOT forwarded to Gemini, which flakily chats
+                            # instead of calling ask_brain. Voice/audio is untouched.
                             elif "text" in data and data["text"]:
                                 try:
                                     ctrl = json.loads(data["text"])
                                     if ctrl.get("type") == "text_input" and ctrl.get("text"):
                                         if ctrl.get("cart_context") is not None:
                                             session_cart["value"] = ctrl.get("cart_context")
-                                        await gemini_session.send_realtime_input(
-                                            text=ctrl["text"]
+                                        await self._handle_text_turn(
+                                            websocket, session_id, ctrl["text"],
+                                            ctrl.get("language", "en"),
+                                            session_cart["value"], store_client,
                                         )
                                 except (json.JSONDecodeError, KeyError):
                                     pass
