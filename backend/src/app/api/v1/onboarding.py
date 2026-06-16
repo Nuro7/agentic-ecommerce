@@ -91,13 +91,15 @@ class OnboardRequest(BaseModel):
     def validate_credentials(self) -> None:
         """Raise ValueError if required credentials for the chosen platform are missing."""
         if self.platform == "shopify":
-            missing = [
-                f for f in ["shopify_domain", "shopify_storefront_token"]
-                if not getattr(self, f)
-            ]
-            if missing:
+            # Storefront token is no longer mandatory: OAuth install auto-provisions
+            # it, and the Admin-API fallback works with just an Admin token. Require
+            # the domain + AT LEAST ONE token for manual entry.
+            if not self.shopify_domain:
+                raise ValueError("Shopify setup requires: shopify_domain")
+            if not (self.shopify_storefront_token or self.shopify_access_token):
                 raise ValueError(
-                    f"Shopify setup requires: {', '.join(missing)}"
+                    "Shopify setup requires a Storefront token or an Admin token "
+                    "(or just install via OAuth — it provisions both automatically)."
                 )
         elif self.platform == "woocommerce":
             missing = [

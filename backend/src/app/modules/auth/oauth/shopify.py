@@ -40,7 +40,16 @@ from ....config import settings as _settings
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-SHOPIFY_SCOPES = "read_products,write_script_tags,read_script_tags,read_orders,read_customers"
+# Admin scopes + unauthenticated (Storefront) scopes. The unauthenticated_* scopes
+# let us mint a working Storefront access token via storefrontAccessTokenCreate after
+# install, so merchants never have to create one manually. NOTE: these same scopes
+# must also be enabled in the Shopify Partner app configuration (one-time, per app).
+SHOPIFY_SCOPES = (
+    "read_products,write_script_tags,read_script_tags,read_orders,read_customers,"
+    "unauthenticated_read_product_listings,unauthenticated_read_product_inventory,"
+    "unauthenticated_read_product_tags,unauthenticated_read_checkouts,"
+    "unauthenticated_write_checkouts"
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -96,6 +105,39 @@ async def _register_script_tag(shop_domain: str, access_token: str, loader_url: 
         raise RuntimeError(f"Shopify rejected script tag: {resp.status_code} {resp.text[:300]}")
 
     return resp.json().get("script_tag", {})
+
+
+async def _create_storefront_token(shop_domain: str, admin_token: str) -> str:
+    """Mint a Storefront API access token via the Admin API, using the Admin token we
+    just got from OAuth. This is what lets merchants install with ONE click and never
+    create/paste a Storefront token themselves. Returns "" on failure (the Admin-API
+    product fallback still keeps things working)."""
+    api_version = _settings.shopify_api_version or "2024-01"
+    url = f"https://{shop_domain}/admin/api/{api_version}/graphql.json"
+    mutation = (
+        'mutation { storefrontAccessTokenCreate(input: {title: "Speako"}) '
+        '{ storefrontAccessToken { accessToken } userErrors { field message } } }'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                url,
+                json={"query": mutation},
+                headers=_shopify_admin_headers(admin_token),
+            )
+        resp.raise_for_status()
+        body = resp.json()
+        node = ((body.get("data") or {}).get("storefrontAccessTokenCreate") or {})
+        errors = node.get("userErrors") or body.get("errors")
+        if errors:
+            logger.warning("storefrontAccessTokenCreate errors for %s: %s", shop_domain, errors)
+        token = ((node.get("storefrontAccessToken") or {}).get("accessToken") or "")
+        if token:
+            logger.info("Storefront token provisioned for %s", shop_domain)
+        return token
+    except Exception as exc:
+        logger.warning("Failed to provision Storefront token for %s: %s", shop_domain, exc)
+        return ""
 
 
 # ── OAuth Install ─────────────────────────────────────────────────────────────
@@ -184,6 +226,10 @@ async def shopify_callback(
     scope = token_data.get("scope", "")
     logger.info("OAuth complete for %s — scopes: %s", shop, scope)
 
+    # Auto-provision a Storefront token so the merchant never has to create one.
+    # On re-install this mints a fresh token (handles revoked/old-app tokens).
+    storefront_token = await _create_storefront_token(shop, access_token)
+
     # Save tenant to DB
     try:
         from ....core.database import AsyncSessionLocal
@@ -199,6 +245,9 @@ async def shopify_callback(
                 tenant.shopify_scope = scope
                 tenant.shopify_installed_at = datetime.now(timezone.utc)
                 tenant.is_active = True
+                # Only overwrite when we successfully minted a new one.
+                if storefront_token:
+                    tenant.shopify_storefront_token = storefront_token
             else:
                 tenant = Tenant(
                     id=str(uuid.uuid4()),
@@ -206,13 +255,14 @@ async def shopify_callback(
                     email=f"owner@{shop}",
                     shopify_domain=shop,
                     shopify_access_token=access_token,
+                    shopify_storefront_token=storefront_token or None,
                     shopify_scope=scope,
                     shopify_installed_at=datetime.now(timezone.utc),
                 )
                 db.add(tenant)
 
             await db.commit()
-            logger.info("Tenant saved for %s", shop)
+            logger.info("Tenant saved for %s (storefront_token=%s)", shop, "yes" if storefront_token else "no")
     except Exception as exc:
         logger.error("Failed to save tenant for %s: %s", shop, exc)
 
