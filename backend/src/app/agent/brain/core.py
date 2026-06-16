@@ -114,6 +114,30 @@ def _is_generic_browse(message: str) -> bool:
     return all(t in _GENERIC_BROWSE_TOKENS for t in content)
 
 
+_AFFIRMATIVE_TOKENS = frozenset({
+    "yes", "yeah", "yep", "yup", "ya", "sure", "ok", "okay", "okey", "alright",
+    "fine", "correct", "right", "please", "do", "go", "continue", "proceed",
+    "definitely", "absolutely", "pukka", "haan", "ha", "sari", "seri", "aama",
+    "aamam", "avunu", "sheri", "venam", "no", "nope", "nah",
+})
+
+
+def _is_affirmative_followup(message: str, history: Any) -> bool:
+    """True when `message` is a bare affirmative/negative AND the assistant's last
+    turn ended with a question/offer — i.e. a continuation, not cold-start chitchat."""
+    tokens = [t for t in re.findall(r"[a-z]+", message.lower()) if t]
+    if not tokens or len(tokens) > 4:
+        return False
+    if not all(t in _AFFIRMATIVE_TOKENS for t in tokens):
+        return False
+    if not isinstance(history, list):
+        return False
+    for turn in reversed(history):
+        if isinstance(turn, dict) and str(turn.get("role")) == "assistant":
+            return "?" in str(turn.get("content", ""))
+    return False
+
+
 def _evict_catalog_cache() -> None:
     """Drop the oldest entries when the cache exceeds its bound."""
     if len(_catalog_cache) < _CATALOG_MAX_ENTRIES:
@@ -148,7 +172,7 @@ async def _get_store_catalog(store_client: Any) -> str:
         # wrong product. It must call search_products to learn any name. We only
         # surface a count + a sale signal — never a name.
         try:
-            sample = await store_client.search_products(query="", in_stock_only=True, limit=10)
+            sample = await store_client.search_products(query="", in_stock_only=False, limit=10)
             if sample:
                 has_sale = any(
                     isinstance(p, dict)
@@ -326,7 +350,14 @@ async def ask_brain(
         result = off_topic_response(lang)
 
     elif intent_result.intent == CHITCHAT and intent_result.confidence >= 0.75:
-        result = chitchat_response(lang, session_id)
+        # A bare "yes/ok/sure" right after the assistant ASKED a question/offer is a
+        # continuation, not cold-start chitchat. Don't short-circuit to the canned
+        # greeting — fall through so the LLM (which gets the history) can act on the
+        # offer ("Want me to search the home page?" → "yes" → it searches).
+        if _is_affirmative_followup(cleaned_message, history):
+            pass  # result stays None → LLM path handles it with conversation history
+        else:
+            result = chitchat_response(lang, session_id)
 
     elif (
         intent_result.intent in (STORE_INFO, CART_ACTION)

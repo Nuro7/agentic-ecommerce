@@ -162,6 +162,32 @@ class ShopifyClient(BaseStoreClient):
         resp.raise_for_status()
         return resp.json()
 
+    async def _admin_graphql(self, query: str, variables: Optional[Dict] = None) -> Dict[str, Any]:
+        """Execute an Admin GraphQL query (sees ALL products, unlike the Storefront
+        API which needs products published to its sales channel + its own token)."""
+        if not self.admin_token:
+            raise RuntimeError("SHOPIFY_ADMIN_TOKEN is required for admin GraphQL")
+        url = f"{self._admin_base}/graphql.json"
+        payload: Dict[str, Any] = {"query": query}
+        if variables:
+            payload["variables"] = variables
+        resp = await request_with_retries(
+            lambda: self._http.post(
+                url,
+                json=payload,
+                headers={
+                    "X-Shopify-Access-Token": self.admin_token,
+                    "Content-Type": "application/json",
+                },
+            ),
+            label="shopify-admin-gql",
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("errors"):
+            raise RuntimeError(f"Shopify Admin GraphQL error: {body['errors']}")
+        return body.get("data", {})
+
     # ── Redis cache helpers ────────────────────────────────────────────────────
 
     async def _cache_get(self, key: str) -> Optional[Any]:
@@ -262,6 +288,114 @@ class ShopifyClient(BaseStoreClient):
             "on_sale": on_sale,
         }
 
+    def _normalize_admin_gql_node(self, node: Dict[str, Any]) -> Dict[str, Any]:
+        """Map an Admin GraphQL product node to the same shape as
+        _normalize_product_node (so downstream consumers are identical)."""
+        pr = (node.get("priceRangeV2") or {}).get("minVariantPrice", {}) or {}
+        cmp_obj = (node.get("compareAtPriceRange") or {}).get("minVariantPrice", {}) or {}
+        price = pr.get("amount", "0")
+        compare = cmp_obj.get("amount", "0")
+        on_sale = _safe_float(compare) > _safe_float(price) and _safe_float(compare) > 0
+        image_url = (node.get("featuredImage") or {}).get("url", "") or ""
+
+        variants = (node.get("variants") or {}).get("edges", [])
+        variations_summary = []
+        any_in_stock = False
+        for edge in variants[:8]:
+            v = edge.get("node", {})
+            if v.get("availableForSale"):
+                any_in_stock = True
+            attrs: Dict[str, str] = {}
+            for sel in v.get("selectedOptions", []):
+                attrs[str(sel.get("name", "")).lower()] = sel.get("value", "")
+            variations_summary.append({
+                "id": _gid_to_int(v.get("id", "")),
+                "attributes": attrs,
+                "price": str(v.get("price", price)),
+                "stock_status": "instock" if v.get("availableForSale") else "outofstock",
+                "stock_qty": v.get("inventoryQuantity"),
+            })
+
+        total_inventory = node.get("totalInventory")
+        in_stock = any_in_stock or (bool(total_inventory) and int(total_inventory or 0) > 0)
+        attributes = [
+            {"name": o.get("name", ""), "options": o.get("values", [])}
+            for o in node.get("options", [])
+        ]
+        return {
+            "id": _gid_to_int(node.get("id", "")),
+            "name": node.get("title", ""),
+            "price": str(price),
+            "sale_price": str(price) if on_sale else "",
+            "regular_price": str(compare) if on_sale else str(price),
+            "stock_status": "instock" if in_stock else "outofstock",
+            "stock_quantity": total_inventory,
+            "image_url": image_url,
+            "permalink": f"https://{self.store_domain}/products/{node.get('handle', '')}",
+            "short_description": _strip_html(node.get("descriptionHtml", "")),
+            "attributes": attributes,
+            "variations_summary": variations_summary,
+            "on_sale": on_sale,
+        }
+
+    async def _admin_search_products(
+        self,
+        *,
+        query: str,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+        in_stock_only: bool = False,
+        limit: int = 6,
+    ) -> List[Dict[str, Any]]:
+        """Admin-API product search fallback. Used when the Storefront API returns
+        nothing (missing/revoked Storefront token, or products not published to the
+        Storefront channel). The Admin token sees every product."""
+        if not self.admin_token:
+            return []
+        parts: List[str] = ["status:active"]
+        if query:
+            parts.append(query)
+        if min_price is not None:
+            parts.append(f"variants.price:>={min_price}")
+        if max_price is not None:
+            parts.append(f"variants.price:<={max_price}")
+        admin_q = " ".join(parts)
+        per_page = max(1, min(int(limit or 6), 40))
+
+        GQL = """
+        query AdminSearch($query: String!, $first: Int!) {
+          products(query: $query, first: $first, sortKey: RELEVANCE) {
+            edges {
+              node {
+                id title handle descriptionHtml totalInventory
+                featuredImage { url }
+                priceRangeV2 { minVariantPrice { amount currencyCode } }
+                compareAtPriceRange { minVariantPrice { amount } }
+                options { name values }
+                variants(first: 10) {
+                  edges {
+                    node {
+                      id availableForSale inventoryQuantity price
+                      selectedOptions { name value }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        try:
+            data = await self._admin_graphql(GQL, {"query": admin_q, "first": per_page})
+        except Exception as exc:
+            logger.warning("Shopify Admin product fallback failed: %s", exc)
+            return []
+        edges = (data.get("products") or {}).get("edges", [])
+        products = [self._normalize_admin_gql_node(e["node"]) for e in edges]
+        if in_stock_only:
+            products = [p for p in products if p.get("stock_status") == "instock"]
+        return products
+
     # ── Products ───────────────────────────────────────────────────────────────
 
     async def search_products(
@@ -329,16 +463,26 @@ class ShopifyClient(BaseStoreClient):
           }
         }
         """
+        products: List[Dict[str, Any]] = []
         try:
             data = await self._storefront(GQL, {"query": gql_query, "first": per_page})
             edges = data.get("products", {}).get("edges", [])
             products = [self._normalize_product_node(e["node"]) for e in edges]
-            if products:
-                await self._cache_set(cache_key, products, ttl=1800)
-            return products
         except Exception as exc:
-            logger.error("Shopify search_products failed: %s", exc)
-            return []
+            # Storefront token missing/revoked (e.g. from an uninstalled app) or
+            # products not published to the Storefront channel. Fall through to the
+            # Admin API, which sees ALL products with the app's Admin token.
+            logger.warning("Shopify Storefront search failed (%s) — trying Admin API", exc)
+
+        if not products and self.admin_token:
+            products = await self._admin_search_products(
+                query=query, min_price=min_price, max_price=max_price,
+                in_stock_only=in_stock_only, limit=limit,
+            )
+
+        if products:
+            await self._cache_set(cache_key, products, ttl=1800)
+        return products
 
     async def fetch_all_products_storefront(
         self, *, page_size: int = 250, max_pages: int = 200

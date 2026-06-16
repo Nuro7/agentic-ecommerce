@@ -186,7 +186,7 @@ async def run_fast_intent(
     ]
     if any(token in lower for token in browse_tokens) or lower.strip() in ("browse", "products", "shop"):
         try:
-            products = await store_client.search_products(query="", in_stock_only=True, limit=6)
+            products = await store_client.search_products(query="", in_stock_only=False, limit=6)
             products = [p for p in (products or []) if isinstance(p, dict)]
             if products:
                 first = products[0]
@@ -220,7 +220,7 @@ async def run_fast_intent(
                     "suggested_replies": ["Tell me more", "Add to cart", "Show my cart"],
                 })
             else:
-                all_products = await store_client.search_products(query="", in_stock_only=True, limit=4)
+                all_products = await store_client.search_products(query="", in_stock_only=False, limit=4)
                 all_products = [p for p in (all_products or []) if isinstance(p, dict)]
                 if all_products:
                     names = ", ".join(p.get("name", "") for p in all_products[:3] if p.get("name"))

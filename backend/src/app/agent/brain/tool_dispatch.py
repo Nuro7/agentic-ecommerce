@@ -215,7 +215,7 @@ async def execute_tool_call(
         if categories:
             cat_names = [str(c.get("name", "")) for c in categories if c.get("name")]
             return {"categories": categories, "category_names": cat_names}, actions, [], None
-        products = await store_client.search_products(query="", in_stock_only=True, limit=12)
+        products = await store_client.search_products(query="", in_stock_only=False, limit=12)
         products = [p for p in (products or []) if isinstance(p, dict)]
         product_ids = [p.get("id") for p in products if p.get("id")]
         product_names = [p.get("name", "") for p in products if p.get("name")][:8]

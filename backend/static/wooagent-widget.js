@@ -4636,7 +4636,11 @@
     // request before the backend finished, causing silent failures.
     const TIMEOUT = path === '/chat' ? 35000 : 15000;
     const timer = setTimeout(() => controller.abort(), TIMEOUT);
-    const r = await fetch(`${CFG.agent_api_url}/api/v1${path}`, {
+    // Identify the store so the backend uses THIS tenant's installed-app token
+    // (Admin token from OAuth) instead of the global env client. Without this,
+    // product search hits the wrong/blank credentials and returns nothing.
+    const shopQS = CFG.shop ? ((path.includes('?') ? '&' : '?') + 'shop=' + encodeURIComponent(CFG.shop)) : '';
+    const r = await fetch(`${CFG.agent_api_url}/api/v1${path}${shopQS}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
