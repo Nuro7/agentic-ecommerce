@@ -1940,23 +1940,11 @@
     // Clear live transcript pill — agent is now processing
     if (livePill) { livePill.classList.remove('active'); livePill.innerHTML = ''; }
 
-    // ── NEW: if A2A WebSocket is active, inject text directly into Gemini session ──
-    // This covers typed messages and suggested-reply button clicks during A2A mode.
-    // OLD: all text went to POST /chat HTTP endpoint (below in this function).
-    if (A2A_ENABLED && isA2AConnected && sendTextToA2A(message)) {
-      // Message injected into live stream — Gemini will respond with audio.
-      // No HTTP request needed; UI stays in live-mode state.
-      return;
-    }
-    // A2A is enabled but WebSocket is not yet open.
-    // Queue the message and auto-connect — it will be sent on ws.onopen.
-    // Do NOT fall through to the old /chat HTTP endpoint (returns 410 Gone).
-    if (A2A_ENABLED) {
-      _a2aPendingTextMsg = message;
-      _startA2AForText();
-      return;
-    }
-    // ── END NEW ──
+    // Typed text now goes over plain HTTP (POST /api/v1/chat → the Brain), NOT the
+    // voice WebSocket. Routing text through Gemini Live made it chat instead of
+    // search, and the socket's drops/reconnects caused lost turns + latency. Live
+    // VOICE (mic) still uses the WebSocket; only typed/suggested/programmatic text
+    // falls through to the reliable HTTP path below.
 
     S.loading = true;
     sendBtn.disabled = true;

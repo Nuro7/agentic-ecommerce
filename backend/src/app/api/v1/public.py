@@ -218,6 +218,113 @@ async def greet_endpoint(
     }
 
 
+class ChatRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    message: str = Field(min_length=1, max_length=2000)
+    language: Optional[str] = "auto"
+    store_name: Optional[str] = None
+    store_url: Optional[str] = None
+    cart_context: Optional[Dict[str, Any]] = None
+    current_page: Optional[GreetCurrentPage] = None
+
+
+@router.post("/chat")
+async def chat_endpoint(
+    payload: ChatRequest,
+    req: Request,
+    store_client: Any = Depends(get_tenant_store_client),
+    _rl=Depends(rate_limit(limit=30, window=60, scope="chat")),
+    _quota=Depends(check_conversation_quota),
+    db: AsyncSession = Depends(get_db),
+):
+    """Typed-text chat over plain HTTP → the Brain (ask_brain).
+
+    Typed messages used to be forced through the voice WebSocket (Gemini Live),
+    which chats instead of searching and drops/reconnects (latency + lost turns).
+    This endpoint runs the Brain directly and deterministically, with no voice
+    dependency. Voice keeps using the WS; text uses this.
+    """
+    from ...agent.orchestrator import AgentOrchestrator
+    from ...core.database import AsyncSessionLocal
+
+    session_service = getattr(req.app.state, "session_service", None)
+    redis = getattr(req.app.state, "redis", None)
+
+    if str(payload.language or "").strip().lower() == "auto":
+        language = detect_language(payload.message)
+    else:
+        language = _normalize_language(payload.language)
+
+    # Resolve tenant_id (mirrors greet) so retrieval hits this tenant's cache.
+    from ...modules.tenants.repository import TenantRepository
+    tenant_id: Optional[str] = None
+    try:
+        _repo = TenantRepository(db)
+        _shop = req.query_params.get("shop", "").strip()
+        if _shop:
+            _t = await _repo.get_by_shopify_domain(_shop)
+            if _t:
+                tenant_id = _t.id
+        if not tenant_id:
+            _hdr = req.headers.get("X-Tenant-ID", "").strip()
+            if _hdr:
+                _t = await _repo.get_by_id(_hdr)
+                if _t and _t.is_active:
+                    tenant_id = _t.id
+    except Exception:
+        pass
+
+    store_context = {
+        "store_name": payload.store_name or "this store",
+        "currency_symbol": settings.store_currency,
+        "tenant_id": tenant_id,
+        "url": payload.store_url or "",
+    }
+    cp = payload.current_page
+    page_context: Dict[str, Any] = (
+        {"url": cp.url, "title": cp.title, "product_id": cp.product_id, "product_name": cp.product_name}
+        if cp else {}
+    )
+
+    orchestrator = AgentOrchestrator(
+        store_client=store_client,
+        session_service=session_service,
+        redis=redis,
+        db_session_factory=AsyncSessionLocal,
+    )
+    try:
+        result = await orchestrator.run(
+            session_id=payload.session_id,
+            user_message=payload.message,
+            store_context=store_context,
+            page_context=page_context,
+            language=language,
+            cart_context=payload.cart_context,
+        )
+    except Exception as exc:
+        logger.error("Chat endpoint Brain error session=%s: %s", payload.session_id, exc, exc_info=True)
+        return {
+            "session_id": payload.session_id,
+            "text": "Sorry, I had trouble with that. Could you try again?",
+            "response_text": "Sorry, I had trouble with that. Could you try again?",
+            "language": language,
+            "ui_actions": [], "actions": [], "suggested_replies": [],
+        }
+
+    text = result.get("response_text") or result.get("text") or ""
+    acts = result.get("ui_actions") or result.get("actions") or []
+    return {
+        "session_id": payload.session_id,
+        "text": text,
+        "response_text": text,
+        "speech_text": result.get("speech_text") or text,
+        "language": result.get("language") or language,
+        "ui_actions": acts,
+        "actions": acts,
+        "suggested_replies": result.get("suggested_replies") or [],
+    }
+
+
 @router.get("/cart")
 async def get_cart(
     session_id: str,
