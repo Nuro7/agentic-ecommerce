@@ -93,8 +93,11 @@ async def hybrid_search(
         return results
 
     # ── L2: Semantic cache ─────────────────────────────────────────────────────
+    # Skip L2 entirely when the query pins a discriminating attribute (colour/size/
+    # capacity). Those queries embed too close to their siblings ("red" vs "blue"),
+    # so a fuzzy hit would return the wrong variant. L1 (exact key) already covered.
     fsig = l2_filter_sig(nq.min_price, nq.max_price, nq.in_stock_only)
-    if nq.clean:
+    if nq.clean and not nq.has_attribute:
         cached = await l2_get(redis, tenant_id, nq.clean, fsig)
         if cached is not None:
             results = _dicts_to_results(cached)[:limit]
@@ -170,7 +173,9 @@ def _dicts_to_results(data: list[dict]) -> list[SearchResult]:
             price=float(d.get("price", 0)),
             currency=str(d.get("currency", "USD")),
             image_url=d.get("image_url"),
-            in_stock=bool(d.get("in_stock", True)),
+            # Default unknown/absent stock to False, NOT True — defaulting to True
+            # bakes in hallucination (presenting unconfirmed products as buyable).
+            in_stock=bool(d.get("in_stock") or False),
             category_slug=d.get("category_slug"),
             tags=d.get("tags"),
             score=float(d.get("score", 0)),

@@ -43,6 +43,24 @@ _grok_breaker = CircuitBreaker(name="llm-grok", failure_threshold=3, recovery_ti
 _gpt_mini_breaker = CircuitBreaker(name="llm-gpt-mini", failure_threshold=3, recovery_timeout=30.0)
 _gemini_breaker = CircuitBreaker(name="llm-gemini", failure_threshold=3, recovery_timeout=30.0)
 
+# ── Latency budget ──────────────────────────────────────────────────────────
+# Per-provider timeouts were 15/12/15s, so a slow primary could walk the whole
+# fallback chain and burn ~40s on a single turn — the root of "sometimes it takes
+# forever, I can't predict it". Tighter per-provider caps make failover snappy,
+# and _TURN_LLM_DEADLINE bounds the TOTAL wall-clock across the chain so one
+# route_and_call can never exceed it regardless of how many providers it tries.
+_PRIMARY_TIMEOUT = 9.0
+_FALLBACK_TIMEOUT = 8.0
+_ESCALATION_TIMEOUT = 13.0
+_TURN_LLM_DEADLINE = 16.0   # hard ceiling for the whole provider chain, per call
+
+
+def _budget_timeout(start: float, cap: float) -> float:
+    """Time left before the per-call deadline, capped at the provider's own limit.
+    Never returns < 1.0s so the final provider still gets a real attempt."""
+    remaining = _TURN_LLM_DEADLINE - (asyncio.get_event_loop().time() - start)
+    return max(1.0, min(cap, remaining))
+
 
 # ── Response validator ─────────────────────────────────────────────────────
 
@@ -297,11 +315,11 @@ async def _best_available(messages: list[dict], tools: list[dict]) -> dict:
     # Each call is timeout-bounded so a hung provider can't stall the turn
     # (this runs on the escalation fallback path, which has no outer wait_for).
     if groq_client:
-        return await asyncio.wait_for(_call_groq(messages, tools), timeout=15.0)
+        return await asyncio.wait_for(_call_groq(messages, tools), timeout=_FALLBACK_TIMEOUT)
     if gpt_mini_client:
-        return await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=12.0)
+        return await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=_FALLBACK_TIMEOUT)
     if gemini_client:
-        return await asyncio.wait_for(_call_gemini_brain(messages, tools), timeout=15.0)
+        return await asyncio.wait_for(_call_gemini_brain(messages, tools), timeout=_FALLBACK_TIMEOUT)
     raise RuntimeError("No LLM clients configured — set GROK_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY")
 
 
@@ -334,6 +352,7 @@ async def route_and_call(
         escalate = True
 
     tool_count = _estimate_tool_count(message_text)
+    _t0 = asyncio.get_event_loop().time()
 
     if escalate:
         # Escalation: try GPT-4o first for maximum accuracy, fall back to Grok.
@@ -343,7 +362,10 @@ async def route_and_call(
         logger.info("LLM route: escalation [lang=%s]", lang)
         if gpt4o_client:
             try:
-                raw = await asyncio.wait_for(_call_gpt4o(messages, tools), timeout=20.0)
+                raw = await asyncio.wait_for(
+                    _call_gpt4o(messages, tools),
+                    timeout=_budget_timeout(_t0, _ESCALATION_TIMEOUT),
+                )
                 return _validated_response(raw)
             except Exception as e:
                 logger.warning("GPT-4o escalation failed (%s), falling back", e)
@@ -359,7 +381,8 @@ async def route_and_call(
         )
         try:
             raw = await asyncio.wait_for(
-                _call_groq(messages, tools), timeout=15.0
+                _call_groq(messages, tools),
+                timeout=_budget_timeout(_t0, _PRIMARY_TIMEOUT),
             )
             _grok_breaker.record_success()
             return _validated_response(raw)
@@ -370,7 +393,10 @@ async def route_and_call(
     if gpt_mini_client and _gpt_mini_breaker.is_available():
         logger.info("LLM route: GPT-4o-mini [fallback, lang=%s]", lang)
         try:
-            raw = await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=12.0)
+            raw = await asyncio.wait_for(
+                _call_gpt_mini(messages, tools),
+                timeout=_budget_timeout(_t0, _FALLBACK_TIMEOUT),
+            )
             _gpt_mini_breaker.record_success()
             return _validated_response(raw)
         except Exception as e:
@@ -381,7 +407,10 @@ async def route_and_call(
         logger.info("LLM route: Gemini [last-resort fallback, lang=%s]", lang)
         try:
             # Gemini had no timeout before — a hung call stalled the whole turn.
-            raw = await asyncio.wait_for(_call_gemini_brain(messages, tools), timeout=15.0)
+            raw = await asyncio.wait_for(
+                _call_gemini_brain(messages, tools),
+                timeout=_budget_timeout(_t0, _FALLBACK_TIMEOUT),
+            )
             _gemini_breaker.record_success()
             return _validated_response(raw)
         except Exception as e:

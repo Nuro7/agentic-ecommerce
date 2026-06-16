@@ -72,14 +72,13 @@ Health check: http://localhost:8000/api/v1/health
 │   │   ├── wooagent-widget.js      the chat widget (shared Shopify + WooCommerce)
 │   │   └── wooagent-widget.css
 │   ├── migrations/versions/        Alembic migrations
-│   ├── railway.toml                Railway deployment config
 │   └── pyproject.toml              Python deps
 │
 ├── plugins/wordpress/wooagent/     WordPress plugin for WooCommerce stores
 │   └── widget/                     JS/CSS source (sync to backend/static/ after edits)
 │
 └── infra/docker/                   Dockerfiles + Compose files
-    ├── Dockerfile                  Production image (used by Railway)
+    ├── Dockerfile                  Production image (used by Render)
     ├── Dockerfile.dev              Dev image (hot reload)
     └── docker-compose.dev.yml      Local dev stack
 ```
@@ -188,16 +187,19 @@ curl -X POST http://localhost:8000/api/v1/shopify/setup \
 
 ---
 
-## Railway deployment
+## Deployment (Render)
 
-- Root directory: `backend/`
-- Config file: `backend/railway.toml`
-- Dockerfile: `infra/docker/Dockerfile`
-- Uses `$PORT` env var automatically
+- Blueprint: `render.yaml` (repo root) — defines THREE services: `speako-web`,
+  `speako-worker`, `speako-beat`, all from `infra/docker/Dockerfile` (context `backend/`).
+- Uses `$PORT` env var automatically.
+- **The worker + beat are required** — without them product sync, webhooks, retries,
+  billing and analytics never run (searches fall back to the live store API).
+- Migrations run via the web service `preDeployCommand: alembic upgrade head`.
+- Put `DATABASE_URL`, `REDIS_URL` and all keys in a Render Env Group named `speako`.
 
 After deploying, update Shopify Partner app URLs:
-- App URL: `https://YOUR-RAILWAY-URL/api/v1/shopify/install`
-- Redirect URL: `https://YOUR-RAILWAY-URL/api/v1/shopify/callback`
+- App URL: `https://YOUR-BACKEND-URL/api/v1/shopify/install`
+- Redirect URL: `https://YOUR-BACKEND-URL/api/v1/shopify/callback`
 
 ---
 
@@ -206,7 +208,7 @@ After deploying, update Shopify Partner app URLs:
 - `restart` does not reload `.env` — use `up -d app` to recreate the container
 - `SHOPIFY_API_KEY==value` (double `=`) is a typo that breaks parsing — always use single `=`
 - Widget JS cached by Shopify — re-register script tag after every JS change
-- ngrok free tier drops WebSocket after ~30s — voice unreliable on ngrok; works fine on Railway
+- ngrok free tier drops WebSocket after ~30s — voice unreliable on ngrok; works fine on a stable host (Render)
 - Migration env.py needs `sys.path.insert` to find `src` module — already applied
 - Security uses PyJWT + argon2-cffi (NOT jose/passlib — those aren't installed)
 - Static files need CORS headers for Shopify cross-origin loading — handled by middleware in server.py

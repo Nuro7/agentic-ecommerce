@@ -68,6 +68,24 @@ _IN_STOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Discriminating-attribute detector ─────────────────────────────────────────
+# Queries that pin a specific colour / size / capacity / model must NOT be served
+# from the L2 semantic cache: "red shoes" and "blue shoes" embed >0.92 similar, so
+# a fuzzy hit would return the wrong variant. When any of these match, callers skip
+# L2 and go straight to L3 (exact L1 cache is still safe — it keys on the full text).
+_COLOR_WORDS = (
+    "black", "white", "red", "blue", "green", "yellow", "orange", "purple",
+    "pink", "brown", "grey", "gray", "beige", "gold", "silver", "navy",
+    "maroon", "teal", "cream", "tan", "olive", "burgundy",
+)
+_ATTRIBUTE_RE = re.compile(
+    r"\b(?:" + "|".join(_COLOR_WORDS) + r")\b"          # colours
+    r"|\b(?:xs|s|m|l|xl|xxl|xxxl|small|medium|large)\b"  # clothing sizes
+    r"|\b(?:uk|us|eu)\s*\d{1,2}\b"                       # shoe sizes "uk 9"
+    r"|\b\d+\s*(?:gb|tb|mb|ml|ltr|litre|liter|mah|inch|cm|mm|oz|kg|g|w|wh)\b",  # units
+    re.IGNORECASE,
+)
+
 # ── Language script detectors ─────────────────────────────────────────────────
 _LANG_SCRIPT: list[tuple[re.Pattern, str]] = [
     (re.compile(r"[ഀ-ൿ]"), "ml"),   # Malayalam
@@ -98,6 +116,7 @@ class NormalizedQuery:
     min_price: Optional[float] = None # extracted price floor
     max_price: Optional[float] = None # extracted price ceiling
     in_stock_only: bool = False       # user asked for in-stock items
+    has_attribute: bool = False       # query pins a colour/size/capacity → skip L2
     tokens: list[str] = field(default_factory=list)  # clean tokenised words
     cache_key: str = ""               # deterministic key for L1 lookup
 
@@ -124,8 +143,9 @@ def normalize(raw_query: str) -> NormalizedQuery:
     # 4. Extract price filters before stripping numbers
     min_price, max_price = _extract_prices(text)
 
-    # 5. Extract stock hint
+    # 5. Extract stock hint + discriminating-attribute flag (before stripping)
     in_stock_only = bool(_IN_STOCK_RE.search(text))
+    has_attribute = bool(_ATTRIBUTE_RE.search(text))
 
     # 6. Strip noise phrases ("show me", "i want", "looking for", etc.)
     text = _NOISE_RE.sub(" ", text)
@@ -159,6 +179,7 @@ def normalize(raw_query: str) -> NormalizedQuery:
         min_price=min_price,
         max_price=max_price,
         in_stock_only=in_stock_only,
+        has_attribute=has_attribute,
         tokens=tokens,
         cache_key=cache_key,
     )

@@ -1,0 +1,45 @@
+# Render Blueprint — Speako (web + Celery worker + Celery beat)
+# Spec: https://render.com/docs/blueprint-spec
+#
+# IMPORTANT: the async tier (product sync, webhook processing, retry-drain,
+# billing, analytics) ONLY runs when BOTH the worker and beat services are up.
+# Without them, product_cache never syncs and every search falls back to the
+# live store API (slow + stale). All three services below run the SAME image.
+#
+# Setup:
+#   1. Create a Render Environment Group named "speako" (Dashboard → Env Groups)
+#      and add DATABASE_URL, REDIS_URL, and all API keys / settings there.
+#   2. Point a new Blueprint at this file. All three services share that group.
+
+services:
+  - type: web
+    name: speako-web
+    runtime: docker
+    dockerfilePath: ./infra/docker/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/v1/health
+    preDeployCommand: alembic upgrade head   # migrate DB before new image serves
+    autoDeploy: true
+    envVars:
+      - fromGroup: speako
+    # Render injects $PORT; the Dockerfile CMD already binds it.
+
+  - type: worker
+    name: speako-worker
+    runtime: docker
+    dockerfilePath: ./infra/docker/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: celery -A src.app.workers.celery_app worker -l info
+    autoDeploy: true
+    envVars:
+      - fromGroup: speako
+
+  - type: worker
+    name: speako-beat
+    runtime: docker
+    dockerfilePath: ./infra/docker/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: celery -A src.app.workers.celery_app beat -l info
+    autoDeploy: true
+    envVars:
+      - fromGroup: speako

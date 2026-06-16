@@ -210,6 +210,11 @@ class PipelineA:
                 # Must complete before audio relay or Gemini stays paused.
                 await inject_reconnect_context(gemini_session, self.session_service, session_id)
 
+                # Latest cart snapshot from the widget (sent on text_input frames),
+                # so ask_brain reasons about the customer's REAL cart. Mutable holder
+                # shared between Task A (writes) and Task B (reads).
+                session_cart: dict = {"value": None}
+
                 # ── Task A: Browser → Gemini ──────────────────────────────────
                 async def receive_from_frontend() -> None:
                     chunks = 0
@@ -251,6 +256,8 @@ class PipelineA:
                                 try:
                                     ctrl = json.loads(data["text"])
                                     if ctrl.get("type") == "text_input" and ctrl.get("text"):
+                                        if ctrl.get("cart_context") is not None:
+                                            session_cart["value"] = ctrl.get("cart_context")
                                         await gemini_session.send_realtime_input(
                                             text=ctrl["text"]
                                         )
@@ -353,6 +360,7 @@ class PipelineA:
                                                 session_id=session_id,
                                                 user_message=query,
                                                 language=language,
+                                                cart_context=session_cart["value"],
                                             )
                                             # Orchestrator returns a dict with:
                                             # text, response_text, ui_actions, actions, suggested_replies

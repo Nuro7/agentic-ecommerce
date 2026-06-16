@@ -311,7 +311,7 @@ Customer visits Shopify store
 | Voice TTS | Google Cloud TTS | best quality multilingual |
 | Voice stream | Gemini Live WebSocket | STT+reasoning+TTS in one hop |
 | Widget | Vanilla JS + Shadow DOM | no framework deps, works on any site |
-| Deploy | Docker + Railway | simple, free tier available |
+| Deploy | Docker + Render | simple, free tier available |
 
 ---
 

@@ -29,6 +29,39 @@ _BUDGET_RE = re.compile(
 _BUDGET_PLAIN_RE = re.compile(r"(?:rs\.?|₹|inr)\s*([0-9][0-9,]*)", re.IGNORECASE)
 SESSION_FACTS_TTL = 7_200
 
+# ── Coarse product-category detector ──────────────────────────────────────────
+# Size/colour/last-product preferences are product-specific. When the customer
+# switches category (shoes → laptops), the OLD "size M / red" must NOT keep being
+# injected into the new context — that was the "topic switch mismatch" symptom.
+_CATEGORY_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "footwear": ("shoe", "shoes", "sneaker", "sneakers", "boot", "boots",
+                 "sandal", "sandals", "heel", "heels", "slipper", "slippers"),
+    "apparel": ("shirt", "t-shirt", "tshirt", "tee", "dress", "jeans", "pant",
+                "pants", "trouser", "trousers", "kurta", "kurti", "saree",
+                "jacket", "hoodie", "top", "skirt", "lehenga", "salwar"),
+    "electronics": ("laptop", "phone", "mobile", "smartphone", "headphone",
+                    "headphones", "earbud", "earbuds", "earphone", "tv",
+                    "camera", "tablet", "watch", "charger", "speaker", "monitor"),
+    "beauty": ("lipstick", "cream", "perfume", "shampoo", "makeup", "serum",
+               "lotion", "fragrance", "moisturizer"),
+    "bags": ("bag", "backpack", "wallet", "purse", "handbag", "luggage"),
+    "jewelry": ("ring", "necklace", "earring", "earrings", "bracelet", "pendant"),
+}
+
+# Product-specific facts dropped on a category switch (budget is left intact —
+# a stated budget usually still applies across categories).
+_TOPIC_SCOPED_FACTS = ("preferred_size", "preferred_color",
+                       "last_product_id", "last_product_name")
+
+
+def _detect_category(message: str) -> Optional[str]:
+    lower = message.lower()
+    for category, keywords in _CATEGORY_KEYWORDS.items():
+        for kw in keywords:
+            if re.search(rf"\b{re.escape(kw)}\b", lower):
+                return category
+    return None
+
 
 class SessionFactsService:
     def __init__(self, redis_client=None):
@@ -37,11 +70,32 @@ class SessionFactsService:
 
     async def update(self, session_id: str, user_message: str, tool_results: Optional[list[dict]] = None) -> None:
         extracted = _extract_facts(user_message, tool_results or [])
-        if not extracted:
-            return
+        new_category = _detect_category(user_message)
         current = await self.get(session_id)
-        current.update({k: v for k, v in extracted.items() if v is not None})
-        await self._save(session_id, current)
+        changed = False
+
+        # Topic switch → drop product-specific prefs so old size/colour/product
+        # don't bleed into the new category.
+        prev_category = current.get("category")
+        if new_category and prev_category and new_category != prev_category:
+            for k in _TOPIC_SCOPED_FACTS:
+                if current.pop(k, None) is not None:
+                    changed = True
+            logger.debug(
+                "SessionFacts topic switch %s→%s — cleared product prefs (session=%s)",
+                prev_category, new_category, session_id,
+            )
+        if new_category and new_category != prev_category:
+            current["category"] = new_category
+            changed = True
+
+        for k, v in extracted.items():
+            if v is not None and current.get(k) != v:
+                current[k] = v
+                changed = True
+
+        if changed:
+            await self._save(session_id, current)
 
     async def get(self, session_id: str) -> dict[str, Any]:
         return await self._load(session_id)

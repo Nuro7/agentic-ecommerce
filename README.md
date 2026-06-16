@@ -96,13 +96,15 @@ curl -X POST http://localhost:8000/api/v1/shopify/setup \
   -d '{"backend_url": "https://YOUR-NGROK-URL.ngrok-free.app"}'
 ```
 
-### Production (Railway / any server)
+### Production (Render / any server)
+
+Deploy with the `render.yaml` Blueprint at the repo root (web + Celery worker + beat).
 
 ```bash
 # After deploying backend, register once:
-curl -X POST https://your-backend.railway.app/api/v1/shopify/setup \
+curl -X POST https://your-backend.example.com/api/v1/shopify/setup \
   -H "Content-Type: application/json" \
-  -d '{"backend_url": "https://your-backend.railway.app"}'
+  -d '{"backend_url": "https://your-backend.example.com"}'
 ```
 
 ### OAuth (SaaS — any merchant can install)
@@ -111,12 +113,12 @@ Set these in your Shopify Partner app configuration:
 
 | Field | Value |
 |-------|-------|
-| App URL | `https://your-backend.railway.app/api/v1/shopify/install` |
-| Redirect URL | `https://your-backend.railway.app/api/v1/shopify/callback` |
+| App URL | `https://your-backend.example.com/api/v1/shopify/install` |
+| Redirect URL | `https://your-backend.example.com/api/v1/shopify/callback` |
 
 Merchant install link:
 ```
-https://your-backend.railway.app/api/v1/shopify/install?shop=MERCHANT-STORE.myshopify.com
+https://your-backend.example.com/api/v1/shopify/install?shop=MERCHANT-STORE.myshopify.com
 ```
 
 ---
@@ -181,7 +183,7 @@ https://your-backend.railway.app/api/v1/shopify/install?shop=MERCHANT-STORE.mysh
 | Voice STT | Groq Whisper |
 | Voice TTS | Google Cloud TTS, ElevenLabs |
 | Auth | PyJWT, Argon2 |
-| Deploy | Docker, Railway |
+| Deploy | Docker, Render |
 
 ---
 

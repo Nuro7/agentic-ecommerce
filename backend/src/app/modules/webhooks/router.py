@@ -147,6 +147,7 @@ async def custom_platform_webhook(
                     {"tid": tenant_id, "pid": pid},
                 )
         await svc.db.commit()
+        await svc.invalidate_search_cache(tenant_id)
         return {"received": True, "deleted": len(items)}
 
     # Handle product create / update
@@ -156,4 +157,6 @@ async def custom_platform_webhook(
         await svc.upsert_product(tenant_id, item)
         count += 1
 
+    if count:
+        await svc.invalidate_search_cache(tenant_id)
     return {"received": True, "upserted": count}

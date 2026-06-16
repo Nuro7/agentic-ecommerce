@@ -31,6 +31,19 @@ from .text_utils import (
 
 logger = logging.getLogger(__name__)
 
+# "go to cart" / "take me to the cart" / "open the cart page" → navigate the
+# storefront to the real cart page (not just render the cart inline). Kept
+# separate from has_cart_view_intent so "show my cart" still renders inline.
+_CART_NAV_RE = re.compile(
+    r"\b(go to|take me to|open|navigate to|bring me to|send me to)\b[\w\s]{0,15}\bcart\b"
+    r"|\bcart page\b",
+    re.IGNORECASE,
+)
+
+
+def _wants_cart_navigation(lower: str) -> bool:
+    return bool(_CART_NAV_RE.search(lower))
+
 
 async def safe_get_cart(
     session_id: str,
@@ -116,6 +129,20 @@ async def run_fast_intent(
             "response_text": store_reply,
             "ui_actions": [{"type": "show_store_info", "payload": store_info_payload}],
             "suggested_replies": ["Show products", "Show my cart", "Browse"],
+        })
+
+    if _wants_cart_navigation(lower):
+        cart = await safe_get_cart(session_id, store_client=store_client, session_service=session_service)
+        cart_url = str((store_context or {}).get("cart_url") or "/cart")
+        # Render inline AND navigate the storefront to the real cart page, so
+        # "go to cart" actually moves the page (the #7 indication-driven UX).
+        return with_actions_alias({
+            "response_text": say(language, "cart_opened"),
+            "ui_actions": [
+                {"type": "show_cart", "payload": {"cart": normalize_cart_payload(cart)}},
+                {"type": "redirect", "payload": {"url": cart_url}},
+            ],
+            "suggested_replies": ["Checkout now", "Show products"],
         })
 
     if has_cart_view_intent(lower):

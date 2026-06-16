@@ -188,6 +188,19 @@ class WebhookService:
         self.db = db
         self.repo = WebhookRepository(db)
 
+    async def invalidate_search_cache(self, tenant_id: str) -> None:
+        """Purge the L1/L2 retrieval cache for a tenant after product_cache writes.
+
+        Best-effort: a Redis/cache outage must never fail the webhook/ingest. Call
+        once per batch (not per product) — invalidate_tenant does a KEYS scan.
+        """
+        try:
+            from ...core.cache import get_redis
+            from ...agent.retrieval.cache import invalidate_tenant
+            await invalidate_tenant(get_redis(), tenant_id)
+        except Exception as exc:
+            logger.warning("Search cache invalidation failed tenant=%s: %s", tenant_id, exc)
+
     async def upsert_product(self, tenant_id: str, product: dict) -> dict:
         """
         Directly upsert a single product into product_cache.

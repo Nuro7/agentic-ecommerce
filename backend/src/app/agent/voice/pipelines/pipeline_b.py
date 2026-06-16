@@ -67,6 +67,7 @@ class PipelineB:
         text: str,
         language: str,
         store_client: Any = None,
+        cart_context: Any = None,
     ) -> None:
         orchestrator = self._get_orchestrator(session_id, store_client)
 
@@ -75,6 +76,7 @@ class PipelineB:
                 session_id=session_id,
                 user_message=text,
                 language=language,
+                cart_context=cart_context,
             )
             response_text = (
                 result.get("speech_text")
@@ -179,6 +181,7 @@ class PipelineB:
                             if ctrl.get("type") == "text_input" and ctrl.get("text"):
                                 user_text = ctrl["text"]
                                 lang      = ctrl.get("language", "en")
+                                cart_ctx  = ctrl.get("cart_context")
                                 try:
                                     await websocket.send_text(json.dumps({
                                         "type": "user_transcript",
@@ -189,6 +192,7 @@ class PipelineB:
                                 await self._process_turn(
                                     websocket, session_id, user_text, lang,
                                     store_client=store_client,
+                                    cart_context=cart_ctx,
                                 )
                         except (json.JSONDecodeError, KeyError):
                             pass

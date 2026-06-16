@@ -31,6 +31,7 @@ import asyncio
 import logging
 import re
 import time
+import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ...core.security import sanitize_text
@@ -234,6 +235,13 @@ async def ask_brain(
     """
     store_context = store_context or {}
     page_context = page_context or {}
+
+    # Per-turn trace — one structured line per turn so latency/route/cache are
+    # observable. Without this the same input looks fast/slow/silent for no
+    # visible reason (the "unpredictable" complaint).
+    turn_id = uuid.uuid4().hex[:8]
+    t_start = time.monotonic()
+    degraded = False
 
     # ── Step 1: Input sanitisation + guardrail ────────────────────────────────
     cleaned_message = sanitize_text(user_message or "", max_len=500)
@@ -482,13 +490,14 @@ async def ask_brain(
 
     # ── Fallback 1: fast-intent ───────────────────────────────────────────────
     if result is None:
+        degraded = True  # primary LLM path didn't produce a result
         try:
             result = await run_fast_intent(
                 cleaned_message, session_id, lang, store_context,
                 store_client=store_client, session_service=session_service,
             )
         except Exception as exc:
-            logger.warning("Fast-intent fallback failed: %s", exc)
+            logger.warning("[turn %s] Fast-intent fallback failed: %s", turn_id, exc)
 
     # ── Fallback 2: product discovery ────────────────────────────────────────
     if result is None:
@@ -498,7 +507,7 @@ async def ask_brain(
                 store_client=store_client,
             )
         except Exception as exc:
-            logger.warning("handle_product_discovery fallback failed: %s", exc)
+            logger.warning("[turn %s] handle_product_discovery fallback failed: %s", turn_id, exc)
 
     if result is None:
         result = _help_fallback_result(lang)
@@ -615,6 +624,24 @@ async def ask_brain(
         )
     except Exception as exc:
         logger.debug("BetaLogger record failed (non-critical): %s", exc)
+
+    # ── Per-turn trace — ONE structured line per turn ─────────────────────────
+    elapsed_ms = (time.monotonic() - t_start) * 1000
+    logger.info(
+        "[turn %s] intent=%s via=%s lang=%s route=%s retrieval=%s tools=%d "
+        "degraded=%s reply_len=%d latency_ms=%.0f session=%s",
+        turn_id,
+        intent_result.intent,
+        intent_result.via,
+        lang,
+        result.get("llm_route", "unknown"),
+        ("found" if retrieval_found else "ran" if retrieval_ran else "skip"),
+        len(ui_actions),
+        degraded,
+        len(response_text),
+        elapsed_ms,
+        session_id,
+    )
 
     return {
         "session_id": session_id,

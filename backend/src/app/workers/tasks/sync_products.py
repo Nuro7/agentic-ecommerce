@@ -151,6 +151,8 @@ async def _sync_async(tenant_id_filter: Optional[str] = None) -> dict:
     total_skipped = 0
     tenants_processed = 0
 
+    redis_cli = _open_async_redis()
+
     async with AsyncSessionLocal() as db:
         repo = TenantRepository(db)
         tenants = await repo.list_all(limit=500)
@@ -179,6 +181,10 @@ async def _sync_async(tenant_id_filter: Optional[str] = None) -> dict:
 
                 await _cleanup_deleted(db, tenant.id)
 
+                # Purge the L1/L2 retrieval cache now that product_cache is fresh,
+                # so stale prices/products don't keep being served for 5-15 min.
+                await _invalidate_retrieval_cache(redis_cli, tenant.id)
+
                 logger.info(
                     "Tenant %s (%s) synced: upserted=%d skipped=%d",
                     tenant.id, tenant.platform, upserted, skipped,
@@ -198,11 +204,47 @@ async def _sync_async(tenant_id_filter: Optional[str] = None) -> dict:
 
         await db.commit()
 
+    await _close_async_redis(redis_cli)
+
     return {
         "tenants": tenants_processed,
         "upserted": total_upserted,
         "skipped": total_skipped,
     }
+
+
+# ── Retrieval-cache invalidation helpers ──────────────────────────────────────
+
+def _open_async_redis():
+    """Standalone async Redis client for cache invalidation. None on failure
+    (fail-open — a Redis outage must not abort the sync)."""
+    try:
+        import redis.asyncio as _aioredis
+        from ...config import settings
+        return _aioredis.from_url(settings.redis_url, decode_responses=True)
+    except Exception as exc:
+        logger.warning("Async Redis unavailable for cache invalidation: %s", exc)
+        return None
+
+
+async def _close_async_redis(client) -> None:
+    if client is None:
+        return
+    try:
+        await client.aclose()
+    except Exception:
+        pass
+
+
+async def _invalidate_retrieval_cache(client, tenant_id: str) -> None:
+    """Purge L1+L2 search cache for a tenant after its product_cache is refreshed."""
+    if client is None:
+        return
+    try:
+        from ...agent.retrieval.cache import invalidate_tenant
+        await invalidate_tenant(client, tenant_id)
+    except Exception as exc:
+        logger.warning("Retrieval cache invalidation failed tenant=%s: %s", tenant_id, exc)
 
 
 # ── Diff sync ─────────────────────────────────────────────────────────────────
@@ -217,6 +259,8 @@ async def _diff_sync_async(tenant_id_filter: Optional[str] = None) -> dict:
     total_upserted = 0
     total_full_syncs = 0
     tenants_processed = 0
+
+    redis_cli = _open_async_redis()
 
     async with AsyncSessionLocal() as db:
         repo = TenantRepository(db)
@@ -243,6 +287,12 @@ async def _diff_sync_async(tenant_id_filter: Optional[str] = None) -> dict:
                 if did_full:
                     total_full_syncs += 1
                 tenants_processed += 1
+
+                # Only purge cache when this tenant actually had changes, so an
+                # idle diff run doesn't needlessly cold-start everyone's cache.
+                if upserted or did_full:
+                    await _invalidate_retrieval_cache(redis_cli, tenant.id)
+
                 logger.info(
                     "Diff sync tenant=%s platform=%s upserted=%d full=%s",
                     tenant.id, tenant.platform, upserted, did_full,
@@ -261,6 +311,8 @@ async def _diff_sync_async(tenant_id_filter: Optional[str] = None) -> dict:
                         pass
 
         await db.commit()
+
+    await _close_async_redis(redis_cli)
 
     return {
         "tenants": tenants_processed,

@@ -25,6 +25,13 @@ from .text_utils import (
 
 logger = logging.getLogger(__name__)
 
+# Latency cap: each round is a full LLM round-trip (+ tool calls). 5 rounds let a
+# slow/looping turn stack up to 5 sequential model calls — a major source of the
+# unpredictable, "sometimes very slow" latency. Bound it: at most 2 tool-calling
+# rounds, then force a text answer on the 3rd. Predictable worst case.
+_MAX_ROUNDS = 3
+_FORCE_TEXT_AFTER = 2
+
 
 async def run_llm_agent(
     *,
@@ -117,8 +124,8 @@ async def run_llm_agent(
     last_llm_route = "gpt-4o-mini"
     tool_rounds_done = 0
 
-    for _ in range(5):
-        force_text = tool_rounds_done >= 3
+    for _ in range(_MAX_ROUNDS):
+        force_text = tool_rounds_done >= _FORCE_TEXT_AFTER
         llm_resp = await route_and_call(
             messages=messages,
             tools=tools,

@@ -28,7 +28,11 @@ logger = logging.getLogger(__name__)
 # ── Config ────────────────────────────────────────────────────────────────────
 _L1_TTL = 300          # 5 minutes
 _L2_TTL = 900          # 15 minutes
-_SEMANTIC_THRESHOLD = 0.92   # cosine similarity floor for L2 hit
+_SEMANTIC_THRESHOLD = 0.97   # cosine similarity floor for L2 hit. Tightened from
+                             # 0.92: attribute-variant queries ("red"/"blue" shoes)
+                             # embed ~0.93-0.95 similar and were cross-serving the
+                             # wrong product. Attribute queries also bypass L2 in
+                             # search.py; this guards the non-attribute long tail.
 _L2_MAX_CANDIDATES = 200     # max embeddings to compare per tenant (guards latency)
 
 _L1_PREFIX = "retrieval:{tenant}:l1:{key}"

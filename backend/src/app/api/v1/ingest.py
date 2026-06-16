@@ -100,6 +100,10 @@ async def bulk_ingest_products(
             if entry["raw_value"] is None and "raw_value" in outcome:
                 entry["raw_value"] = outcome["raw_value"]
 
+    # Purge stale search cache once, after the whole batch is written.
+    if ingested:
+        await svc.invalidate_search_cache(tenant.id)
+
     rejections = []
     for reason, data in rejection_tracker.items():
         hint_parts = []

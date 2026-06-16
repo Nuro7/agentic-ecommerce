@@ -49,6 +49,34 @@
     greeted: localStorage.getItem('_wa_greeted') === '1',
   };
 
+  // ── Primary-colour shades, precomputed in JS ────────────────────────────────
+  // The core tokens used to rely on CSS color-mix(), which is unsupported in older
+  // Safari and many in-app webviews (a real slice of Shopify mobile traffic) — when
+  // it fails, --p2/--p-lo/--p-md become invalid and the whole palette collapses
+  // ("colors missing"). Computing them here makes the primary palette resolve
+  // everywhere, independent of browser color-mix support.
+  function _waHexToRgb(hex) {
+    let h = String(hex || '#6366f1').trim().replace('#', '');
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    const n = parseInt(h, 16);
+    if (h.length !== 6 || isNaN(n)) return { r: 99, g: 102, b: 241 };
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+  function _waMixBlack(hex, pct) {           // pct = % of the original colour kept
+    const c = _waHexToRgb(hex); const f = pct / 100;
+    return `rgb(${Math.round(c.r * f)},${Math.round(c.g * f)},${Math.round(c.b * f)})`;
+  }
+  function _waAlpha(hex, pct) {
+    const c = _waHexToRgb(hex);
+    return `rgba(${c.r},${c.g},${c.b},${pct / 100})`;
+  }
+  function _waBlend(a, b, pctA) {            // pctA% of a, rest b (opaque)
+    const ca = _waHexToRgb(a), cb = _waHexToRgb(b), f = pctA / 100;
+    const m = (x, y) => Math.round(x * f + y * (1 - f));
+    return `rgb(${m(ca.r, cb.r)},${m(ca.g, cb.g)},${m(ca.b, cb.b)})`;
+  }
+  const PC = CFG.primary_color || '#6366f1';
+
   const host = document.createElement('div');
   host.id = '_wooagent_root';
   document.body.appendChild(host);
@@ -60,10 +88,10 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     .wa {
-      --p:    ${CFG.primary_color};
-      --p2:   color-mix(in srgb, ${CFG.primary_color} 72%, #000);
-      --p-lo: color-mix(in srgb, ${CFG.primary_color} 14%, transparent);
-      --p-md: color-mix(in srgb, ${CFG.primary_color} 28%, transparent);
+      --p:    ${PC};
+      --p2:   ${_waMixBlack(PC, 72)};
+      --p-lo: ${_waAlpha(PC, 14)};
+      --p-md: ${_waAlpha(PC, 28)};
       /* ── Dark theme tokens (default) ── */
       --bg0:  #08080f;
       --bg1:  #0e0e1c;
@@ -133,7 +161,7 @@
       width: 60px; height: 60px;
       border-radius: 50%;
       border: none;
-      background: linear-gradient(140deg, var(--p) 0%, var(--p2) 100%);
+      background: linear-gradient(140deg, var(--p, #6366f1) 0%, var(--p2, #4f46e5) 100%);
       cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       box-shadow: 0 0 0 0 var(--p-md), 0 8px 28px rgba(0,0,0,0.5);
@@ -188,9 +216,9 @@
       bottom: 94px;
       width: 380px;
       height: min(660px, calc(100dvh - 108px));
-      background: var(--bg0);
-      border: 1px solid var(--line2);
-      border-radius: var(--r-xl);
+      background: var(--bg0, #08080f);
+      border: 1px solid var(--line2, rgba(255,255,255,0.13));
+      border-radius: var(--r-xl, 28px);
       box-shadow: var(--shadow);
       display: flex; flex-direction: column;
       overflow: hidden;
@@ -205,8 +233,8 @@
       content: '';
       position: absolute; bottom: 0; left: 0; right: 0; height: 200px;
       background: radial-gradient(ellipse at 50% 110%,
-        color-mix(in srgb, var(--p) 16%, transparent) 0%,
-        color-mix(in srgb, var(--p) 6%, transparent) 55%,
+        ${_waAlpha(PC, 16)} 0%,
+        ${_waAlpha(PC, 6)} 55%,
         transparent 100%);
       pointer-events: none; z-index: 0;
     }
@@ -247,7 +275,7 @@
       display: flex; align-items: center; justify-content: center; gap: 7px;
     }
     .wa-header-brand {
-      background: linear-gradient(135deg, var(--p) 0%, color-mix(in srgb, var(--p) 55%, #c084fc) 100%);
+      background: linear-gradient(135deg, var(--p) 0%, ${_waBlend(PC, '#c084fc', 55)} 100%);
       -webkit-background-clip: text; -webkit-text-fill-color: transparent;
       background-clip: text;
     }
@@ -394,14 +422,14 @@
       word-wrap: break-word; letter-spacing: -0.005em;
     }
     .wa-bubble.bot {
-      background: var(--bot-bubble-bg);
-      border: 1px solid var(--bot-bubble-border);
-      color: var(--text);
+      background: var(--bot-bubble-bg, #141426);
+      border: 1px solid var(--bot-bubble-border, rgba(255,255,255,0.08));
+      color: var(--text, #f0f0f8);
       border-radius: 4px 20px 20px 20px;
       box-shadow: 0 2px 12px rgba(0,0,0,0.10), inset 2px 0 0 var(--p-lo);
     }
     .wa-bubble.user {
-      background: linear-gradient(135deg, var(--p) 0%, var(--p2) 100%);
+      background: linear-gradient(135deg, var(--p, #6366f1) 0%, var(--p2, #4f46e5) 100%);
       color: #fff; border-radius: 20px 4px 20px 20px;
       box-shadow: 0 4px 18px var(--p-md);
     }
@@ -457,8 +485,8 @@
 
     .wa-card {
       flex-shrink:0; width: 152px;
-      background: var(--bg2); border: 1px solid var(--line2);
-      border-radius: var(--r-lg); overflow:hidden;
+      background: var(--bg2, #141426); border: 1px solid var(--line2, rgba(255,255,255,0.13));
+      border-radius: var(--r-lg, 18px); overflow:hidden;
       scroll-snap-align:start;
       transition: border-color .22s, transform .22s cubic-bezier(.34,1.56,.64,1),
                   box-shadow .22s ease;
@@ -466,9 +494,9 @@
       box-shadow: 0 2px 14px rgba(0,0,0,0.12);
     }
     .wa-card:hover {
-      border-color: color-mix(in srgb, var(--p) 55%, transparent);
+      border-color: ${_waAlpha(PC, 55)};
       transform: translateY(-4px);
-      box-shadow: 0 14px 36px rgba(0,0,0,0.20), 0 0 0 1px color-mix(in srgb, var(--p) 28%, transparent);
+      box-shadow: 0 14px 36px rgba(0,0,0,0.20), 0 0 0 1px ${_waAlpha(PC, 28)};
     }
     .wa-card-img-wrap { width:150px; height:130px; position:relative; overflow:hidden; }
     .wa-card-img {
@@ -484,13 +512,13 @@
     }
     .wa-card-body { padding:9px 10px 10px; display:flex; flex-direction:column; gap:5px; }
     .wa-card-name {
-      font-size: 11.5px; font-weight:600; color:var(--text);
+      font-size: 11.5px; font-weight:600; color:var(--text, #f0f0f8);
       line-height:1.38; letter-spacing:-0.005em;
       display:-webkit-box; -webkit-line-clamp:2;
       -webkit-box-orient:vertical; overflow:hidden;
     }
     .wa-card-prices { display:flex; align-items:baseline; gap:5px; }
-    .wa-card-price  { font-size:14px; font-weight:700; color:var(--p); letter-spacing:-0.02em; }
+    .wa-card-price  { font-size:14px; font-weight:700; color:var(--p, #6366f1); letter-spacing:-0.02em; }
     .wa-card-reg    { font-size:10.5px; color:var(--text3); text-decoration:line-through; }
     .wa-card-stock  {
       display:flex; align-items:center; gap:4px;
@@ -507,7 +535,7 @@
       font-size:10px; outline:none; cursor:pointer;
     }
     .wa-card-select:focus {
-      border-color: color-mix(in srgb, var(--p) 55%, transparent);
+      border-color: ${_waAlpha(PC, 55)};
       color: var(--text);
     }
     .wa-stock-dot { width:5px; height:5px; border-radius:50%; flex-shrink:0; }
@@ -623,7 +651,7 @@
     .wa-text-input {
       flex: 1;
       background: var(--input-bg);
-      border: 1.5px solid color-mix(in srgb, var(--p) 38%, transparent);
+      border: 1.5px solid ${_waAlpha(PC, 38)};
       border-radius: 22px;
       color: var(--text);
       font-size: 14px; font-family: inherit;
@@ -635,7 +663,7 @@
     .wa-text-input::placeholder { color: var(--input-ph); }
     .wa-text-input:focus {
       background: var(--input-bg-focus);
-      border-color: color-mix(in srgb, var(--p) 80%, transparent);
+      border-color: ${_waAlpha(PC, 80)};
       box-shadow: 0 0 0 3px var(--p-lo);
       outline: none;
     }
@@ -1028,7 +1056,7 @@
     }
     .wa-sug-btn {
       flex-shrink:0; padding:7px 16px;
-      background: var(--p-lo); border:1px solid color-mix(in srgb, var(--p) 28%, transparent);
+      background: var(--p-lo); border:1px solid ${_waAlpha(PC, 28)};
       color:var(--p); font-size:12px; font-weight:500;
       font-family:inherit; border-radius:20px; cursor:pointer;
       transition: background .15s, border-color .15s, color .15s, transform .12s, box-shadow .15s;
@@ -1036,8 +1064,8 @@
       box-shadow: 0 1px 6px var(--p-lo);
     }
     .wa-sug-btn:hover {
-      background: color-mix(in srgb, var(--p) 22%, transparent);
-      border-color: color-mix(in srgb, var(--p) 55%, transparent);
+      background: ${_waAlpha(PC, 22)};
+      border-color: ${_waAlpha(PC, 55)};
       color:var(--p); transform: translateY(-2px);
       box-shadow: 0 4px 14px var(--p-md);
     }
@@ -1096,6 +1124,11 @@
           <button class="wa-hbtn" id="wa-theme" title="Toggle light/dark mode" aria-label="Toggle theme">
             <svg id="wa-theme-icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/>
+            </svg>
+          </button>
+          <button class="wa-hbtn" id="wa-clear" title="Clear chat" aria-label="Clear chat">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
             </svg>
           </button>
           <button class="wa-hbtn" id="wa-close" title="Close" aria-label="Close">
@@ -1180,6 +1213,7 @@
   const badge = $('wa-badge');
   const muteBtn = $('wa-mute');
   const closeBtn = $('wa-close');
+  const clearBtn = $('wa-clear');
   const statusTxt = $('wa-status-text');
 
   function b64ToObjectUrl(b64, format) {
@@ -1399,6 +1433,30 @@
       stopCurrentAudio();
     }
   });
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      stopCurrentAudio();
+
+      // Wipe conversation from memory and localStorage
+      S.conversation = [];
+      localStorage.removeItem('_wa_conv');
+      localStorage.removeItem('_wa_greeted');
+
+      // New session ID so backend starts a fresh context (no old history leakage)
+      const newId = 'wa_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
+      S.sessionId = newId;
+      localStorage.setItem('_wa_sid_v2', newId);
+
+      // Clear message DOM
+      msgs.innerHTML = '';
+
+      // Re-run greeting through the existing path
+      S.greeted = true;
+      localStorage.setItem('_wa_greeted', '1');
+      fetchGreeting();
+    });
+  }
 
   function openPane() {
     primeAudioEngines();
@@ -2056,43 +2114,33 @@
 
       case 'add_to_cart':
         if (act.payload && act.payload.product_id) {
-          if (IS_SHOPIFY) {
-            // Backend already added to Shopify cart via ShopifyClient — just update display
-            const cart = act.payload.cart;
-            if (cart) {
-              const count = cart.item_count || cart.count || 0;
-              S.cartSnapshot = cart;
-              try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cart)); } catch (e) {}
-              updateBadge(count);
-              renderCart(cart);
-            }
-            showToast('🛒 Added to cart');
-          } else {
-            // WooCommerce: must sync PHP session cart via WordPress REST endpoint
-            try {
-              await addToCartViaWoo(act.payload);
-            } catch (error) {
-              const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
-              addBubble('bot', message);
-              showToast(message);
-            }
+          // The backend emits add_to_cart as a CLIENT-SIDE action (it never adds
+          // server-side). The widget must perform the real add so the item lands
+          // in the customer's actual cart — on Shopify via the native AJAX cart,
+          // on WooCommerce via the WP REST bridge. (Previously the Shopify branch
+          // trusted a payload.cart that was never sent → nothing was added.)
+          try {
+            await addToCartDispatch(act.payload);
+          } catch (error) {
+            const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
+            addBubble('bot', message);
+            showToast(message);
           }
         }
         break;
 
       case 'remove_from_cart':
         if (act.payload && act.payload.cart_item_key) {
-          if (IS_SHOPIFY) {
-            // Backend already removed from Shopify cart via ShopifyClient — just refresh display
-            showToast('🗑️ Removed from cart');
-            await fetchCart();
-          } else {
-            // WooCommerce: must sync PHP session cart
-            try {
+          // Like add, the backend remove is client-side only — perform the real
+          // removal so the customer's actual cart changes.
+          try {
+            if (IS_SHOPIFY) {
+              await removeFromCartShopify(act.payload.cart_item_key);
+            } else {
               await removeFromCartViaWoo(act.payload.cart_item_key);
-            } catch (error) {
-              showToast('Could not remove item from cart.');
             }
+          } catch (error) {
+            showToast('Could not remove item from cart.');
           }
         }
         break;
@@ -2106,8 +2154,15 @@
       }
 
       case 'show_cart':
-        if (act.payload && act.payload.cart) S.cartSnapshot = act.payload.cart;
-        renderCart(act.payload && act.payload.cart);
+        // Shopify: render the REAL cart (/cart.js), not the backend's payload —
+        // post-unification the authoritative cart lives in the storefront, so the
+        // backend's cart snapshot can be stale/empty.
+        if (IS_SHOPIFY) {
+          await fetchCart();
+        } else {
+          if (act.payload && act.payload.cart) S.cartSnapshot = act.payload.cart;
+          renderCart(act.payload && act.payload.cart);
+        }
         break;
 
       case 'show_orders':
@@ -2171,6 +2226,10 @@
         persistCheckoutAddress(act.payload);
         if (isCheckoutPage()) {
           applyStoredCheckoutAddress();
+        } else if (IS_SHOPIFY) {
+          // Shopify: can't script the checkout page — prefill via URL params.
+          const addr = act.payload.billing || act.payload.shipping || act.payload || {};
+          setTimeout(() => { window.location.href = _shopifyCheckoutUrl(addr); }, 1000);
         } else {
           setTimeout(() => {
             window.location.href = act.payload.url || '/checkout';
@@ -2181,7 +2240,11 @@
       case 'redirect_checkout':
       case 'redirect':
         setTimeout(() => {
-          window.location.href = (act.payload && act.payload.url) || '/checkout';
+          if (IS_SHOPIFY && (!act.payload || !act.payload.url || act.payload.url === '/checkout')) {
+            goToCheckout();
+          } else {
+            window.location.href = (act.payload && act.payload.url) || '/checkout';
+          }
         }, 800);
         break;
 
@@ -2218,16 +2281,16 @@
     });
 
     let res = await _doFetch(body);
-    let data = await res.json();
+    let data = await res.json().catch(() => null);
 
     // Retry once: let PHP pick the best variation (pass variation_id=0)
     // This helps when the variation_id passed is invalid or attributes mismatch
-    if (!res.ok && body.variation_id > 0) {
+    if ((!res.ok || !data) && body.variation_id > 0) {
       res = await _doFetch({ ...body, variation_id: 0 });
-      data = await res.json();
+      data = await res.json().catch(() => null);
     }
 
-    if (!res.ok || !data.success) {
+    if (!res.ok || !data || !data.success) {
       // PHP error_response puts message in data.error (top level)
       const errMsg = (data && (data.error || (data.data && data.data.message) || data.message)) || 'Add to cart failed';
       throw new Error(errMsg);
@@ -2258,6 +2321,201 @@
     return data;
   }
 
+  // ── Shopify native AJAX cart ────────────────────────────────────────────────
+  // Aria must operate the SAME cart the customer sees on /cart. The widget runs
+  // same-origin on the storefront, so it talks to Shopify's native Cart API
+  // (/cart/add.js, /cart.js) directly. The old code POSTed to the WooCommerce
+  // '/cart/add' path on Shopify too — that returns an HTML page, and res.json()
+  // then threw "Unexpected token '<'". This replaces that path for Shopify.
+
+  function _shopifyMoney(cents) {
+    const val = (Number(cents) || 0) / 100;
+    return (CFG.currency || '₹') + val.toLocaleString('en-IN', {
+      minimumFractionDigits: 2, maximumFractionDigits: 2,
+    });
+  }
+
+  function _normalizeShopifyCart(raw) {
+    const items = ((raw && raw.items) || []).map(it => ({
+      cart_item_key: it.key,
+      product_id: it.product_id,
+      variation_id: it.variant_id,
+      name: it.product_title || it.title || '',
+      quantity: it.quantity || 1,
+      price: _shopifyMoney(it.final_line_price != null ? it.final_line_price : it.line_price),
+      image_url: it.image || '',
+    }));
+    const count = (raw && raw.item_count != null)
+      ? raw.item_count
+      : items.reduce((s, i) => s + (i.quantity || 0), 0);
+    return {
+      items,
+      item_count: count,
+      count,
+      is_empty: count === 0,
+      total: _shopifyMoney(raw && raw.total_price || 0),
+    };
+  }
+
+  // Guard JSON parsing so a non-JSON (HTML error/redirect) response never throws a
+  // raw "Unexpected token '<'" at the user — surface a clean error instead.
+  async function _parseJsonSafe(res) {
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.toLowerCase().includes('json')) {
+      const txt = await res.text().catch(() => '');
+      throw new Error('Unexpected non-JSON response (' + res.status + ')' +
+        (txt ? ': ' + txt.slice(0, 80) : ''));
+    }
+    return res.json();
+  }
+
+  // Remember product_id → handle as cards render, so a later agent-driven
+  // "add it to cart" (whose payload has no handle) can still resolve a variant.
+  function _extractHandle(p) {
+    if (!p) return '';
+    if (p.handle) return String(p.handle);
+    const m = String(p.permalink || '').match(/\/products\/([^/?#]+)/);
+    return m ? m[1] : '';
+  }
+  function _rememberProduct(p) {
+    const id = p && (p.id || p.product_id);
+    const handle = _extractHandle(p);
+    if (id && handle) {
+      S.productHandles = S.productHandles || {};
+      S.productHandles[String(id)] = handle;
+    }
+  }
+
+  async function resolveShopifyVariantId(payload) {
+    // Single-variant products (or cards without a picker) arrive with no variant
+    // id. Fetch the product JSON by handle and pick the first available variant.
+    const handle = payload && (payload.handle || payload.product_handle);
+    if (!handle) return 0;
+    try {
+      const res = await fetch('/products/' + encodeURIComponent(handle) + '.js',
+        { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+      if (!res.ok) return 0;
+      const prod = await _parseJsonSafe(res);
+      const variants = (prod && prod.variants) || [];
+      const avail = variants.find(v => v.available) || variants[0];
+      return avail ? (parseInt(avail.id, 10) || 0) : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // silent=true updates the snapshot + badge only (no cart card in the chat) —
+  // used to seed S.cartSnapshot on page load so the first cart_context we send
+  // the backend already reflects the real cart.
+  async function fetchCartShopify(silent) {
+    const res = await fetch('/cart.js',
+      { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+    if (!res.ok) throw new Error('cart.js ' + res.status);
+    const cart = _normalizeShopifyCart(await _parseJsonSafe(res));
+    S.cartSnapshot = cart;
+    try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cart)); } catch (e) {}
+    updateBadge(cart.item_count);
+    if (!silent) renderCart(cart);
+    return cart;
+  }
+
+  async function addToCartShopify(payload) {
+    let variantId = parseInt(payload && (payload.variation_id || payload.variant_id), 10);
+    if (!Number.isInteger(variantId) || variantId <= 0) {
+      // No explicit variant: resolve from the handle. Prefer the payload handle,
+      // else the handle we remembered when this product's card was rendered.
+      let handle = (payload && (payload.handle || payload.product_handle)) || '';
+      if (!handle && payload && payload.product_id) {
+        handle = (S.productHandles || {})[String(payload.product_id)] || '';
+      }
+      variantId = await resolveShopifyVariantId({ handle });
+    }
+    if (!Number.isInteger(variantId) || variantId <= 0) {
+      throw new Error('Please choose a product option first.');
+    }
+    const res = await fetch('/cart/add.js', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        id: variantId,
+        quantity: Math.max(1, parseInt(payload.quantity, 10) || 1),
+      }),
+    });
+    if (!res.ok) {
+      let msg = 'Add to cart failed';
+      try { const e = await res.json(); msg = e.description || e.message || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+    await _parseJsonSafe(res);   // the added line item (ignored; we re-read the cart)
+    await fetchCartShopify();
+    showToast('🛒 Added to cart');
+  }
+
+  // Platform-aware add-to-cart: native AJAX on Shopify, WP REST on WooCommerce.
+  async function addToCartDispatch(payload) {
+    if (IS_SHOPIFY) return addToCartShopify(payload);
+    return addToCartViaWoo(payload);
+  }
+
+  // Build a Shopify checkout URL with prefilled shipping fields. Shopify can't be
+  // scripted on its hosted checkout (non-Plus), but it DOES accept checkout[...]
+  // query params to pre-populate the form — that's how we honour details the
+  // customer already gave Aria.
+  function _shopifyCheckoutUrl(addr) {
+    addr = addr || {};
+    const get = (...keys) => {
+      for (const k of keys) { if (addr[k]) return String(addr[k]).trim(); }
+      return '';
+    };
+    const p = new URLSearchParams();
+    const email = get('email');
+    if (email) p.set('checkout[email]', email);
+    const map = {
+      'checkout[shipping_address][first_name]': get('first_name'),
+      'checkout[shipping_address][last_name]':  get('last_name'),
+      'checkout[shipping_address][address1]':   get('address_1', 'address_line1'),
+      'checkout[shipping_address][city]':       get('city'),
+      'checkout[shipping_address][province]':   get('state', 'province'),
+      'checkout[shipping_address][zip]':        get('postcode', 'zip', 'pincode'),
+      'checkout[shipping_address][phone]':      get('phone'),
+      'checkout[shipping_address][country]':    get('country'),
+    };
+    Object.keys(map).forEach(k => { if (map[k]) p.set(k, map[k]); });
+    const qs = p.toString();
+    return '/checkout' + (qs ? ('?' + qs) : '');
+  }
+
+  // Take the customer to the REAL checkout. On Shopify this is the native
+  // checkout for the current cart (prefilled when we know the address); on
+  // WooCommerce we still let the agent drive (its address flow differs).
+  function goToCheckout() {
+    if (IS_SHOPIFY) {
+      const addr = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
+      window.location.href = _shopifyCheckoutUrl(addr);
+      return;
+    }
+    addBubble('user', 'I want to checkout');
+    sendToAgent('I want to checkout now');
+  }
+
+  // Native Shopify remove — sets the line item quantity to 0 via /cart/change.js.
+  // (The backend remove_from_cart is client-side only, like add; without this the
+  // agent's "remove X" never actually changed the real cart.)
+  async function removeFromCartShopify(cartItemKey) {
+    if (!cartItemKey) return;
+    const res = await fetch('/cart/change.js', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ id: String(cartItemKey), quantity: 0 }),
+    });
+    if (!res.ok) throw new Error('remove failed (' + res.status + ')');
+    await _parseJsonSafe(res);
+    await fetchCartShopify();
+    showToast('🗑️ Removed from cart');
+  }
+
   async function removeFromCartViaWoo(cartItemKey) {
     const endpoint = String(CFG.rest_url || '').replace(/\/$/, '') + '/cart/remove';
     const body = { session_id: S.sessionId, cart_item_key: cartItemKey, nonce: CFG.nonce || '' };
@@ -2273,10 +2531,16 @@
   }
 
   async function fetchCart() {
+    // Shopify: read the customer's REAL cart (/cart.js) so the widget display AND
+    // the cart_context we send to the backend match what's on the /cart page.
+    // This is the single source of truth — agent and direct adds both write here.
+    if (IS_SHOPIFY) {
+      try { return await fetchCartShopify(); } catch (e) { return null; }
+    }
     let cart = null;
     try {
-      if (IS_SHOPIFY || !CFG.rest_url) {
-        // Platform-agnostic: fetch from backend which handles WooCommerce/Shopify transparently
+      if (!CFG.rest_url) {
+        // Custom platform: backend handles cart transparently
         const cartRes = await fetch(
           `${CFG.agent_api_url}/api/v1/cart?session_id=${encodeURIComponent(S.sessionId)}`,
           { headers: { 'Content-Type': 'application/json' } }
@@ -2548,6 +2812,7 @@
     scroll.className = 'wa-products-scroll';
 
     unique.forEach(p => {
+      _rememberProduct(p);
       const stockStatus = String(p.stock_status || '').toLowerCase();
       // onbackorder = purchasable in WooCommerce; empty = assume in stock
       const inStock = !stockStatus || stockStatus === 'instock' || stockStatus === 'onbackorder';
@@ -2661,10 +2926,11 @@
             ? `Add "${name}" (${selectedBits})${qtyLabel} to my cart`
             : `Add "${name}"${qtyLabel} to my cart`);
           try {
-            await addToCartViaWoo({
+            await addToCartDispatch({
               product_id: id,
               variation_id: preferredVariation.variation_id,
               variation: preferredVariation.variation,
+              handle: p.handle || '',
               quantity: qty
             });
             addBtn.textContent = '✓ Added';
@@ -2760,8 +3026,7 @@
     `;
 
     el.querySelector('.wa-checkout-btn').addEventListener('click', () => {
-      addBubble('user', 'I want to checkout');
-      sendToAgent('I want to checkout now');
+      goToCheckout();
     });
 
     msgs.appendChild(el);
@@ -2841,7 +3106,7 @@
       el.innerHTML = `
         <div class="wa-cart-head">
           <span class="wa-cart-title">📦 Order #${esc(order.number || order.order_number || order.order_id || '')}</span>
-          <span class="wa-cart-pill" style="background:color-mix(in srgb, ${statusColor} 20%, transparent);color:${statusColor}">
+          <span class="wa-cart-pill" style="background:var(--bg3, rgba(128,128,128,0.12));color:${statusColor}">
             ${esc(order.status || '')}
           </span>
         </div>
@@ -3054,10 +3319,11 @@
         const resolvedVarId = matchedVar
           ? (parseInt(matchedVar.id || matchedVar.variation_id || 0, 10) || 0)
           : 0;
-        await addToCartViaWoo({
+        await addToCartDispatch({
           product_id: p.id,
           variation_id: resolvedVarId,
           variation: selected,
+          handle: p.handle || '',
           quantity: qty
         });
         addBtn.textContent = '✓ Added to Cart';
@@ -3536,7 +3802,12 @@
   function sendTextToA2A(text) {
     if (!geminiSocket || geminiSocket.readyState !== WebSocket.OPEN) return false;
     try {
-      geminiSocket.send(JSON.stringify({ type: 'text_input', text }));
+      // Include the real cart snapshot so the Brain reasons about the actual cart
+      // (over the WS path there's no HTTP cart_context — without this the agent
+      // would think the cart is empty).
+      const cart = (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot))
+        ? S.cartSnapshot : {};
+      geminiSocket.send(JSON.stringify({ type: 'text_input', text, cart_context: cart }));
       return true;
     } catch (e) {
       return false;
@@ -4485,6 +4756,12 @@
         throw fallbackError;
       }
     }
+  }
+
+  // Seed the real cart (badge + snapshot, no chat card) on load so the first
+  // message's cart_context already reflects the customer's actual cart.
+  if (IS_SHOPIFY) {
+    fetchCartShopify(true).catch(() => {});
   }
 
   if (isCheckoutPage()) {

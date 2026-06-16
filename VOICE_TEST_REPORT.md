@@ -49,7 +49,7 @@ uncertain work beyond this pass.
 
 ## Recommended voice test plan (the "things needed")
 1. **Manual human pass (required):** Chrome + mic + speakers, the widget on a page
-   served from a **stable public URL** (Railway, not ngrok — it drops WS), a
+   served from a **stable public URL** (Render, not ngrok — it drops WS), a
    **Growth/Pro merchant** (voice-gated), products synced. Speak the journey
    (search → add → cart → checkout → address → "yes"), in English + an Indian
    language, with one barge-in and some background noise. Grade: STT accuracy,

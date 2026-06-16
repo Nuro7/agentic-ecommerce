@@ -33,7 +33,7 @@ at the provider, then update the production secret store (NOT a committed file):
 ### A3. Get `.env` out of the repo
 - [ ] `.gitignore` already covers `.env`; confirm no `.env` is tracked. If this
       ever becomes a git repo, purge `.env` from history before pushing.
-- [ ] Move all secrets to the platform secret store (Railway variables / vault).
+- [ ] Move all secrets to the platform secret store (Render Env Group / vault).
 
 ### A4. Run database migrations
 - [ ] `alembic upgrade head` (applies `0010` password+indexes+conversation
@@ -41,14 +41,16 @@ at the provider, then update the production secret store (NOT a committed file):
 - [ ] On a large existing `product_cache`, build the HNSW index with
       `CREATE INDEX CONCURRENTLY` manually instead of in-migration (see `0011` note).
 
-### A5. Deploy the background worker tier (currently web-only!)
-The repo deploys **only uvicorn**. Without these, retries / webhooks / billing /
-analytics / scheduled sync never run.
-- [ ] Create a Railway **worker** service: `celery -A src.app.workers.celery_app worker -l info`
-- [ ] Create a Railway **beat** service: `celery -A src.app.workers.celery_app beat -l info`
-- [ ] Both share `DATABASE_URL` + `REDIS_URL`; no healthcheck. (Locally these run
-      via docker-compose automatically.)
-- [ ] Set the web service **Pre-Deploy Command** to `alembic upgrade head`.
+### A5. Deploy the background worker tier (required — not just the web service!)
+Without these, retries / webhooks / billing / analytics / scheduled product sync
+never run, and searches fall back to the live store API. The `render.yaml` Blueprint
+already declares all three services:
+- [ ] `speako-web`   — uvicorn (health-checked, public).
+- [ ] `speako-worker` — `celery -A src.app.workers.celery_app worker -l info`
+- [ ] `speako-beat`   — `celery -A src.app.workers.celery_app beat -l info`
+- [ ] All three share the `speako` Render Env Group (`DATABASE_URL` + `REDIS_URL` + keys).
+- [ ] Migrations run via the web service `preDeployCommand: alembic upgrade head`.
+- [ ] (Locally, worker + beat run via docker-compose automatically.)
 
 ### A6. Verify Gate A
 - [ ] `make test` (in `backend/`) is green — auth-isolation, login, webhook,
