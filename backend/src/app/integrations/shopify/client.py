@@ -290,21 +290,29 @@ class ShopifyClient(BaseStoreClient):
 
     def _normalize_admin_gql_node(self, node: Dict[str, Any]) -> Dict[str, Any]:
         """Map an Admin GraphQL product node to the same shape as
-        _normalize_product_node (so downstream consumers are identical)."""
+        _normalize_product_node (so downstream consumers are identical).
+
+        NOTE: Admin API Product has NO compareAtPriceRange and Admin ProductVariant
+        has no availableForSale — both are Storefront-only. We derive sale price from
+        variant compareAtPrice and stock from inventoryQuantity instead.
+        """
         pr = (node.get("priceRangeV2") or {}).get("minVariantPrice", {}) or {}
-        cmp_obj = (node.get("compareAtPriceRange") or {}).get("minVariantPrice", {}) or {}
         price = pr.get("amount", "0")
-        compare = cmp_obj.get("amount", "0")
-        on_sale = _safe_float(compare) > _safe_float(price) and _safe_float(compare) > 0
         image_url = (node.get("featuredImage") or {}).get("url", "") or ""
 
         variants = (node.get("variants") or {}).get("edges", [])
         variations_summary = []
         any_in_stock = False
+        compares: List[float] = []
         for edge in variants[:8]:
             v = edge.get("node", {})
-            if v.get("availableForSale"):
+            qty = v.get("inventoryQuantity")
+            # Untracked inventory (qty is None) is purchasable; tracked needs qty > 0.
+            v_in_stock = qty is None or (isinstance(qty, int) and qty > 0)
+            if v_in_stock:
                 any_in_stock = True
+            if v.get("compareAtPrice"):
+                compares.append(_safe_float(v.get("compareAtPrice")))
             attrs: Dict[str, str] = {}
             for sel in v.get("selectedOptions", []):
                 attrs[str(sel.get("name", "")).lower()] = sel.get("value", "")
@@ -312,12 +320,14 @@ class ShopifyClient(BaseStoreClient):
                 "id": _gid_to_int(v.get("id", "")),
                 "attributes": attrs,
                 "price": str(v.get("price", price)),
-                "stock_status": "instock" if v.get("availableForSale") else "outofstock",
-                "stock_qty": v.get("inventoryQuantity"),
+                "stock_status": "instock" if v_in_stock else "outofstock",
+                "stock_qty": qty,
             })
 
+        compare = str(max(compares)) if compares else "0"
+        on_sale = _safe_float(compare) > _safe_float(price) and _safe_float(compare) > 0
         total_inventory = node.get("totalInventory")
-        in_stock = any_in_stock or (bool(total_inventory) and int(total_inventory or 0) > 0)
+        in_stock = any_in_stock or (isinstance(total_inventory, int) and total_inventory > 0)
         attributes = [
             {"name": o.get("name", ""), "options": o.get("values", [])}
             for o in node.get("options", [])
@@ -352,30 +362,31 @@ class ShopifyClient(BaseStoreClient):
         Storefront channel). The Admin token sees every product."""
         if not self.admin_token:
             return []
+        # Admin product-search query supports text + status, but NOT price filtering
+        # (no `variants.price` field) — we apply price + stock filters client-side.
         parts: List[str] = ["status:active"]
         if query:
             parts.append(query)
-        if min_price is not None:
-            parts.append(f"variants.price:>={min_price}")
-        if max_price is not None:
-            parts.append(f"variants.price:<={max_price}")
         admin_q = " ".join(parts)
-        per_page = max(1, min(int(limit or 6), 40))
+        # Fetch a few extra so client-side price/stock filtering still fills the page.
+        fetch_n = max(1, min(int(limit or 6) * 3, 60))
+        # RELEVANCE only makes sense with a text term; a pure browse (status only) can
+        # error on it — fall back to TITLE ordering.
+        sort_key = "RELEVANCE" if query else "TITLE"
 
         GQL = """
         query AdminSearch($query: String!, $first: Int!) {
-          products(query: $query, first: $first, sortKey: RELEVANCE) {
+          products(query: $query, first: $first, sortKey: %s) {""" % sort_key + """
             edges {
               node {
                 id title handle descriptionHtml totalInventory
                 featuredImage { url }
                 priceRangeV2 { minVariantPrice { amount currencyCode } }
-                compareAtPriceRange { minVariantPrice { amount } }
                 options { name values }
                 variants(first: 10) {
                   edges {
                     node {
-                      id availableForSale inventoryQuantity price
+                      id inventoryQuantity price compareAtPrice
                       selectedOptions { name value }
                     }
                   }
@@ -386,7 +397,7 @@ class ShopifyClient(BaseStoreClient):
         }
         """
         try:
-            data = await self._admin_graphql(GQL, {"query": admin_q, "first": per_page})
+            data = await self._admin_graphql(GQL, {"query": admin_q, "first": fetch_n})
         except Exception as exc:
             logger.warning("Shopify Admin product fallback failed: %s", exc)
             return []
@@ -394,7 +405,11 @@ class ShopifyClient(BaseStoreClient):
         products = [self._normalize_admin_gql_node(e["node"]) for e in edges]
         if in_stock_only:
             products = [p for p in products if p.get("stock_status") == "instock"]
-        return products
+        if min_price is not None:
+            products = [p for p in products if _safe_float(p.get("price")) >= min_price]
+        if max_price is not None:
+            products = [p for p in products if _safe_float(p.get("price")) <= max_price]
+        return products[: max(1, min(int(limit or 6), 40))]
 
     # ── Products ───────────────────────────────────────────────────────────────
 
