@@ -151,9 +151,19 @@ _PRODUCT_MENTION_RE = re.compile(r"\b([A-Z][\w-]*(?:\s+[A-Z0-9][\w-]*)+)\b")
 # matches a real "...Aviation Edition" just on the shared word "Edition". Excluded
 # from name tokens on BOTH sides so only DISTINCTIVE tokens (brand/model) match.
 _GENERIC_NAME_TOKENS = frozenset({
+    # product-name filler
     "edition", "pro", "max", "plus", "series", "new", "set", "pack", "kit",
     "mini", "lite", "ultra", "premium", "the", "and", "for", "with", "size",
     "color", "colour", "version", "model", "type", "style", "classic", "special",
+    # common commerce / policy / English words that appear Title-Cased but are NOT
+    # products (e.g. "Cash On Delivery", "Free Shipping", "Best Seller") — excluded
+    # so they never look like a fabricated product name.
+    "cash", "delivery", "shipping", "free", "order", "orders", "return",
+    "returns", "refund", "payment", "payments", "card", "checkout", "warranty",
+    "exchange", "policy", "support", "service", "sale", "offer", "deal",
+    "discount", "coupon", "gift", "voucher", "online", "store", "shop", "today",
+    "now", "week", "day", "available", "option", "options", "best", "seller",
+    "you", "your", "our", "this", "that", "here", "want", "add", "cart",
 })
 
 
