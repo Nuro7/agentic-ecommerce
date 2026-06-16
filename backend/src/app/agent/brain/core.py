@@ -92,6 +92,28 @@ def _store_key(store_client: Any) -> str:
     return f"id:{id(store_client)}"
 
 
+# Tokens that make up a "truly generic" browse request ("what do you have",
+# "show me everything", "what products do you sell"). A query is generic ONLY if
+# every content token is in this set — otherwise it names something specific
+# (e.g. "watches") and a zero-result search must hard-stop, not reach the LLM.
+_GENERIC_BROWSE_TOKENS = frozenset({
+    "what", "which", "show", "list", "see", "tell", "give", "me", "us", "do",
+    "you", "your", "the", "a", "an", "any", "some", "of", "is", "are", "there",
+    "product", "products", "item", "items", "thing", "things", "stock", "sell",
+    "selling", "offer", "offers", "catalog", "catalogue", "collection",
+    "collections", "everything", "all", "available", "got", "carry", "store",
+    "shop", "here", "have", "has", "to", "can", "i", "buy", "browse",
+})
+
+
+def _is_generic_browse(message: str) -> bool:
+    """True when the message is a non-specific 'show me what you have' request."""
+    content = [t for t in re.findall(r"[a-z]+", message.lower()) if len(t) > 1]
+    if not content:
+        return True
+    return all(t in _GENERIC_BROWSE_TOKENS for t in content)
+
+
 def _evict_catalog_cache() -> None:
     """Drop the oldest entries when the cache exceeds its bound."""
     if len(_catalog_cache) < _CATALOG_MAX_ENTRIES:
@@ -120,29 +142,22 @@ async def _get_store_catalog(store_client: Any) -> str:
             if names:
                 parts.append("Categories: " + ", ".join(names))
 
-        sample = await store_client.search_products(query="", in_stock_only=True, limit=10)
-        if sample:
-            product_names = list({
-                p.get("name", "").split(" – ")[0].strip()
-                for p in sample
-                if isinstance(p, dict) and p.get("name")
-            })[:8]
-            if product_names:
-                parts.append("Available products include: " + ", ".join(product_names))
-
+        # ANTI-HALLUCINATION: do NOT inject specific product names or prices here.
+        # The model would paraphrase/combine them into fake variants ("iPhone 13" +
+        # "blue" → "iPhone 13 Blue Edition") and misattribute a real price to the
+        # wrong product. It must call search_products to learn any name. We only
+        # surface a count + a sale signal — never a name.
         try:
-            on_sale = [
-                p for p in (sample or [])
-                if isinstance(p, dict)
-                and p.get("sale_price") and p.get("regular_price")
-                and p.get("sale_price") != p.get("regular_price")
-            ]
-            if on_sale:
-                deals = [
-                    f"{p.get('name')} (was ₹{p.get('regular_price')}, now ₹{p.get('sale_price')})"
-                    for p in on_sale[:3]
-                ]
-                parts.append("Current deals: " + ", ".join(deals))
+            sample = await store_client.search_products(query="", in_stock_only=True, limit=10)
+            if sample:
+                has_sale = any(
+                    isinstance(p, dict)
+                    and p.get("sale_price") and p.get("regular_price")
+                    and p.get("sale_price") != p.get("regular_price")
+                    for p in sample
+                )
+                if has_sale:
+                    parts.append("Some items are currently on sale.")
         except Exception:
             pass
 
@@ -370,25 +385,28 @@ async def ask_brain(
                     "Retrieval: 0 products for intent=%s query='%s'",
                     intent_result.intent, cleaned_message[:40],
                 )
+                # A NEW search that found nothing must NOT leave the previous
+                # query's products in context — the LLM would offer them as if
+                # they matched (a hallucination vector). Clear stale products so
+                # the hard stop below fires deterministically.
+                if intent_result.intent == SEARCH:
+                    last_products = []
         except Exception as exc:
             logger.warning("Retrieval pre-fetch failed (non-fatal): %s", exc)
             # retrieval_ran stays False — hard stop must NOT fire on infra errors
 
     # Hard stop: retrieval ran successfully, confirmed zero results, and the
-    # session has no prior products to fall back on.
-    # Exception: generic browse queries ("what products do you have", "show me everything")
-    # should pass through to the LLM so it can call search_products("") to list all items.
-    _GENERIC_BROWSE = re.compile(
-        r"^(what|which|show|list|see|tell|give).{0,40}"
-        r"(product|item|thing|have|stock|sell|offer|catalog|collection)",
-        re.I,
-    )
+    # session has no prior products to fall back on → return the deterministic
+    # "no products" message instead of letting the LLM free-form (and invent).
+    # Exception: ONLY truly generic browse queries ("what do you have", "what do
+    # you sell") pass through so the LLM can list everything. A query naming a
+    # SPECIFIC item ("what watches do you have") must hard-stop on zero results.
     if (
         result is None
         and retrieval_ran
         and not retrieval_found
         and not last_products
-        and not _GENERIC_BROWSE.search(cleaned_message)
+        and not _is_generic_browse(cleaned_message)
     ):
         result = _no_products_result(lang)
 
@@ -537,8 +555,9 @@ async def ask_brain(
     # ── Step 7: Output guardrail ──────────────────────────────────────────────
     retrieved_ids: Set[str] = set()
     retrieved_prices: Set[str] = set()
+    retrieved_names: Set[str] = set()
     try:
-        retrieved_ids, retrieved_prices, retrieved_attrs = build_retrieved_context(
+        retrieved_ids, retrieved_prices, retrieved_attrs, retrieved_names = build_retrieved_context(
             [a.get("payload", {}) for a in ui_actions if isinstance(a, dict)]
         )
         response_text = check_output(
@@ -546,6 +565,7 @@ async def ask_brain(
             retrieved_product_ids=retrieved_ids or None,
             retrieved_prices=retrieved_prices or None,
             retrieved_attributes=retrieved_attrs or None,
+            retrieved_names=retrieved_names or None,
             detected_language=lang,
             allow_retry=True,
         )
@@ -558,6 +578,7 @@ async def ask_brain(
             lang=lang,
             retrieved_ids=retrieved_ids,
             retrieved_prices=retrieved_prices,
+            retrieved_names=retrieved_names,
         )
     except Exception as exc:
         logger.debug("Output guardrail skipped: %s", exc)

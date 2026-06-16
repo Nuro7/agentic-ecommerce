@@ -140,12 +140,30 @@ class OutputValidationError(ValueError):
         super().__init__(reason)
 
 
+# A "specific product mention": a Capitalised word (or a brand-cased word like
+# "iPhone"/"G-Shock") followed by 1+ more Capitalised/number words — e.g.
+# "Casio G-Shock Diver", "UltraSound X50", "iPhone 13". Used to detect fabricated
+# product names in check_output's name-grounding check.
+_PRODUCT_MENTION_RE = re.compile(r"\b([A-Z][\w-]*(?:\s+[A-Z0-9][\w-]*)+)\b")
+
+# Generic words that appear in many product names ("Edition", "Pro", "Max"). They
+# must NOT count as a name match — otherwise a fabricated "iPhone 13 Blue Edition"
+# matches a real "...Aviation Edition" just on the shared word "Edition". Excluded
+# from name tokens on BOTH sides so only DISTINCTIVE tokens (brand/model) match.
+_GENERIC_NAME_TOKENS = frozenset({
+    "edition", "pro", "max", "plus", "series", "new", "set", "pack", "kit",
+    "mini", "lite", "ultra", "premium", "the", "and", "for", "with", "size",
+    "color", "colour", "version", "model", "type", "style", "classic", "special",
+})
+
+
 def check_output(
     text: str,
     *,
     retrieved_product_ids: Optional[Set[Any]] = None,
     retrieved_prices: Optional[Set[str]] = None,
     retrieved_attributes: Optional[Set[str]] = None,
+    retrieved_names: Optional[Set[str]] = None,
     detected_language: str = "en",
     allow_retry: bool = True,
 ) -> str:
@@ -180,6 +198,32 @@ def check_output(
             # Non-retry mode: strip the ID references rather than raising
             for uid in unknown:
                 cleaned = re.sub(rf"\bID[:\s]+{re.escape(uid)}\b", "", cleaned)
+
+    # ── Check 1b: product NAMES must come from retrieved data ─────────────────
+    # Catches fabricated product names ("UltraSound X50", "iPhone 13 Blue Edition")
+    # that pass the ID/price checks. Fires ONLY when a search actually ran this turn
+    # (retrieved_names non-empty). Conservative to avoid false positives: a mention
+    # is flagged only when it looks unmistakably like a product (a model-number token
+    # like "X50"/"13", OR 3+ Capitalised words) AND shares ZERO significant token
+    # with any retrieved product name.
+    if retrieved_names:
+        for phrase in _PRODUCT_MENTION_RE.findall(cleaned):
+            toks = [
+                t for t in re.findall(r"[a-z0-9]+", phrase.lower())
+                if len(t) > 2 and t not in _GENERIC_NAME_TOKENS
+            ]
+            if not toks:
+                continue
+            has_model = any(re.search(r"(?:[a-z][0-9]|[0-9][a-z]|[0-9]{2,})", t) for t in toks)
+            looks_like_product = has_model or len(phrase.split()) >= 3
+            if not looks_like_product:
+                continue
+            if not any(t in retrieved_names for t in toks):
+                msg = f"hallucinated product name: {phrase!r}"
+                logger.warning("Output validation FAIL — %s", msg)
+                if allow_retry:
+                    raise OutputValidationError(msg)
+                break  # non-retry: stop at first; caller will re-ground or fall back
 
     # ── Check 2: prices must come from retrieved data ─────────────────────────
     # Normalize commas and spaces before comparing so "₹12,499" matches "₹12499".
@@ -293,22 +337,31 @@ def strip_inline_prices(text: str) -> str:
 
 def build_retrieved_context(
     tool_results: List[Dict[str, Any]],
-) -> tuple[Set[str], Set[str], Set[str]]:
-    """Extract product IDs, prices, and attribute values from tool results.
+) -> tuple[Set[str], Set[str], Set[str], Set[str]]:
+    """Extract product IDs, prices, attribute values, and NAME TOKENS from results.
 
     Pass the return value into check_output() so it can validate the LLM
     response against only what was actually retrieved.
 
-    Returns (product_id_set, price_set, attribute_value_set).
+    Returns (product_id_set, price_set, attribute_value_set, name_token_set).
+    name_token_set holds the significant lowercased tokens of every retrieved
+    product name — check_output uses it to catch fabricated product names.
     """
     product_ids: Set[str] = set()
     prices: Set[str] = set()
     attributes: Set[str] = set()
+    name_tokens: Set[str] = set()
 
     def _extract_product(p: dict) -> None:
         pid = p.get("id") or p.get("product_id")
         if pid:
             product_ids.add(str(pid))
+        # Collect significant name tokens (len>2) for name-grounding in check_output.
+        name = str(p.get("name") or "").strip().lower()
+        if name:
+            for tok in re.findall(r"[a-z0-9]+", name):
+                if len(tok) > 2 and tok not in _GENERIC_NAME_TOKENS:
+                    name_tokens.add(tok)
         for price_key in ("price", "regular_price", "sale_price"):
             raw = str(p.get(price_key) or "").strip()
             if raw and raw != "0":
@@ -348,4 +401,4 @@ def build_retrieved_context(
         if "product" in payload and isinstance(payload["product"], dict):
             _extract_product(payload["product"])
 
-    return product_ids, prices, attributes
+    return product_ids, prices, attributes, name_tokens
