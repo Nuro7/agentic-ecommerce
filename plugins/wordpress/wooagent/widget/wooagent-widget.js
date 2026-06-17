@@ -2347,14 +2347,18 @@
 
   // Guard JSON parsing so a non-JSON (HTML error/redirect) response never throws a
   // raw "Unexpected token '<'" at the user — surface a clean error instead.
+  // Shopify's AJAX endpoints (/cart/add.js, /cart.js, /products/*.js) sometimes
+  // return JSON with a `text/javascript` content-type, so we DON'T reject on the
+  // content-type header alone — we try to parse the body and only fail if it isn't
+  // valid JSON (i.e. an actual HTML error/redirect page).
   async function _parseJsonSafe(res) {
-    const ct = res.headers.get('content-type') || '';
-    if (!ct.toLowerCase().includes('json')) {
-      const txt = await res.text().catch(() => '');
+    const txt = await res.text().catch(() => '');
+    try {
+      return JSON.parse(txt);
+    } catch (_) {
       throw new Error('Unexpected non-JSON response (' + res.status + ')' +
         (txt ? ': ' + txt.slice(0, 80) : ''));
     }
-    return res.json();
   }
 
   // Remember product_id → handle as cards render, so a later agent-driven
@@ -2435,7 +2439,10 @@
       try { const e = await res.json(); msg = e.description || e.message || msg; } catch (_) {}
       throw new Error(msg);
     }
-    await _parseJsonSafe(res);   // the added line item (ignored; we re-read the cart)
+    // The add already succeeded (res.ok). We don't need the returned line item —
+    // we re-read the whole cart next — so DON'T parse the body. Shopify returns it
+    // with a non-JSON content-type, and parsing it used to throw a false
+    // "Unexpected non-JSON response" error into the chat AFTER a successful add.
     await fetchCartShopify();
     showToast('🛒 Added to cart');
   }

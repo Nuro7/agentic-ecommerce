@@ -47,8 +47,8 @@ _PII_PATTERNS: List[tuple[re.Pattern, str]] = [
 # Bare integers without context (sizes "42", counts "2 items") are excluded.
 _INLINE_PRICE_RE = re.compile(
     r"(?:"
-    r"[₹$€£¥]\s*[\d,]+(?:[kK])?"                                                                       # 1. symbol prefix
-    r"|(?:costs?\s+|priced?\s+at\s+|for\s+(?:just\s+|only\s+)?|only\s+|just\s+)[\d,]+(?:\.\d{1,2})?"  # 2. context-anchored
+    r"[₹$€£¥]\s*[\d,]+(?:\.\d{1,2})?(?:[kK])?"                                                         # 1. symbol prefix (incl. decimals → "$120.0" strips whole)
+    r"|(?:costs?\s+|priced?\s+at\s+|for\s+(?:just\s+|only\s+)?|only\s+|just\s+)[₹$€£¥]?\s*[\d,]+(?:\.\d{1,2})?"  # 2. context-anchored (eats the lead-in word + optional symbol)
     r"|[\d,]+(?:\.\d{1,2})?(?:[kK])?\s*(?:rupees?|rs\.?|inr|dollars?|usd|euros?|eur|pounds?|gbp|lakh)" # 3. trailing unit
     r")",
     re.IGNORECASE,
@@ -59,6 +59,7 @@ _INLINE_PRICE_RE = re.compile(
 # Misses "there are 3", "stock is down to 2" etc. — acceptable given the prompt
 # already forbids exact quantities. Monitor via warning log in strip_inline_prices.
 _INLINE_STOCK_RE = re.compile(
+    r"(?:\s*(?:with|and|,|—|-)\s+)?"  # consume a leading connector so "available with 3 left" → "available"
     r"(?:(?:only\s+|just\s+)?(?:have|has|got)\s+\d+\s+(?:left|remaining|in\s+stock)"
     r"|(?:only\s+|just\s+)?\d+\s+(?:left|remaining|units?\s+(?:left|available|in\s+stock)))",
     re.IGNORECASE,
@@ -364,8 +365,18 @@ def strip_inline_prices(text: str) -> str:
     )
     cleaned = _INLINE_PRICE_RE.sub("", text)
     cleaned = _INLINE_STOCK_RE.sub("", cleaned)
-    cleaned = re.sub(r"  +", " ", cleaned).strip()
-    return cleaned
+
+    # Post-strip cleanup so removal never leaves grammatical garbage:
+    cleaned = re.sub(r"(?<=\s)\.\d{1,2}\b", "", cleaned)          # orphan decimal tail ".0" left by a stripped "$120"
+    cleaned = re.sub(r"\b(?:with|and)\s+(?:left|remaining|in\s+stock)\b", "", cleaned, flags=re.IGNORECASE)  # "with left"
+    cleaned = re.sub(r"(?<![\w])(?:left|remaining)\b(?!\s*\w)", "", cleaned, flags=re.IGNORECASE)  # dangling "left"
+    cleaned = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", cleaned, flags=re.IGNORECASE)  # doubled word "is is" → "is"
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)            # space before punctuation
+    cleaned = re.sub(r"([,;:])\s*([.])", r"\2", cleaned)         # orphaned ", ." → "."
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)                    # empty parens left by a stripped value
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([.!?])", r"\1", cleaned)
+    return cleaned.strip(" ,;:-—")
 
 
 def build_retrieved_context(

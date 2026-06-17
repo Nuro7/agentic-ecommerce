@@ -313,15 +313,31 @@ async def chat_endpoint(
 
     text = result.get("response_text") or result.get("text") or ""
     acts = result.get("ui_actions") or result.get("actions") or []
+    resp_lang = result.get("language") or language
+    speech_text = result.get("speech_text") or text
+
+    # Synthesize TTS so EVERY reply speaks — not just the opening greeting. The
+    # widget only plays audio when `audio_base64` is present (browser-TTS fallback
+    # was removed), and /greet was the only endpoint returning it. Mirror it here.
+    audio_b64 = None
+    tts_service = getattr(req.app.state, "tts_service", None)
+    if tts_service and speech_text:
+        try:
+            audio_b64 = await tts_service.synthesize(speech_text, language=resp_lang)
+        except Exception as exc:
+            logger.warning("Chat TTS synthesis failed session=%s: %s", payload.session_id, exc)
+
     return {
         "session_id": payload.session_id,
         "text": text,
         "response_text": text,
-        "speech_text": result.get("speech_text") or text,
-        "language": result.get("language") or language,
+        "speech_text": speech_text,
+        "language": resp_lang,
         "ui_actions": acts,
         "actions": acts,
         "suggested_replies": result.get("suggested_replies") or [],
+        "audio_base64": audio_b64,
+        "audio_format": tts_service.audio_format() if (tts_service and audio_b64) else None,
     }
 
 
