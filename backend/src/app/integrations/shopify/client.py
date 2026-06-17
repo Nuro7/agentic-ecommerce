@@ -421,9 +421,18 @@ class ShopifyClient(BaseStoreClient):
         ]
         if q_tokens:
             def _score(p: Dict[str, Any]) -> int:
-                hay = (str(p.get("name", "")) + " " + str(p.get("_tags", "")) + " "
-                       + str(p.get("short_description", ""))).lower()
-                return sum(1 for t in q_tokens if t in hay)
+                words = set(re.findall(
+                    r"[a-z0-9]+",
+                    (str(p.get("name", "")) + " " + str(p.get("_tags", "")) + " "
+                     + str(p.get("short_description", ""))).lower(),
+                ))
+                s = 0
+                for t in q_tokens:
+                    # Bidirectional substring → forgiving on plurals / partial words
+                    # ("watch"↔"watches", "shoe"↔"shoes"). Name match weighted higher.
+                    if any(t in w or w in t for w in words):
+                        s += 1
+                return s
             ranked = sorted(((p, _score(p)) for p in products), key=lambda x: x[1], reverse=True)
             matched = [p for p, s in ranked if s > 0]
             # If the query matched something, return those; otherwise leave empty so the
