@@ -376,6 +376,25 @@ async def ask_brain(
         except Exception as exc:
             logger.warning("Fast-intent pre-LLM failed: %s", exc)
 
+    # ── Store-not-connected guard ─────────────────────────────────────────────
+    # If this tenant has no usable Shopify token (domain present but Storefront AND
+    # Admin tokens empty — e.g. install never finished), every product path will
+    # fail. Say so plainly instead of letting the LLM invent products. Fires only
+    # for product-related requests; chit-chat / store-info still work.
+    if (
+        result is None
+        and getattr(store_client, "has_credentials", True) is False
+        and (
+            intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY)
+            or _is_generic_browse(cleaned_message)
+        )
+    ):
+        logger.warning(
+            "Store not connected (no usable token) — returning not-connected reply for tenant=%s",
+            store_context.get("tenant_id"),
+        )
+        result = _not_connected_result(lang)
+
     # ── Retrieval pre-fetch (for search / detail / inventory) ─────────────────
     # retrieval_ran: True only when the DB call completed without exception.
     # retrieval_found: True when the call ran AND returned ≥1 product.
@@ -749,6 +768,25 @@ def _no_products_result(lang: str) -> Dict[str, Any]:
         "response_text": text,
         "ui_actions": [],
         "suggested_replies": ["Show all products", "Browse categories"],
+    }
+
+
+def _not_connected_result(lang: str) -> Dict[str, Any]:
+    """Deterministic reply when the store has no usable Shopify token — so Aria says
+    the store isn't connected instead of letting the LLM hallucinate products."""
+    _texts = {
+        "en": "This store isn't fully connected yet, so I can't load live products right now. (Store owner: please re-install Speako to finish setup.)",
+        "hi": "Yeh store abhi poori tarah connect nahi hua hai, isliye main abhi live products nahi dikha sakti. (Store owner: setup poora karne ke liye Speako dobara install karein.)",
+        "ml": "Ee store ippozhum poornamayi connect aayittilla, atinaal enikku ippol live products kaanikkaan kazhiyilla. (Store owner: setup poorthiyaakaan Speako veendum install cheyyu.)",
+        "ta": "Indha store innum muzhumaiyaaga connect aagala, adhanaal ippo live products kaatta mudiyala. (Store owner: setup-ai mudikka Speako-vai marupadiyum install pannunga.)",
+        "te": "Ee store inkaa purthiga connect avvaledu, anduvalla nenu ippudu live products chupinchaledu. (Store owner: setup purthi cheyyadaniki Speako malli install cheyyandi.)",
+        "bn": "Ei store ekhono puropuri connect hoyni, tai ami ekhon live products dekhate parchi na. (Store owner: setup sesh korte Speako abar install korun.)",
+        "kn": "Ee store innu sampurnavaagi connect aagilla, adarinda naanu eega live products torisalu saadhyavilla. (Store owner: setup mugisalu Speako matte install maadi.)",
+    }
+    return {
+        "response_text": _texts.get(lang, _texts["en"]),
+        "ui_actions": [],
+        "suggested_replies": ["Store info", "Help"],
     }
 
 

@@ -126,6 +126,13 @@ class ShopifyClient(BaseStoreClient):
         _url_bytes = (self.store_domain or "shopify-default").encode("utf-8")
         self._cache_prefix = "shopify:" + hashlib.md5(_url_bytes).hexdigest()[:8] + ":"
 
+    @property
+    def has_credentials(self) -> bool:
+        """True when this client can actually reach Shopify — a domain plus at least
+        one usable token (Storefront OR Admin). False means the store isn't connected
+        yet, so callers should say so instead of attempting (and faking) a search."""
+        return bool(self.store_domain and (self.storefront_token or self.admin_token))
+
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     async def close(self) -> None:

@@ -107,6 +107,20 @@ async def _register_script_tag(shop_domain: str, access_token: str, loader_url: 
     return resp.json().get("script_tag", {})
 
 
+async def _verify_admin_token(shop_domain: str, access_token: str) -> bool:
+    """Confirm the Admin token can actually read the store. Returns True on a 200
+    from shop.json — proves the token is valid before we report a successful install."""
+    api_version = _settings.shopify_api_version
+    url = f"https://{shop_domain}/admin/api/{api_version}/shop.json"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=_shopify_admin_headers(access_token))
+        return resp.status_code == 200
+    except Exception as exc:
+        logger.error("Admin token verification request failed for %s: %s", shop_domain, exc)
+        return False
+
+
 async def _create_storefront_token(shop_domain: str, admin_token: str) -> str:
     """Mint a Storefront API access token via the Admin API, using the Admin token we
     just got from OAuth. This is what lets merchants install with ONE click and never
@@ -167,12 +181,15 @@ async def shopify_install(shop: str, request: Request):
     backend_url = _get_backend_url(request)
     redirect_uri = f"{backend_url}/api/v1/shopify/callback"
 
+    # NOTE: no "grant_options[]": "per-user" — we want an OFFLINE token. Per-user
+    # (online) tokens expire ~24h, which would silently disconnect the store every
+    # day. An offline token persists until the app is uninstalled, which is what a
+    # server-side SaaS that fetches products around the clock needs.
     params = {
         "client_id": _settings.shopify_api_key,
         "scope": SHOPIFY_SCOPES,
         "redirect_uri": redirect_uri,
         "state": state,
-        "grant_options[]": "per-user",
     }
     oauth_url = f"https://{shop}/admin/oauth/authorize?" + urllib.parse.urlencode(params)
     logger.info("Redirecting %s to Shopify OAuth", shop)
@@ -226,11 +243,24 @@ async def shopify_callback(
     scope = token_data.get("scope", "")
     logger.info("OAuth complete for %s — scopes: %s", shop, scope)
 
+    backend_url = _get_backend_url(request)
+
+    # Verify the token actually works against the Admin API BEFORE we declare success.
+    # A token that can't read the shop is useless — better to fail loudly here than to
+    # show a green "Installed!" page and have the store silently broken at search time.
+    if not await _verify_admin_token(shop, access_token):
+        logger.error("Admin token verification FAILED for %s (shop.json not readable)", shop)
+        return HTMLResponse(
+            content=_error_page(shop, "Couldn't verify the access token with Shopify (shop.json was not readable). Please try installing again."),
+            status_code=502,
+        )
+
     # Auto-provision a Storefront token so the merchant never has to create one.
     # On re-install this mints a fresh token (handles revoked/old-app tokens).
     storefront_token = await _create_storefront_token(shop, access_token)
 
-    # Save tenant to DB
+    # Save tenant to DB. A failure here MUST surface — otherwise the merchant sees
+    # "Installed!" while no usable token was persisted (the exact silent bug we hit).
     try:
         from ....core.database import AsyncSessionLocal
         from ....modules.tenants.models import Tenant
@@ -262,12 +292,18 @@ async def shopify_callback(
                 db.add(tenant)
 
             await db.commit()
-            logger.info("Tenant saved for %s (storefront_token=%s)", shop, "yes" if storefront_token else "no")
+            logger.info(
+                "Tenant saved for %s — admin=yes storefront=%s",
+                shop, "yes" if storefront_token else "no",
+            )
     except Exception as exc:
-        logger.error("Failed to save tenant for %s: %s", shop, exc)
+        logger.error("Failed to save tenant for %s: %s", shop, exc, exc_info=True)
+        return HTMLResponse(
+            content=_error_page(shop, f"The store was authorized, but saving its credentials to the database failed ({type(exc).__name__}). Check the server logs and DATABASE_URL, then re-install."),
+            status_code=500,
+        )
 
-    # Register script tag
-    backend_url = _get_backend_url(request)
+    # Register script tag (non-fatal — the install itself already succeeded).
     loader_url = f"{backend_url}/api/v1/shopify/widget-loader.js?shop={shop}"
     try:
         tag = await _register_script_tag(shop, access_token, loader_url)
@@ -275,7 +311,6 @@ async def shopify_callback(
     except Exception as exc:
         logger.error("Script tag registration failed for %s: %s", shop, exc)
 
-    # Redirect to success page
     return HTMLResponse(content=_success_page(shop, backend_url), status_code=200)
 
 
@@ -307,6 +342,37 @@ def _success_page(shop: str, backend_url: str) -> str:
     </p>
     <p style="margin-top:8px; font-size:13px; color:#999">
       Widget loads from: {backend_url}/static/wooagent-widget.js
+    </p>
+  </div>
+</body>
+</html>"""
+
+
+def _error_page(shop: str, reason: str) -> str:
+    """Shown when install authorized but did NOT fully succeed — so the merchant
+    sees the real failure instead of a misleading green 'Installed!' page."""
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+  <title>Install incomplete</title>
+  <style>
+    body {{ font-family: -apple-system, sans-serif; display: flex; align-items: center;
+           justify-content: center; min-height: 100vh; margin: 0; background: #f4f6f8; }}
+    .card {{ background: white; padding: 48px; border-radius: 12px; text-align: center;
+             box-shadow: 0 2px 16px rgba(0,0,0,0.1); max-width: 480px; }}
+    h1 {{ color: #1a1a2e; margin-bottom: 8px; }}
+    p {{ color: #666; line-height: 1.6; }}
+    .badge {{ display: inline-block; background: #ef4444; color: white; padding: 6px 16px;
+              border-radius: 20px; font-size: 14px; margin-bottom: 24px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">✕ Install not completed</div>
+    <h1>Couldn't finish connecting {shop}</h1>
+    <p>{reason}</p>
+    <p style="margin-top:16px; font-size:13px; color:#999">
+      If this keeps happening, check the server logs for this store's domain.
     </p>
   </div>
 </body>
