@@ -14,6 +14,7 @@ Required env vars:
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
 import json
 import logging
@@ -58,6 +59,31 @@ def _safe_float(value: Any) -> float:
         return float(str(value or "0").replace(",", "").strip())
     except Exception:
         return 0.0
+
+
+def _is_subsequence(a: str, b: str) -> bool:
+    """True if every char of `a` appears in `b` in order — handles dropped letters
+    so an abbreviation matches the full word ("gshk" ⊂ "gshock")."""
+    pos = 0
+    for ch in b:
+        if pos < len(a) and a[pos] == ch:
+            pos += 1
+    return pos == len(a)
+
+
+def _token_word_match(t: str, w: str) -> int:
+    """Typo-tolerant match score between a query token and a product word.
+    2 = substring (strong), 1 = subsequence/fuzzy (typo/abbrev), 0 = no match."""
+    # Guard trivial short words ("g" from "G-Shock") matching any token that merely
+    # contains that letter — require ≥3 chars on the substring path.
+    if len(t) >= 3 and len(w) >= 3 and (t in w or w in t):
+        return 2
+    if len(t) >= 4 and len(w) >= 4:
+        if _is_subsequence(t, w) or _is_subsequence(w, t):
+            return 1
+        if difflib.SequenceMatcher(None, t, w).ratio() >= 0.75:
+            return 1  # transpositions/typos: "gshook"/"gshcok" ≈ "gshock"
+    return 0
 
 
 class ShopifyClient(BaseStoreClient):
@@ -388,49 +414,52 @@ class ShopifyClient(BaseStoreClient):
         else:
             admin_q = "status:active"
             sort_key = "TITLE"  # RELEVANCE errors without a text term
-        fetch_n = 100
-        GQL = """
+        async def _fetch(q_str: str, sk: str, first: int) -> Optional[List[Dict[str, Any]]]:
+            gql = ("""
         query AdminSearch($q: String!, $first: Int!) {
-          products(query: $q, first: $first, sortKey: %s) {""" % sort_key + """
-            edges {
-              node {
-                id title handle descriptionHtml totalInventory tags
-                featuredImage { url }
-                priceRangeV2 { minVariantPrice { amount currencyCode } }
-                options { name values }
-                variants(first: 10) {
-                  edges {
-                    node {
-                      id inventoryQuantity price compareAtPrice
-                      selectedOptions { name value }
-                    }
-                  }
-                }
-              }
-            }
+          products(query: $q, first: $first, sortKey: %s) {""" % sk + """
+            edges { node {
+              id title handle descriptionHtml totalInventory tags
+              featuredImage { url }
+              priceRangeV2 { minVariantPrice { amount currencyCode } }
+              options { name values }
+              variants(first: 10) { edges { node {
+                id inventoryQuantity price compareAtPrice
+                selectedOptions { name value }
+              } } }
+            } }
           }
         }
-        """
-        try:
-            data = await self._admin_graphql(GQL, {"q": admin_q, "first": fetch_n})
-        except Exception as exc:
-            logger.warning("Shopify Admin product fallback failed: %s", exc)
-            return []
-        edges = (data.get("products") or {}).get("edges", [])
-        products: List[Dict[str, Any]] = []
-        for e in edges:
-            node = e.get("node", {})
-            p = self._normalize_admin_gql_node(node)
-            # keep tags for ranking; Admin returns tags as a list
-            p["_tags"] = " ".join(node.get("tags") or []) if isinstance(node.get("tags"), list) else str(node.get("tags") or "")
-            products.append(p)
+        """)
+            try:
+                data = await self._admin_graphql(gql, {"q": q_str, "first": first})
+            except Exception as exc:
+                logger.warning("Shopify Admin product fallback failed: %s", exc)
+                return None
+            out: List[Dict[str, Any]] = []
+            for e in (data.get("products") or {}).get("edges", []):
+                node = e.get("node", {})
+                p = self._normalize_admin_gql_node(node)
+                p["_tags"] = " ".join(node.get("tags") or []) if isinstance(node.get("tags"), list) else str(node.get("tags") or "")
+                out.append(p)
+            return out
 
-        # Client-side relevance: rank by how many query tokens hit name/tags/desc.
+        products = await _fetch(admin_q, sort_key, 100)
+        if products is None:
+            return []
+        # Typo path: a SEARCH whose (misspelled) terms matched nothing in Shopify's
+        # exact search — fetch a browse page so the FUZZY ranker below can still find
+        # it ("gshook"→"g-shock"). Shopify has no fuzzy search, so we match locally.
+        if terms and not products:
+            products = await _fetch("status:active", "TITLE", 150) or []
+        fetched = len(products)
+
+        # Client-side relevance: typo-tolerant token match against name/tags/desc.
         _STOP = {
             "what", "are", "the", "you", "your", "have", "has", "want", "need",
             "show", "all", "any", "and", "for", "can", "will", "with", "this",
             "that", "here", "available", "products", "product", "items", "item",
-            "some", "looking", "find", "get", "give", "see", "tell", "buy",
+            "some", "looking", "find", "get", "give", "see", "tell", "buy", "no",
         }
         q_tokens = [
             t for t in re.findall(r"[a-z0-9]+", (query or "").lower())
@@ -438,23 +467,33 @@ class ShopifyClient(BaseStoreClient):
         ]
         if q_tokens:
             def _score(p: Dict[str, Any]) -> int:
-                words = set(re.findall(
+                word_list = re.findall(
                     r"[a-z0-9]+",
                     (str(p.get("name", "")) + " " + str(p.get("_tags", "")) + " "
                      + str(p.get("short_description", ""))).lower(),
-                ))
+                )
+                words = set(word_list)
+                # Adjacent-word joins so an abbreviation spanning a word boundary
+                # matches: "G-Shock" → words {g, shock} miss "gshk", but the join
+                # "gshock" makes "gshk" ⊂ "gshock" (and "gshook"/"gshcok" ≈ "gshock").
+                words.update(
+                    word_list[i] + word_list[i + 1] for i in range(len(word_list) - 1)
+                )
                 s = 0
                 for t in q_tokens:
-                    # Bidirectional substring → forgiving on plurals / partial words
-                    # ("watch"↔"watches", "shoe"↔"shoes"). Name match weighted higher.
-                    if any(t in w or w in t for w in words):
-                        s += 1
+                    best = 0
+                    for w in words:
+                        m = _token_word_match(t, w)
+                        if m > best:
+                            best = m
+                        if best == 2:
+                            break
+                    s += best  # substring=2, fuzzy/subsequence=1 → exact ranks first
                 return s
             ranked = sorted(((p, _score(p)) for p in products), key=lambda x: x[1], reverse=True)
-            matched = [p for p, s in ranked if s > 0]
-            # If the query matched something, return those; otherwise leave empty so the
-            # agent says "couldn't find X — here's what we have" rather than mismatches.
-            products = matched
+            # If the query matched something, return those; otherwise empty so the
+            # agent says "couldn't find X" rather than showing irrelevant products.
+            products = [p for p, s in ranked if s > 0]
 
         for p in products:
             p.pop("_tags", None)
@@ -466,8 +505,8 @@ class ShopifyClient(BaseStoreClient):
             products = [p for p in products if _safe_float(p.get("price")) <= max_price]
         result = products[: max(1, min(int(limit or 6), 40))]
         logger.info(
-            "Admin product fallback: %d active fetched, %d returned for query=%r store=%s",
-            len(edges), len(result), query or "(browse)", self.store_domain or "?",
+            "Admin product fallback: %d fetched, %d returned for query=%r store=%s",
+            fetched, len(result), query or "(browse)", self.store_domain or "?",
         )
         return result
 

@@ -439,7 +439,13 @@ async def ask_brain(
         and not last_products
         and not _is_generic_browse(cleaned_message)
     ):
-        result = _no_products_result(lang)
+        # Heavy-typo / keyboard-mash input ("asdfgh", "zxcvbnm") → warm "didn't
+        # catch that" reply asking to rephrase, instead of a blank "no products".
+        # A query with any real word ("gshk watch") is handled by search, not here.
+        if _looks_unintelligible(cleaned_message):
+            result = _unintelligible_result(lang)
+        else:
+            result = _no_products_result(lang)
 
     # ── Fast specific handlers (pre-LLM, keyword + intent matched) ───────────
     # These deterministic handlers short-circuit the LLM for well-defined
@@ -743,6 +749,64 @@ def _no_products_result(lang: str) -> Dict[str, Any]:
         "response_text": text,
         "ui_actions": [],
         "suggested_replies": ["Show all products", "Browse categories"],
+    }
+
+
+# Stopwords excluded before judging whether what's left is gibberish.
+_GIBBERISH_STOP = {
+    "the", "and", "for", "you", "your", "have", "has", "want", "need", "show",
+    "all", "any", "with", "this", "that", "here", "some", "looking", "find",
+    "get", "give", "see", "tell", "buy", "are", "what", "where", "how", "can",
+    "could", "would", "please", "products", "product", "items", "item",
+    "available", "store", "yes", "no", "ok", "okay", "hi", "hey", "hello",
+}
+
+
+def _word_is_gibberish(w: str) -> bool:
+    """Heuristic: a single token looks like keyboard-mash / heavy typo, not a word.
+    Conservative — only fires on clearly unpronounceable strings."""
+    if len(w) < 4 or not w.isalpha():
+        return False  # short tokens & anything with digits/hyphens are NOT judged
+    vowels = sum(1 for ch in w if ch in "aeiou")
+    if vowels == 0:
+        return True  # no vowel in a 4+ letter run → "gshk", "zxcv", "qwrt"
+    # A long consonant run (≥5) reads as mashing even with a stray vowel.
+    run = 0
+    for ch in w:
+        run = run + 1 if ch not in "aeiou" else 0
+        if run >= 5:
+            return True
+    return False
+
+
+def _looks_unintelligible(query: str) -> bool:
+    """True only when EVERY content token looks like gibberish — so "gshk watch"
+    (one real word) is NOT flagged, but "asdfgh zxcvb" is. Used to reply warmly
+    asking the user to rephrase instead of a blank "no products"."""
+    tokens = [
+        t for t in re.findall(r"[a-z]+", (query or "").lower())
+        if len(t) >= 3 and t not in _GIBBERISH_STOP
+    ]
+    if not tokens:
+        return False  # nothing meaningful to judge (e.g. "ok", digits, emoji)
+    return all(_word_is_gibberish(t) for t in tokens)
+
+
+def _unintelligible_result(lang: str) -> Dict[str, Any]:
+    """Warm 'didn't catch that' reply for unreadable / heavy-typo input."""
+    _texts = {
+        "en": "Hmm, I didn't quite catch that 😅 — could you tell me the product, brand, or type you're after? You can also try spelling it again.",
+        "hi": "Hmm, mujhe theek se samajh nahi aaya 😅 — aap kaunsa product, brand ya type dhundh rahe hain? Aap dobara likh kar bhi try kar sakte hain.",
+        "ml": "Hmm, enikku athu shariyayi manassilayilla 😅 — ningal ethu product, brand, allengil type aanu thedunnathu? Veendum type cheythu nokkaam.",
+        "ta": "Hmm, enakku sariyaa puriyala 😅 — neenga endha product, brand, illa type thedureenga? Marubadiyum type panni paarkalaam.",
+        "te": "Hmm, naaku sariga ardham kaaledu 😅 — meeru e product, brand, leda type kosam chusthunnaru? Malli type chesi try cheyandi.",
+        "bn": "Hmm, thik bujhte parlam na 😅 — apni kon product, brand ba type khujchen? Aabar likhe try korte paren.",
+        "kn": "Hmm, sariyaagi arthavaagalilla 😅 — neevu yaava product, brand, athava type hudukuttiddeera? Matte type maadi nodi.",
+    }
+    return {
+        "response_text": _texts.get(lang, _texts["en"]),
+        "ui_actions": [],
+        "suggested_replies": ["Show products", "Browse categories"],
     }
 
 
