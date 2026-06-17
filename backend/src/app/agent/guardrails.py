@@ -262,7 +262,12 @@ def check_output(
             re.IGNORECASE,
         ))
         normalized_retrieved = {_normalize_attr(a) for a in retrieved_attributes}
-        invented = {v for v in attr_mentions if _normalize_attr(v) not in normalized_retrieved}
+        # Ignore single-letter matches (S/M/L): they fire on ordinary words and
+        # contractions ("it's", "I'm") far more often than real size mentions.
+        invented = {
+            v for v in attr_mentions
+            if len(str(v).strip()) >= 2 and _normalize_attr(v) not in normalized_retrieved
+        }
         if len(invented) >= 2:
             msg = f"potentially invented attribute values: {invented}"
             logger.warning("Output validation FAIL — %s", msg)

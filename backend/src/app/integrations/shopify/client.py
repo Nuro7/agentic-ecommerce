@@ -361,6 +361,11 @@ class ShopifyClient(BaseStoreClient):
         nothing (missing/revoked Storefront token, or products not published to the
         Storefront channel). The Admin token sees every product."""
         if not self.admin_token:
+            logger.warning(
+                "Admin product fallback SKIPPED: no admin_token for %s "
+                "(tenant has no Shopify Admin token — reinstall via OAuth).",
+                self.store_domain or "?",
+            )
             return []
         # Admin product-search query supports text + status, but NOT price filtering
         # (no `variants.price` field) — we apply price + stock filters client-side.
@@ -409,7 +414,12 @@ class ShopifyClient(BaseStoreClient):
             products = [p for p in products if _safe_float(p.get("price")) >= min_price]
         if max_price is not None:
             products = [p for p in products if _safe_float(p.get("price")) <= max_price]
-        return products[: max(1, min(int(limit or 6), 40))]
+        result = products[: max(1, min(int(limit or 6), 40))]
+        logger.info(
+            "Admin product fallback: %d raw, %d returned for query=%r store=%s",
+            len(edges), len(result), query or "(browse)", self.store_domain or "?",
+        )
+        return result
 
     # ── Products ───────────────────────────────────────────────────────────────
 
