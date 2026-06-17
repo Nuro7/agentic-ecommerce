@@ -100,11 +100,17 @@ _LANG_SCRIPT: list[tuple[re.Pattern, str]] = [
 
 # ── Noise patterns to strip from query ───────────────────────────────────────
 _NOISE_RE = re.compile(
-    r"\b(?:show\s+me|find\s+me|i\s+want|i\s+need|looking\s+for|"
-    r"do\s+you\s+have|can\s+i\s+get|give\s+me|get\s+me|"
-    r"search\s+for|please|help\s+me\s+find)\b",
+    r"\b(?:show\s+me|find\s+me|i\s+want|i\s+need|i'?m\s+looking\s+for|looking\s+for|"
+    r"do\s+you\s+have|do\s+you\s+sell|can\s+i\s+get|give\s+me|get\s+me|"
+    r"search\s+for|please|help\s+me\s+find|tell\s+me\s+about|"
+    r"what\s+are\s+the|what\s+are|what\s+is|what'?s|are\s+there\s+any|"
+    r"i\s+am\s+looking\s+for)\b",
     re.IGNORECASE,
 )
+# Leading affirmations/negations a user types before the real query
+# ("no i need a watch", "yeah show me watches") — stripped only at the START so a
+# meaningful "no" elsewhere is untouched.
+_LEADING_FILLER_RE = re.compile(r"^\s*(?:no|yes|yeah|yep|nope|nah|ok|okay|sure|hmm|umm|well)\b[\s,]*", re.IGNORECASE)
 
 
 @dataclass
@@ -147,7 +153,9 @@ def normalize(raw_query: str) -> NormalizedQuery:
     in_stock_only = bool(_IN_STOCK_RE.search(text))
     has_attribute = bool(_ATTRIBUTE_RE.search(text))
 
-    # 6. Strip noise phrases ("show me", "i want", "looking for", etc.)
+    # 6. Strip noise phrases ("show me", "i want", "looking for", etc.) and a
+    #    leading affirmation/negation ("no i need…", "yeah show…").
+    text = _LEADING_FILLER_RE.sub("", text)
     text = _NOISE_RE.sub(" ", text)
 
     # 7. Strip price/stock phrases now (they've been captured)

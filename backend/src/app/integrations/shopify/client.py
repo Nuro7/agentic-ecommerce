@@ -367,14 +367,31 @@ class ShopifyClient(BaseStoreClient):
                 self.store_domain or "?",
             )
             return []
-        # Fetch ACTIVE products (status only — NOT the free-text query). Shopify's
-        # Admin text search ANDs every word, so "g shock watch what are the watches"
-        # matches nothing. We rank client-side by token overlap instead, which is
-        # robust for the small/new stores this fallback exists for.
-        fetch_n = 60
+        # Build the Shopify query. CRITICAL: pass the search terms so Shopify returns
+        # RELEVANT products — NOT just the first N alphabetical (which on a big catalog
+        # are all "A…" names, so "C…asio G-Shock" never gets fetched). Shopify ANDs
+        # bare terms, so we OR the significant tokens; bare terms hit the default
+        # fields (title/product_type/vendor/tag/sku), so "casio"/"watches" match every
+        # Casio G-Shock. No query → browse all active.
+        stop = {
+            "what", "are", "the", "you", "your", "have", "has", "want", "need",
+            "show", "all", "any", "and", "for", "can", "will", "with", "this",
+            "that", "here", "available", "products", "product", "items", "item",
+            "some", "looking", "find", "get", "give", "see", "tell", "buy", "no",
+            "yes", "not",
+        }
+        terms = [t for t in re.findall(r"[a-z0-9]+", (query or "").lower())
+                 if len(t) > 2 and t not in stop]
+        if terms:
+            admin_q = "status:active AND (" + " OR ".join(terms) + ")"
+            sort_key = "RELEVANCE"
+        else:
+            admin_q = "status:active"
+            sort_key = "TITLE"  # RELEVANCE errors without a text term
+        fetch_n = 100
         GQL = """
-        query AdminBrowse($first: Int!) {
-          products(query: "status:active", first: $first, sortKey: TITLE) {
+        query AdminSearch($q: String!, $first: Int!) {
+          products(query: $q, first: $first, sortKey: %s) {""" % sort_key + """
             edges {
               node {
                 id title handle descriptionHtml totalInventory tags
@@ -395,7 +412,7 @@ class ShopifyClient(BaseStoreClient):
         }
         """
         try:
-            data = await self._admin_graphql(GQL, {"first": fetch_n})
+            data = await self._admin_graphql(GQL, {"q": admin_q, "first": fetch_n})
         except Exception as exc:
             logger.warning("Shopify Admin product fallback failed: %s", exc)
             return []

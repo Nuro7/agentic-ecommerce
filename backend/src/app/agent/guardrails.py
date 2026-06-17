@@ -146,6 +146,16 @@ class OutputValidationError(ValueError):
 # product names in check_output's name-grounding check.
 _PRODUCT_MENTION_RE = re.compile(r"\b([A-Z][\w-]*(?:\s+[A-Z0-9][\w-]*)+)\b")
 
+# A product mention preceded by these (or starting with one) is a NEGATION — the
+# agent saying it does NOT have something — which is never a hallucination.
+_NEGATION_CONTEXT_RE = re.compile(
+    r"(?:\bno\b|\bnot\b|n't|\bnever\b|\bwithout\b|\bsorry\b|unavailable|out of stock|"
+    r"don'?t have|do not have|couldn'?t find|could not find|no longer|"
+    r"we don'?t|isn'?t|aren'?t)\s*$",
+    re.IGNORECASE,
+)
+_LEADING_NEGATION_RE = re.compile(r"^(?:no|not|never|without|any|these|those|our)\b", re.IGNORECASE)
+
 # Generic words that appear in many product names ("Edition", "Pro", "Max"). They
 # must NOT count as a name match — otherwise a fabricated "iPhone 13 Blue Edition"
 # matches a real "...Aviation Edition" just on the shared word "Edition". Excluded
@@ -210,23 +220,31 @@ def check_output(
                 cleaned = re.sub(rf"\bID[:\s]+{re.escape(uid)}\b", "", cleaned)
 
     # ── Check 1b: product NAMES must come from retrieved data ─────────────────
-    # Catches fabricated product names ("UltraSound X50", "iPhone 13 Blue Edition")
-    # that pass the ID/price checks. Fires ONLY when a search actually ran this turn
-    # (retrieved_names non-empty). Conservative to avoid false positives: a mention
-    # is flagged only when it looks unmistakably like a product (a model-number token
-    # like "X50"/"13", OR 3+ Capitalised words) AND shares ZERO significant token
-    # with any retrieved product name.
+    # Catches fabricated product names ("UltraSound X50") that pass the ID/price
+    # checks. Fires ONLY when a search ran (retrieved_names non-empty). VERY
+    # conservative to avoid false positives: a mention is flagged only when it
+    # contains a model-number token AND is NOT in a negation context. Saying you
+    # DON'T have something ("No Casio G-Shock watches are available") is never a
+    # hallucination, so negated phrases are skipped entirely.
     if retrieved_names:
-        for phrase in _PRODUCT_MENTION_RE.findall(cleaned):
+        for m in _PRODUCT_MENTION_RE.finditer(cleaned):
+            phrase = m.group(1)
+            # Skip negation context: "no/not/don't/can't/couldn't/without …" just
+            # before the phrase, or the phrase itself leading with a negation word.
+            prefix = cleaned[max(0, m.start(1) - 28):m.start(1)].lower()
+            if _NEGATION_CONTEXT_RE.search(prefix) or _LEADING_NEGATION_RE.match(phrase):
+                continue
             toks = [
                 t for t in re.findall(r"[a-z0-9]+", phrase.lower())
                 if len(t) > 2 and t not in _GENERIC_NAME_TOKENS
             ]
             if not toks:
                 continue
+            # Require a model-number token (e.g. "X50", "S24", "13"). The bare
+            # "3+ Capitalised words" trigger caused false positives on plain brand
+            # phrases ("No Casio G-Shock", "Best Express Shipping").
             has_model = any(re.search(r"(?:[a-z][0-9]|[0-9][a-z]|[0-9]{2,})", t) for t in toks)
-            looks_like_product = has_model or len(phrase.split()) >= 3
-            if not looks_like_product:
+            if not has_model:
                 continue
             if not any(t in retrieved_names for t in toks):
                 msg = f"hallucinated product name: {phrase!r}"
