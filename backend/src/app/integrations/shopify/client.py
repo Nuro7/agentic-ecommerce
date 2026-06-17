@@ -367,24 +367,17 @@ class ShopifyClient(BaseStoreClient):
                 self.store_domain or "?",
             )
             return []
-        # Admin product-search query supports text + status, but NOT price filtering
-        # (no `variants.price` field) — we apply price + stock filters client-side.
-        parts: List[str] = ["status:active"]
-        if query:
-            parts.append(query)
-        admin_q = " ".join(parts)
-        # Fetch a few extra so client-side price/stock filtering still fills the page.
-        fetch_n = max(1, min(int(limit or 6) * 3, 60))
-        # RELEVANCE only makes sense with a text term; a pure browse (status only) can
-        # error on it — fall back to TITLE ordering.
-        sort_key = "RELEVANCE" if query else "TITLE"
-
+        # Fetch ACTIVE products (status only — NOT the free-text query). Shopify's
+        # Admin text search ANDs every word, so "g shock watch what are the watches"
+        # matches nothing. We rank client-side by token overlap instead, which is
+        # robust for the small/new stores this fallback exists for.
+        fetch_n = 60
         GQL = """
-        query AdminSearch($query: String!, $first: Int!) {
-          products(query: $query, first: $first, sortKey: %s) {""" % sort_key + """
+        query AdminBrowse($first: Int!) {
+          products(query: "status:active", first: $first, sortKey: TITLE) {
             edges {
               node {
-                id title handle descriptionHtml totalInventory
+                id title handle descriptionHtml totalInventory tags
                 featuredImage { url }
                 priceRangeV2 { minVariantPrice { amount currencyCode } }
                 options { name values }
@@ -402,12 +395,43 @@ class ShopifyClient(BaseStoreClient):
         }
         """
         try:
-            data = await self._admin_graphql(GQL, {"query": admin_q, "first": fetch_n})
+            data = await self._admin_graphql(GQL, {"first": fetch_n})
         except Exception as exc:
             logger.warning("Shopify Admin product fallback failed: %s", exc)
             return []
         edges = (data.get("products") or {}).get("edges", [])
-        products = [self._normalize_admin_gql_node(e["node"]) for e in edges]
+        products: List[Dict[str, Any]] = []
+        for e in edges:
+            node = e.get("node", {})
+            p = self._normalize_admin_gql_node(node)
+            # keep tags for ranking; Admin returns tags as a list
+            p["_tags"] = " ".join(node.get("tags") or []) if isinstance(node.get("tags"), list) else str(node.get("tags") or "")
+            products.append(p)
+
+        # Client-side relevance: rank by how many query tokens hit name/tags/desc.
+        _STOP = {
+            "what", "are", "the", "you", "your", "have", "has", "want", "need",
+            "show", "all", "any", "and", "for", "can", "will", "with", "this",
+            "that", "here", "available", "products", "product", "items", "item",
+            "some", "looking", "find", "get", "give", "see", "tell", "buy",
+        }
+        q_tokens = [
+            t for t in re.findall(r"[a-z0-9]+", (query or "").lower())
+            if len(t) > 2 and t not in _STOP
+        ]
+        if q_tokens:
+            def _score(p: Dict[str, Any]) -> int:
+                hay = (str(p.get("name", "")) + " " + str(p.get("_tags", "")) + " "
+                       + str(p.get("short_description", ""))).lower()
+                return sum(1 for t in q_tokens if t in hay)
+            ranked = sorted(((p, _score(p)) for p in products), key=lambda x: x[1], reverse=True)
+            matched = [p for p, s in ranked if s > 0]
+            # If the query matched something, return those; otherwise leave empty so the
+            # agent says "couldn't find X — here's what we have" rather than mismatches.
+            products = matched
+
+        for p in products:
+            p.pop("_tags", None)
         if in_stock_only:
             products = [p for p in products if p.get("stock_status") == "instock"]
         if min_price is not None:
@@ -416,7 +440,7 @@ class ShopifyClient(BaseStoreClient):
             products = [p for p in products if _safe_float(p.get("price")) <= max_price]
         result = products[: max(1, min(int(limit or 6), 40))]
         logger.info(
-            "Admin product fallback: %d raw, %d returned for query=%r store=%s",
+            "Admin product fallback: %d active fetched, %d returned for query=%r store=%s",
             len(edges), len(result), query or "(browse)", self.store_domain or "?",
         )
         return result
