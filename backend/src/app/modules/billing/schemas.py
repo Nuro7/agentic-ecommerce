@@ -29,3 +29,8 @@ class UsageOut(BaseModel):
     recorded_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AdminAssignPlanRequest(BaseModel):
+    tenant_id: str
+    plan: str  # plan name ("starter"/"growth"/"pro") or a plan id

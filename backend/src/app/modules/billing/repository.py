@@ -27,6 +27,34 @@ class BillingRepository:
         )
         return result.scalar_one_or_none()
 
+    async def upsert_subscription(
+        self,
+        tenant_id: str,
+        plan_id: str,
+        status: str,
+        period_start: datetime,
+        period_end: datetime,
+    ) -> Subscription:
+        """Create or update the tenant's subscription (tenant_id is unique)."""
+        sub = await self.get_subscription(tenant_id)
+        if sub is None:
+            sub = Subscription(
+                tenant_id=tenant_id,
+                plan_id=plan_id,
+                status=status,
+                current_period_start=period_start,
+                current_period_end=period_end,
+            )
+            self.db.add(sub)
+        else:
+            sub.plan_id = plan_id
+            sub.status = status
+            sub.current_period_start = period_start
+            sub.current_period_end = period_end
+        await self.db.commit()
+        await self.db.refresh(sub)
+        return sub
+
     async def record_usage(self, record: UsageRecord) -> None:
         self.db.add(record)
         # Commit so usage is durably persisted; quota enforcement depends on it.

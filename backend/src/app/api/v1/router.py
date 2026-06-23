@@ -11,6 +11,7 @@ from ...modules.carts.router import router as carts_router
 from ...modules.orders.router import router as orders_router
 from ...modules.webhooks.router import router as webhooks_router
 from ...modules.analytics.router import router as analytics_router
+from ...modules.admin.router import router as admin_router
 from .health import router as health_router
 from .public import router as public_router
 from .onboarding import router as onboarding_router
@@ -33,6 +34,7 @@ api_router.include_router(carts_router)
 api_router.include_router(orders_router)
 api_router.include_router(webhooks_router)
 api_router.include_router(analytics_router)
+api_router.include_router(admin_router)
 api_router.include_router(public_router)
 api_router.include_router(onboarding_router)
 api_router.include_router(ingest_router)
