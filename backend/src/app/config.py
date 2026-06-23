@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     shared_secret: str = "change-me"
     ngrok_authtoken: str = ""
 
+    # ── Admin / billing ────────────────────────────────────────────────────────
+    # Operator key for /api/v1/admin/* (assign plans, etc.). Empty => admin API is
+    # DISABLED (a missing key must never mean "open"). Set a strong random value.
+    admin_api_key: str = ""
+    # When False, assigning a plan activates it immediately (testing, no payment).
+    # Flip True once a payment gateway exists → paid plans land "pending" until paid.
+    billing_require_payment: bool = False
+
     # ── Object Storage (Phase 11) — all optional, storage disabled when unset ──
     # OBJECT_STORAGE_PROVIDER: s3 | r2 | gcs | disabled
     object_storage_provider: str = "disabled"
