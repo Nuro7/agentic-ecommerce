@@ -22,11 +22,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .repository import TenantRepository
 from .service import TenantService
-from ...core.database import get_db
+from ...config import settings
+from ...core.database import get_db, set_request_tenant, set_tenant_guc
 from ...core.security import decode_access_token
 from ...integrations.factory import create_store_client_for_tenant, invalidate_tenant_client
 
 logger = logging.getLogger(__name__)
+
+# Sentinel tenant used for session/facts keys + token signing in NON-production when
+# no real tenant resolves (dev/single-tenant). In production, requests with no
+# resolvable tenant are rejected (see get_tenant_store_client / the WS handler), so
+# this sentinel is never used in prod.
+DEV_TENANT_ID = "_dev"
 
 
 async def get_authenticated_tenant(
@@ -62,6 +69,11 @@ async def get_authenticated_tenant(
     tenant = await TenantRepository(db).get_by_id(tenant_id)
     if not tenant or not tenant.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Tenant not found or inactive")
+    set_request_tenant(tenant.id)  # scope RLS for fresh sessions opened later in this request
+    # Also apply the GUC to THIS (already-begun) request session — the endpoint reuses it
+    # to read/write RLS tables (orders, cart_items, conversations), and the after_begin
+    # event fired at GUC='' during the tenants lookup above.
+    await set_tenant_guc(db, tenant.id)
     return tenant
 
 
@@ -96,6 +108,8 @@ async def get_tenant_store_client(
         tenant = await repo.get_by_shopify_domain(shop)
         if tenant:
             logger.debug("Tenant resolved via shop=%s → tenant_id=%s", shop, tenant.id)
+            set_request_tenant(tenant.id)        # fresh sessions opened later this request
+            await set_tenant_guc(db, tenant.id)  # the already-begun request session too
             return await create_store_client_for_tenant(tenant, redis_client=redis)
         logger.warning("shop=%s not found in DB — falling back to app.state", shop)
 
@@ -105,10 +119,22 @@ async def get_tenant_store_client(
         tenant = await repo.get_by_id(tenant_id)
         if tenant and tenant.is_active:
             logger.debug("Tenant resolved via X-Tenant-ID=%s", tenant_id)
+            set_request_tenant(tenant.id)        # fresh sessions opened later this request
+            await set_tenant_guc(db, tenant.id)  # the already-begun request session too
             return await create_store_client_for_tenant(tenant, redis_client=redis)
         logger.warning("X-Tenant-ID=%s not found or inactive", tenant_id)
 
-    # 3. Global fallback — single-tenant / dev mode
+    # 3. No tenant resolved. In production (or when enforcement is explicitly on) we
+    # MUST NOT fall back to a shared global client — two tenants arriving without a
+    # shop/tenant would collapse onto the same store and merge their data. Reject.
+    if settings.require_tenant:
+        logger.warning("Unresolved tenant (enforced) — rejecting request")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unresolved tenant",
+        )
+
+    # 4. Global fallback — single-tenant / dev mode only
     store_client = getattr(request.app.state, "store_client", None)
     if store_client:
         return store_client
@@ -117,6 +143,30 @@ async def get_tenant_store_client(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail="Store not configured for this request.",
     )
+
+
+async def resolve_tenant_id_from_request(request: Request, db: AsyncSession) -> str | None:
+    """Resolve the calling tenant's id (real tenant only) from ?shop= / X-Tenant-ID.
+
+    Returns None when no real tenant resolves. Callers that need a key-safe value in
+    dev use `resolved or DEV_TENANT_ID`; billing/usage paths use the real id or skip.
+    """
+    repo = TenantRepository(db)
+    shop = request.query_params.get("shop", "").strip()
+    if shop:
+        tenant = await repo.get_by_shopify_domain(shop)
+        if tenant:
+            set_request_tenant(tenant.id)
+            await set_tenant_guc(db, tenant.id)  # scope the already-begun request session
+            return tenant.id
+    tenant_id = request.headers.get("X-Tenant-ID", "").strip()
+    if tenant_id:
+        tenant = await repo.get_by_id(tenant_id)
+        if tenant and tenant.is_active:
+            set_request_tenant(tenant.id)
+            await set_tenant_guc(db, tenant.id)  # scope the already-begun request session
+            return tenant.id
+    return None
 
 
 async def resolve_tenant_store_client_for_ws(

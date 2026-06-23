@@ -65,8 +65,8 @@ class SessionService:
         self.redis = redis_client
         self.ttl_seconds = ttl_seconds
 
-    def _key(self, session_id: str) -> str:
-        return f"session:{session_id}"
+    def _key(self, tenant_id: str, session_id: str) -> str:
+        return f"session:{tenant_id}:{session_id}"
 
     def _default_state(self) -> Dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
@@ -80,8 +80,8 @@ class SessionService:
             "last_active": now,
         }
 
-    async def get_session(self, session_id: str) -> Dict[str, Any]:
-        key = self._key(session_id)
+    async def get_session(self, tenant_id: str, session_id: str) -> Dict[str, Any]:
+        key = self._key(tenant_id, session_id)
         raw = None
         try:
             if self.redis:
@@ -107,6 +107,7 @@ class SessionService:
 
     async def update_session(
         self,
+        tenant_id: str,
         session_id: str,
         *,
         conversation_history: Optional[list] = None,
@@ -117,8 +118,8 @@ class SessionService:
     ) -> Dict[str, Any]:
         # Serialize the read-modify-write so concurrent updates for the same
         # session don't overwrite each other's fields.
-        async with _session_lock(session_id):
-            state = await self.get_session(session_id)
+        async with _session_lock(f"{tenant_id}:{session_id}"):
+            state = await self.get_session(tenant_id, session_id)
 
             if conversation_history is not None:
                 state["conversation_history"] = _trim_history(conversation_history)
@@ -140,7 +141,7 @@ class SessionService:
 
             state["last_active"] = datetime.now(timezone.utc).isoformat()
 
-            key = self._key(session_id)
+            key = self._key(tenant_id, session_id)
             encoded = json.dumps(state)
             try:
                 if self.redis:
@@ -153,33 +154,34 @@ class SessionService:
 
             return state
 
-    async def get_history(self, session_id: str) -> list:
-        state = await self.get_session(session_id)
+    async def get_history(self, tenant_id: str, session_id: str) -> list:
+        state = await self.get_session(tenant_id, session_id)
         return state.get("conversation_history", [])
 
-    async def save_history(self, session_id: str, messages: list) -> None:
-        await self.update_session(session_id, conversation_history=messages)
+    async def save_history(self, tenant_id: str, session_id: str, messages: list) -> None:
+        await self.update_session(tenant_id, session_id, conversation_history=messages)
 
-    async def get_customer_email(self, session_id: str) -> Optional[str]:
-        state = await self.get_session(session_id)
+    async def get_customer_email(self, tenant_id: str, session_id: str) -> Optional[str]:
+        state = await self.get_session(tenant_id, session_id)
         value = state.get("customer_email")
         return str(value) if value else None
 
-    async def save_customer_email(self, session_id: str, email: str) -> None:
-        await self.update_session(session_id, customer_email=email)
+    async def save_customer_email(self, tenant_id: str, session_id: str, email: str) -> None:
+        await self.update_session(tenant_id, session_id, customer_email=email)
 
-    async def clear_session(self, session_id: str) -> None:
-        key = self._key(session_id)
+    async def clear_session(self, tenant_id: str, session_id: str) -> None:
+        key = self._key(tenant_id, session_id)
         try:
             if self.redis:
                 await self.redis.delete(key)
             else:
                 _MEMORY_STORE.pop(key, None)
-        except Exception:
-            pass
+        except Exception as e:
+            # Stale session state persisting silently is worse than a noisy log.
+            logger.warning("Session clear failed for tenant=%s session=%s: %s", tenant_id, session_id, e)
 
-    async def get_meta(self, session_id: str) -> dict:
-        key = f"session:{session_id}:meta"
+    async def get_meta(self, tenant_id: str, session_id: str) -> dict:
+        key = f"session:{tenant_id}:{session_id}:meta"
         try:
             if self.redis:
                 data = await self.redis.get(key)
@@ -191,10 +193,10 @@ class SessionService:
             logger.warning("Meta read failed for %s: %s", session_id, e)
         return {}
 
-    async def save_meta(self, session_id: str, updates: dict) -> None:
-        key = f"session:{session_id}:meta"
+    async def save_meta(self, tenant_id: str, session_id: str, updates: dict) -> None:
+        key = f"session:{tenant_id}:{session_id}:meta"
         try:
-            existing = await self.get_meta(session_id)
+            existing = await self.get_meta(tenant_id, session_id)
             merged = {**existing, **updates}
             data = json.dumps(merged, default=str)
             if self.redis:
@@ -205,16 +207,16 @@ class SessionService:
         except Exception as e:
             logger.error("Meta save failed for %s: %s", session_id, e)
 
-    async def get_last_products(self, session_id: str) -> list:
-        meta = await self.get_meta(session_id)
+    async def get_last_products(self, tenant_id: str, session_id: str) -> list:
+        meta = await self.get_meta(tenant_id, session_id)
         return meta.get("last_products", [])
 
-    async def get_language(self, session_id: str) -> str:
-        meta = await self.get_meta(session_id)
+    async def get_language(self, tenant_id: str, session_id: str) -> str:
+        meta = await self.get_meta(tenant_id, session_id)
         return meta.get("language", "en")
 
-    async def save_cart(self, session_id: str, cart: dict) -> None:
-        key = f"session:{session_id}:cart"
+    async def save_cart(self, tenant_id: str, session_id: str, cart: dict) -> None:
+        key = f"session:{tenant_id}:{session_id}:cart"
         try:
             if self.redis:
                 await self.redis.setex(key, 3600, json.dumps(cart))
@@ -224,8 +226,8 @@ class SessionService:
         except Exception as e:
             logger.warning("Cart cache save failed: %s", e)
 
-    async def get_cart(self, session_id: str) -> dict:
-        key = f"session:{session_id}:cart"
+    async def get_cart(self, tenant_id: str, session_id: str) -> dict:
+        key = f"session:{tenant_id}:{session_id}:cart"
         try:
             if self.redis:
                 data = await self.redis.get(key)
@@ -233,7 +235,9 @@ class SessionService:
                     return json.loads(data)
             else:
                 return _MEMORY_STORE.get(key, {})
-        except Exception:
-            pass
+        except Exception as e:
+            # A real read failure (Redis down / corrupt JSON) silently looked like an
+            # empty cart — mirror save_cart and surface it.
+            logger.warning("Cart cache read failed for %s: %s", session_id, e)
         sym = os.getenv("STORE_CURRENCY", "₹")
         return {"is_empty": True, "items": [], "total": f"{sym}0", "item_count": 0}

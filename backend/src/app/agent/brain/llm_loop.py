@@ -35,6 +35,7 @@ _FORCE_TEXT_AFTER = 2
 
 async def run_llm_agent(
     *,
+    tenant_id: str,
     session_id: str,
     user_message: str,
     store_context: Dict[str, Any],
@@ -62,7 +63,7 @@ async def run_llm_agent(
     )
 
     try:
-        facts = await get_session_facts_service().get(session_id)
+        facts = await get_session_facts_service().get(tenant_id, session_id)
         facts_line = get_session_facts_service().format_for_prompt(facts)
         if facts_line:
             system_prompt += "\n\n" + facts_line
@@ -149,6 +150,7 @@ async def run_llm_agent(
                 for tool_name, tool_args in inline_calls:
                     tool_result, tool_actions, product_ids, maybe_email = await execute_tool_call(
                         tool_name, tool_args, session_id, cart_context,
+                        tenant_id=tenant_id,
                         store_client=store_client, session_service=session_service,
                     )
                     if tool_actions:
@@ -202,6 +204,7 @@ async def run_llm_agent(
             try:
                 tool_result, tool_actions, product_ids, maybe_email = await execute_tool_call(
                     tool_name, tool_args, session_id, cart_context,
+                    tenant_id=tenant_id,
                     store_client=store_client, session_service=session_service,
                 )
             except Exception as tool_exc:
@@ -214,7 +217,7 @@ async def run_llm_agent(
                         asyncio.create_task(enqueue_failed_action(
                             redis,
                             session_id=session_id,
-                            tenant_id=str(store_context.get("tenant_id") or session_id),
+                            tenant_id=tenant_id,
                             tool_name=tool_name,
                             tool_args=tool_args,
                             error=str(tool_exc),
@@ -262,6 +265,7 @@ async def retry_with_stricter_prompt(
     retrieved_ids: Any,
     retrieved_prices: Any,
     retrieved_names: Any = None,
+    retrieved_full_names: Any = None,
 ) -> str:
     product_lines: List[str] = []
     for p in (last_products or [])[:5]:
@@ -309,6 +313,7 @@ async def retry_with_stricter_prompt(
             retrieved_product_ids=retrieved_ids or None,
             retrieved_prices=retrieved_prices or None,
             retrieved_names=retrieved_names or None,
+            retrieved_full_names=retrieved_full_names or None,
             detected_language=lang,
             allow_retry=False,
         )

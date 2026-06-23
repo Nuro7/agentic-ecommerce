@@ -17,6 +17,18 @@
   const IS_SHOPIFY = String(CFG.platform || '').toLowerCase() === 'shopify';
   const IS_WOOCOMMERCE = !IS_SHOPIFY;
 
+  // Tenant identifier appended to EVERY direct call to the Speako backend. Shopify
+  // identifies by shop domain (CFG.shop); WooCommerce/custom by CFG.tenant_id. In
+  // production the backend rejects calls with no resolvable tenant, so this must be
+  // present on greet/chat, /cart, the WS token fetch, AND the WS stream URL.
+  // `hasQuery` = true when the URL already contains a '?'.
+  function tenantQS(hasQuery) {
+    const id = CFG.shop
+      ? 'shop=' + encodeURIComponent(CFG.shop)
+      : (CFG.tenant_id ? 'tenant_id=' + encodeURIComponent(CFG.tenant_id) : '');
+    return id ? ((hasQuery ? '&' : '?') + id) : '';
+  }
+
   // Persist session ID in localStorage so it survives page navigation
   const S = {
     open: false,
@@ -2537,7 +2549,7 @@
       if (!CFG.rest_url) {
         // Custom platform: backend handles cart transparently
         const cartRes = await fetch(
-          `${CFG.agent_api_url}/api/v1/cart?session_id=${encodeURIComponent(S.sessionId)}`,
+          `${CFG.agent_api_url}/api/v1/cart?session_id=${encodeURIComponent(S.sessionId)}${tenantQS(true)}`,
           { headers: { 'Content-Type': 'application/json' } }
         );
         if (cartRes.ok) cart = await cartRes.json();
@@ -2838,7 +2850,7 @@
       card.innerHTML = `
         <div class="wa-card-img-wrap">
           ${imgSrc
-          ? `<img class="wa-card-img" src="${esc(imgSrc)}" alt="${esc(p.name)}" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+          ? `<img class="wa-card-img" src="${escAttr(imgSrc)}" alt="${escAttr(p.name)}" loading="lazy" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
              <div class="wa-card-img" style="display:none;align-items:center;justify-content:center;color:#52525b;font-size:28px">🛍️</div>`
           : `<div class="wa-card-img" style="display:flex;align-items:center;justify-content:center;color:#52525b;font-size:28px">🛍️</div>`
         }
@@ -2858,8 +2870,8 @@
           ${hasVariants ? `
             <div class="wa-card-variant-row" style="flex-wrap: wrap;">
               ${attrsKeys.map(k => `
-                <select class="wa-card-select wa-card-attr" data-key="${esc(k)}" aria-label="${esc(variationMeta[k].label)}">
-                  ${variationMeta[k].options.map(opt => `<option value="${esc(opt)}">${esc(opt)}</option>`).join('')}
+                <select class="wa-card-select wa-card-attr" data-key="${escAttr(k)}" aria-label="${escAttr(variationMeta[k].label)}">
+                  ${variationMeta[k].options.map(opt => `<option value="${escAttr(opt)}">${esc(opt)}</option>`).join('')}
                 </select>
               `).join('')}
             </div>
@@ -2871,10 +2883,10 @@
                 style="width:48px;padding:3px 6px;border:1px solid var(--line);border-radius:6px;font-size:12px;background:var(--bg3);color:var(--text);text-align:center;" />
             </div>
           ` : ''}
-          <button class="wa-card-add ${!inStock ? 'disabled' : ''}" ${!inStock ? 'disabled' : ''} data-id="${p.id}" data-name="${esc(p.name)}" data-price="${displayPrice || ''}">
+          <button class="wa-card-add ${!inStock ? 'disabled' : ''}" ${!inStock ? 'disabled' : ''} data-id="${escAttr(p.id)}" data-name="${escAttr(p.name)}" data-price="${escAttr(displayPrice || '')}">
             ${!inStock ? 'Out of stock' : '+ Add to Cart'}
           </button>
-          <a class="wa-card-view" href="${esc(p.permalink || '#')}" target="_blank" rel="noopener">View details ↗</a>
+          <a class="wa-card-view" href="${safeUrl(p.permalink)}" target="_blank" rel="noopener">View details ↗</a>
         </div>
       `;
 
@@ -2997,7 +3009,7 @@
       img = normalizeImageUrl(img);
       return `
       <div class="wa-cart-item-row" style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-        ${img ? `<img src="${esc(img)}" alt="${esc(item.name)}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;background:var(--bg);" loading="lazy">` : `<div style="width:40px;height:40px;border-radius:6px;background:var(--bg2);display:flex;align-items:center;justify-content:center;font-size:16px;">🛍️</div>`}
+        ${img ? `<img src="${escAttr(img)}" alt="${escAttr(item.name)}" style="width:40px;height:40px;object-fit:cover;border-radius:6px;background:var(--bg);" loading="lazy">` : `<div style="width:40px;height:40px;border-radius:6px;background:var(--bg2);display:flex;align-items:center;justify-content:center;font-size:16px;">🛍️</div>`}
         <div style="flex:1;display:flex;flex-direction:column;">
           <strong style="font-weight:600;font-size:13px;">${esc(item.name)}</strong>
           <span style="color:var(--text3);font-size:11px;margin-top:2px;">Qty: ${item.quantity || 1}</span>
@@ -3158,7 +3170,7 @@
         ${isBest ? `<div style="position:absolute;top:-1px;left:50%;transform:translateX(-50%);background:var(--accent);color:#fff;font-size:10px;font-weight:700;padding:2px 10px;border-radius:0 0 6px 6px;white-space:nowrap;">BEST VALUE</div>` : ''}
         <div class="wa-card-img-wrap" style="${isBest ? 'margin-top:16px;' : ''}">
           ${imgSrc
-          ? `<img class="wa-card-img" src="${esc(imgSrc)}" alt="${esc(item.name)}" loading="lazy">`
+          ? `<img class="wa-card-img" src="${escAttr(imgSrc)}" alt="${escAttr(item.name)}" loading="lazy">`
           : `<div class="wa-card-img" style="display:flex;align-items:center;justify-content:center;color:#52525b;font-size:28px">\ud83d\udecd\ufe0f</div>`
         }
         </div>
@@ -3173,8 +3185,8 @@
             <div class="wa-stock-dot ${inStock ? 'in' : 'out'}"></div>
             ${inStock ? 'In stock' : 'Out of stock'}
           </div>
-          ${item.id ? `<button class="wa-card-add ${!inStock ? 'disabled' : ''}" ${!inStock ? 'disabled' : ''} data-id="${item.id}" data-name="${esc(item.name)}">+ Add to Cart</button>` : ''}
-          ${item.permalink ? `<a class="wa-card-view" href="${esc(item.permalink)}" target="_blank" rel="noopener">View details \u2197</a>` : ''}
+          ${item.id ? `<button class="wa-card-add ${!inStock ? 'disabled' : ''}" ${!inStock ? 'disabled' : ''} data-id="${escAttr(item.id)}" data-name="${escAttr(item.name)}">+ Add to Cart</button>` : ''}
+          ${item.permalink ? `<a class="wa-card-view" href="${safeUrl(item.permalink)}" target="_blank" rel="noopener">View details \u2197</a>` : ''}
         </div>
       `;
       const addBtn = card.querySelector('.wa-card-add:not(.disabled)');
@@ -3428,7 +3440,7 @@
     const base = (CFG.agent_api_url || 'http://localhost:8000').replace(/\/$/, '');
     const sid  = encodeURIComponent(S.sessionId);
     const tok  = encodeURIComponent(token || '');
-    return base.replace(/^http/, 'ws') + '/wooagent/stream?session_id=' + sid + '&token=' + tok;
+    return base.replace(/^http/, 'ws') + '/wooagent/stream?session_id=' + sid + '&token=' + tok + tenantQS(true);
   }
 
   // ── [4] _fetchWsToken: get a short-lived HMAC token before connecting ────
@@ -3440,7 +3452,7 @@
       return Promise.resolve(a2aWsToken);  // reuse cached token
     }
     const base = (CFG.agent_api_url || 'http://localhost:8000').replace(/\/$/, '');
-    const url  = base + '/wooagent/ws-token?session_id=' + encodeURIComponent(S.sessionId);
+    const url  = base + '/wooagent/ws-token?session_id=' + encodeURIComponent(S.sessionId) + tenantQS(true);
     // No custom headers on this request — avoids CORS preflight (simple GET).
     // ngrok-skip-browser-warning bypasses the ngrok interstitial page for API calls.
     return fetch(url, {
@@ -4154,7 +4166,7 @@
     el.innerHTML = `
       <div class="wa-addr-title">COLLECTING DELIVERY ADDRESS</div>
       <div class="wa-addr-steps">
-        ${steps.map((_, i) => `<div class="wa-addr-step ${i < idx ? 'done' : i === idx ? 'active' : ''}" title="${labels[i]}"></div>`).join('')}
+        ${steps.map((_, i) => `<div class="wa-addr-step ${i < idx ? 'done' : i === idx ? 'active' : ''}" title="${escAttr(labels[i])}"></div>`).join('')}
       </div>
     `;
     msgs.appendChild(el);
@@ -4218,6 +4230,17 @@
   // Safe for HTML attribute values — also escapes double-quotes
   function escAttr(str) {
     return esc(str).replace(/"/g, '&quot;');
+  }
+
+  // Safe href value: allow only http(s), protocol-relative, or site-relative URLs.
+  // Blocks javascript:/data:/vbscript: (quote-breakout isn't needed for those, so
+  // escAttr alone won't stop them). Returns '#' for anything else/empty.
+  function safeUrl(u) {
+    const s = String(u || '').trim();
+    if (!s) return '#';
+    if (/^(https?:)?\/\//i.test(s)) return s;   // http(s):// or //host
+    if (/^\/[^/]/.test(s) || s === '/') return s; // site-relative /path
+    return '#';
   }
 
   function normalizeImageUrl(src) {
@@ -4645,8 +4668,9 @@
     const timer = setTimeout(() => controller.abort(), TIMEOUT);
     // Identify the store so the backend uses THIS tenant's installed-app token
     // (Admin token from OAuth) instead of the global env client. Without this,
-    // product search hits the wrong/blank credentials and returns nothing.
-    const shopQS = CFG.shop ? ((path.includes('?') ? '&' : '?') + 'shop=' + encodeURIComponent(CFG.shop)) : '';
+    // product search hits the wrong/blank credentials and returns nothing — and in
+    // production the backend rejects the call outright (no resolvable tenant).
+    const shopQS = tenantQS(path.includes('?'));
     const r = await fetch(`${CFG.agent_api_url}/api/v1${path}${shopQS}`, {
       method: 'POST',
       headers: {

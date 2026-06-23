@@ -37,11 +37,18 @@ class AgentOrchestrator:
         page_context: Optional[Dict[str, Any]] = None,
         language: str = "en",
         cart_context: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        # Voice pipelines don't build a store_context — inject the resolved tenant_id
+        # so session/facts/cart keys are tenant-scoped. HTTP callers (/chat) already
+        # put tenant_id in store_context, so only override when explicitly passed.
+        store_context = store_context or {}
+        if tenant_id is not None:
+            store_context = {**store_context, "tenant_id": tenant_id}
         return await ask_brain(
             session_id=session_id,
             user_message=user_message,
-            store_context=store_context or {},
+            store_context=store_context,
             page_context=page_context or {},
             language=language,
             cart_context=cart_context,

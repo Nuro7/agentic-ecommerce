@@ -28,6 +28,7 @@ from typing import Any
 from .pipeline_a import PipelineA
 from .pipeline_b import PipelineB
 from .pipeline_c import PipelineC
+from ....modules.tenants.dependencies import DEV_TENANT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class PipelineRouter:
     # ── Routing ───────────────────────────────────────────────────────────────
 
     async def run(self, websocket: Any, session_id: str, store_client: Any = None,
-                  voice_enabled: bool = True) -> None:
+                  voice_enabled: bool = True, tenant_id: str = DEV_TENANT_ID) -> None:
         """
         Route this session through the best available pipeline.
         Tries A → B → C in order, based on circuit breaker state.
@@ -75,7 +76,7 @@ class PipelineRouter:
         if not voice_enabled:
             logger.info("Text-only session (plan without voice): session=%s", session_id)
             try:
-                await self._pipeline_c.run(websocket, session_id, store_client)
+                await self._pipeline_c.run(websocket, session_id, store_client, tenant_id)
             except Exception as exc:
                 logger.error("Pipeline C (text-only) failed session=%s: %s: %s",
                              session_id, type(exc).__name__, exc)
@@ -90,7 +91,7 @@ class PipelineRouter:
         # ── Pipeline A (Gemini Live) ──────────────────────────────────────────
         if self._breaker_a.is_available():
             try:
-                await self._pipeline_a.run(websocket, session_id, store_client)
+                await self._pipeline_a.run(websocket, session_id, store_client, tenant_id)
                 self._breaker_a.record_success()
                 return
             except Exception as exc:
@@ -107,7 +108,7 @@ class PipelineRouter:
         # ── Pipeline B (xAI Grok STT + Gemini TTS) — only if A failed ─────────
         if self._breaker_b.is_available():
             try:
-                await self._pipeline_b.run(websocket, session_id, store_client)
+                await self._pipeline_b.run(websocket, session_id, store_client, tenant_id)
                 self._breaker_b.record_success()
                 return
             except Exception as exc:
@@ -123,7 +124,7 @@ class PipelineRouter:
 
         # ── Pipeline C (text-only) — always available ─────────────────────────
         try:
-            await self._pipeline_c.run(websocket, session_id, store_client)
+            await self._pipeline_c.run(websocket, session_id, store_client, tenant_id)
         except Exception as exc:
             logger.error(
                 "Pipeline C failed session=%s: %s: %s",

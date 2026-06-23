@@ -5,10 +5,10 @@ import hashlib
 import logging
 import os
 import time
-from typing import Optional
-
 from google import genai
 from google.genai import types
+
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -44,23 +44,34 @@ def _get_shared_secret() -> str:
     return os.environ.get("SHARED_SECRET", "")
 
 
-def generate_ws_token(session_id: str) -> str:
+def generate_ws_token(tenant_id: str, session_id: str) -> str:
     ts = format(int(time.time()), "x")
     secret = _get_shared_secret()
     if not secret:
         return ""
-    sig = hmac.new(secret.encode(), f"{session_id}:{ts}".encode(), hashlib.sha256).hexdigest()
+    sig = hmac.new(secret.encode(), f"{tenant_id}:{session_id}:{ts}".encode(), hashlib.sha256).hexdigest()
     return f"{ts}.{sig}"
 
 
-def validate_ws_token(token: str, session_id: str) -> bool:
+def validate_ws_token(token: str, tenant_id: str, session_id: str) -> bool:
+    # Token is bound to (tenant_id, session_id): a token minted for tenant A is
+    # invalid when presented for tenant B, so a session can't cross tenants.
+    is_prod = settings.environment.lower() in ("production", "prod")
     secret = _get_shared_secret()
     if not secret:
+        # In production a valid token is ALWAYS required — never silently disable
+        # auth on a missing secret. (config also refuses to boot prod with a weak
+        # SHARED_SECRET, so this is defence-in-depth.)
+        if is_prod:
+            logger.error("SHARED_SECRET not set in production — rejecting WS token")
+            return False
         logger.warning("SHARED_SECRET not set — token validation disabled (dev mode)")
         return True
-    if os.environ.get("MVP_MODE", "").lower() == "true":
-        # In MVP mode skip strict token enforcement so dev/demo setups aren't blocked
-        # by transient token-fetch failures (CORS, ngrok interstitial, etc.)
+    if not is_prod and os.environ.get("MVP_MODE", "").lower() == "true":
+        # MVP mode skips strict token enforcement so dev/demo setups aren't blocked
+        # by transient token-fetch failures (CORS, ngrok interstitial, etc.). NEVER
+        # honored in production — otherwise anyone could hijack a session by guessing
+        # a session_id.
         if not token:
             logger.debug("MVP_MODE: allowing connection without token session=%s", session_id)
         return True
@@ -74,7 +85,7 @@ def validate_ws_token(token: str, session_id: str) -> bool:
     if time.time() - ts > _WS_TOKEN_TTL:
         logger.warning(f"Expired WebSocket token: session={session_id}")
         return False
-    expected = hmac.new(secret.encode(), f"{session_id}:{ts_hex}".encode(), hashlib.sha256).hexdigest()
+    expected = hmac.new(secret.encode(), f"{tenant_id}:{session_id}:{ts_hex}".encode(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, sig)
 
 
@@ -199,7 +210,7 @@ Store details (only share when the customer asks):
 # and no audio/text responses will ever arrive.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-async def inject_reconnect_context(gemini_session, session_service, session_id: str) -> None:
+async def inject_reconnect_context(gemini_session, session_service, tenant_id: str, session_id: str) -> None:
     """
     Seed the fresh Gemini session with prior cart/history state.
     Always sends turn_complete=True (required by historyConfig flow).
@@ -208,7 +219,7 @@ async def inject_reconnect_context(gemini_session, session_service, session_id: 
 
     if session_service is not None:
         try:
-            state        = await session_service.get_session(session_id)
+            state        = await session_service.get_session(tenant_id, session_id)
             cart         = state.get("cart_snapshot", {})
             history      = state.get("conversation_history", [])
             meta         = state.get("meta", {})

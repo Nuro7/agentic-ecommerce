@@ -3,7 +3,7 @@
  * Plugin Name: WooAgent - AI Shopping Assistant
  * Plugin URI: https://example.com/wooagent
  * Description: Voice-first AI shopping assistant for WooCommerce stores.
- * Version: 1.4.31
+ * Version: 1.4.33
  * Author: WooAgent Team
  * Author URI: https://example.com
  * Requires at least: 6.0
@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WOOAGENT_VERSION', '1.4.31');
+define('WOOAGENT_VERSION', '1.4.33');
 define('WOOAGENT_PLUGIN_FILE', __FILE__);
 define('WOOAGENT_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WOOAGENT_PLUGIN_URL', plugin_dir_url(__FILE__));

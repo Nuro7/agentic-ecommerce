@@ -46,6 +46,7 @@ def _wants_cart_navigation(lower: str) -> bool:
 
 
 async def safe_get_cart(
+    tenant_id: str,
     session_id: str,
     *,
     store_client: Any,
@@ -53,11 +54,11 @@ async def safe_get_cart(
 ) -> Dict[str, Any]:
     try:
         cart = await store_client.get_live_cart(session_id=session_id)
-        await session_service.save_cart(session_id, cart)
+        await session_service.save_cart(tenant_id, session_id, cart)
         return cart
     except Exception as e:
         logger.warning("Live cart fetch failed, using cache: %s", e)
-        cart = await session_service.get_cart(session_id)
+        cart = await session_service.get_cart(tenant_id, session_id)
         if cart and not cart.get("is_empty", True):
             return cart
         return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
@@ -69,6 +70,7 @@ async def run_fast_intent(
     language: str,
     store_context: Optional[Dict[str, Any]],
     *,
+    tenant_id: str,
     store_client: Any,
     session_service: Any,
 ) -> Optional[Dict[str, Any]]:
@@ -132,7 +134,7 @@ async def run_fast_intent(
         })
 
     if _wants_cart_navigation(lower):
-        cart = await safe_get_cart(session_id, store_client=store_client, session_service=session_service)
+        cart = await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
         cart_url = str((store_context or {}).get("cart_url") or "/cart")
         # Render inline AND navigate the storefront to the real cart page, so
         # "go to cart" actually moves the page (the #7 indication-driven UX).
@@ -146,7 +148,7 @@ async def run_fast_intent(
         })
 
     if has_cart_view_intent(lower):
-        cart = await safe_get_cart(session_id, store_client=store_client, session_service=session_service)
+        cart = await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
         return with_actions_alias({
             "response_text": say(language, "cart_opened"),
             "ui_actions": [{"type": "show_cart", "payload": {"cart": normalize_cart_payload(cart)}}],
@@ -154,7 +156,7 @@ async def run_fast_intent(
         })
 
     if has_remove_intent(lower):
-        cart = await safe_get_cart(session_id, store_client=store_client, session_service=session_service)
+        cart = await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
         items = cart.get("items") if isinstance(cart.get("items"), list) else []
         if not items:
             return with_actions_alias({
@@ -167,7 +169,7 @@ async def run_fast_intent(
             await store_client.remove_from_cart(session_id=session_id, cart_item_key=target.get("cart_item_key"))
         except Exception:
             pass
-        cart_after = await safe_get_cart(session_id, store_client=store_client, session_service=session_service)
+        cart_after = await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
         return with_actions_alias({
             "response_text": say(language, "removed_from_cart", name=target.get("name", "item")),
             "ui_actions": [{"type": "show_cart", "payload": {"cart": normalize_cart_payload(cart_after)}}],

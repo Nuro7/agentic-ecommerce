@@ -68,6 +68,7 @@ class PipelineB:
         language: str,
         store_client: Any = None,
         cart_context: Any = None,
+        tenant_id: str = "_dev",
     ) -> None:
         orchestrator = self._get_orchestrator(session_id, store_client)
 
@@ -77,6 +78,7 @@ class PipelineB:
                 user_message=text,
                 language=language,
                 cart_context=cart_context,
+                tenant_id=tenant_id,
             )
             response_text = (
                 result.get("speech_text")
@@ -132,7 +134,8 @@ class PipelineB:
 
     # ── Main run loop ─────────────────────────────────────────────────────────
 
-    async def run(self, websocket: Any, session_id: str, store_client: Any = None) -> None:
+    async def run(self, websocket: Any, session_id: str, store_client: Any = None,
+                  tenant_id: str = "_dev") -> None:
         """
         Run Pipeline B. Raises on unrecoverable error so the circuit breaker triggers.
 
@@ -193,6 +196,7 @@ class PipelineB:
                                     websocket, session_id, user_text, lang,
                                     store_client=store_client,
                                     cart_context=cart_ctx,
+                                    tenant_id=tenant_id,
                                 )
                         except (json.JSONDecodeError, KeyError):
                             pass
@@ -248,6 +252,7 @@ class PipelineB:
                             await self._process_turn(
                                 websocket, session_id, text, language,
                                 store_client=store_client,
+                                tenant_id=tenant_id,
                             )
                         # is_final=true, speech_final=false → chunk-final, keep accumulating
 

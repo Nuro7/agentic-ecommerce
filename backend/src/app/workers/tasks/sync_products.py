@@ -144,7 +144,7 @@ def sync_products_diff(self, tenant_id: Optional[str] = None) -> dict:
 # ── Full sync ─────────────────────────────────────────────────────────────────
 
 async def _sync_async(tenant_id_filter: Optional[str] = None) -> dict:
-    from ...core.database import worker_session as AsyncSessionLocal
+    from ...core.database import worker_session as AsyncSessionLocal, set_tenant_guc
     from ...modules.tenants.repository import TenantRepository
 
     total_upserted = 0
@@ -162,6 +162,10 @@ async def _sync_async(tenant_id_filter: Optional[str] = None) -> dict:
                 continue
             if not tenant.is_active:
                 continue
+
+            # Scope RLS to this tenant for the product_cache upserts/deletes below.
+            # (The tenants scan above is on an RLS-excluded table, so it ran un-scoped.)
+            await set_tenant_guc(db, tenant.id)
 
             store_client = None
             try:
@@ -253,7 +257,7 @@ _COUNT_DRIFT_THRESHOLD = 0.10
 
 
 async def _diff_sync_async(tenant_id_filter: Optional[str] = None) -> dict:
-    from ...core.database import worker_session as AsyncSessionLocal
+    from ...core.database import worker_session as AsyncSessionLocal, set_tenant_guc
     from ...modules.tenants.repository import TenantRepository
 
     total_upserted = 0
@@ -271,6 +275,9 @@ async def _diff_sync_async(tenant_id_filter: Optional[str] = None) -> dict:
                 continue
             if not tenant.is_active:
                 continue
+
+            # Scope RLS to this tenant for the product_cache writes below.
+            await set_tenant_guc(db, tenant.id)
 
             store_client = None
             try:

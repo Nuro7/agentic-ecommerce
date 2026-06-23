@@ -14,7 +14,7 @@ import json
 import logging
 import os
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from ...agent.gemini_client import (
     _WS_TOKEN_TTL,
@@ -22,11 +22,16 @@ from ...agent.gemini_client import (
     validate_ws_token,
 )
 from ...agent.voice.pipelines import PipelineRouter
-from ...core.database import AsyncSessionLocal
+from ...config import settings
+from ...core.database import AsyncSessionLocal, set_request_tenant
 from ...core.ratelimit import check_rate_limit
 from ...modules.billing.dependencies import enforce_conversation_quota, is_voice_allowed
 from ...modules.billing.service import BillingService
-from ...modules.tenants.dependencies import resolve_tenant_store_client_for_ws
+from ...modules.tenants.dependencies import (
+    DEV_TENANT_ID,
+    resolve_tenant_id_from_request,
+    resolve_tenant_store_client_for_ws,
+)
 from ...modules.tenants.repository import TenantRepository
 
 logger = logging.getLogger(__name__)
@@ -57,8 +62,15 @@ def _get_pipeline_router(app_state) -> PipelineRouter:
 # ── REST: issue a short-lived WS token ───────────────────────────────────────
 
 @router.get("/wooagent/ws-token")
-async def get_ws_token(session_id: str = Query(..., min_length=4, max_length=128)):
-    token = generate_ws_token(session_id)
+async def get_ws_token(
+    request: Request,
+    session_id: str = Query(..., min_length=4, max_length=128),
+):
+    # Sign the token with the SAME tenant id the WS handler will resolve, so the
+    # token only validates when presented for this tenant (?shop= / X-Tenant-ID).
+    async with AsyncSessionLocal() as db:
+        resolved_tid = await resolve_tenant_id_from_request(request, db)
+    token = generate_ws_token(resolved_tid or DEV_TENANT_ID, session_id)
     return {"token": token, "ttl": _WS_TOKEN_TTL}
 
 
@@ -111,10 +123,8 @@ async def voice_stream(websocket: WebSocket):
                        websocket.client.host if websocket.client else "unknown")
         return
 
-    if not validate_ws_token(token, session_id):
-        await websocket.close(code=4003, reason="Invalid or expired token")
-        logger.warning("WebSocket rejected — bad token: session=%s", session_id)
-        return
+    # NOTE: token validation happens AFTER tenant resolution below — the token is
+    # bound to (tenant_id, session_id), so we must know the resolved tenant first.
 
     # Connection rate limit: voice sessions are the most expensive path
     # (3 credits + LLM/STT/TTS). Cap new connections per (tenant, IP).
@@ -128,9 +138,6 @@ async def voice_stream(websocket: WebSocket):
         logger.warning("WebSocket rejected — rate limit: session=%s ip=%s", session_id, _ip)
         return
 
-    await websocket.accept()
-    logger.info("Voice WebSocket accepted: session=%s shop=%s", session_id, shop or tenant_id or "global")
-
     global _voice_active
     voice_slot = False
     try:
@@ -142,6 +149,32 @@ async def voice_stream(websocket: WebSocket):
                 app_state=websocket.app.state,
                 db=db,
             )
+            # No tenant resolved. In production (or when enforcement is explicitly on)
+            # reject instead of serving from the shared global client — otherwise two
+            # tenants without a shop/tenant_id collapse onto one store's data.
+            if resolved_tenant_id is None and settings.require_tenant:
+                await websocket.close(code=4003, reason="Unresolved tenant")
+                logger.warning(
+                    "WebSocket rejected — unresolved tenant (enforced): session=%s", session_id)
+                return
+
+            # Scope RLS for this WS task (and the pipeline/agent sessions it spawns,
+            # which inherit this context). '' when unresolved in dev → default-deny.
+            set_request_tenant(resolved_tenant_id or "")
+
+            # The WS token is bound to the RESOLVED tenant: a token minted for tenant
+            # A is invalid for tenant B, so a (session_id, token) pair can't be replayed
+            # against another tenant's store. Validate before accepting the socket.
+            effective_tenant_id = resolved_tenant_id or DEV_TENANT_ID
+            if not validate_ws_token(token, effective_tenant_id, session_id):
+                await websocket.close(code=4003, reason="Invalid or expired token")
+                logger.warning("WebSocket rejected — bad token: session=%s", session_id)
+                return
+
+            await websocket.accept()
+            logger.info("Voice WebSocket accepted: session=%s shop=%s",
+                        session_id, shop or tenant_id or "global")
+
             # Default to voice; tenants whose plan lacks voice fall back to a
             # text-only session instead of being rejected — otherwise a free/Starter
             # merchant's widget (which only talks to this WS) can't chat at all.
@@ -203,7 +236,8 @@ async def voice_stream(websocket: WebSocket):
 
         pipeline_router = _get_pipeline_router(websocket.app.state)
         await pipeline_router.run(
-            websocket, session_id, store_client=store_client, voice_enabled=voice_enabled)
+            websocket, session_id, store_client=store_client, voice_enabled=voice_enabled,
+            tenant_id=resolved_tenant_id or DEV_TENANT_ID)
 
     except WebSocketDisconnect:
         logger.info("Client disconnected: session=%s", session_id)
