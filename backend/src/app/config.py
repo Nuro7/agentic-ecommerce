@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "INFO"
 
+    # Multi-tenant safety: when true, a request/WS whose tenant can't be resolved
+    # (no ?shop= / X-Tenant-ID / tenant_id) is REJECTED instead of falling back to
+    # the global app.state.store_client — which would collapse two tenants onto one
+    # store and merge their catalogs/sessions. Left as None it defaults to "on in
+    # production" (see require_tenant). Set ENFORCE_TENANT_RESOLUTION=false to deploy
+    # the backend dark during a widget-first rollout, then flip it on once every
+    # widget sends a tenant id on all paths.
+    enforce_tenant_resolution: bool | None = None
+
     database_url: str = "postgresql+asyncpg://agentic:agentic@localhost:5432/agentic_commerce"
     # Pool sizing is now read from config (was hardcoded). Size against the DB's
     # max_connections budget across ALL web replicas + Celery workers.
@@ -81,6 +90,16 @@ class Settings(BaseSettings):
     @property
     def is_shopify(self) -> bool:
         return self.platform.lower() == "shopify"
+
+    @property
+    def require_tenant(self) -> bool:
+        """Whether to reject requests with no resolvable tenant.
+
+        Explicit ENFORCE_TENANT_RESOLUTION wins; otherwise enforce in production.
+        """
+        if self.enforce_tenant_resolution is not None:
+            return self.enforce_tenant_resolution
+        return self.environment.lower() in ("production", "prod")
 
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":

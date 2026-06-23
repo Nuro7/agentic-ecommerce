@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -28,10 +29,26 @@ logger = logging.getLogger(__name__)
 
 # ── Per-tenant client cache ───────────────────────────────────────────────────
 CLIENT_CACHE_TTL = 300  # seconds — 5 minutes
+# Hard cap on cached clients. TTL alone never evicts a tenant that stops sending
+# traffic, so the dict grows unbounded with total tenant count (per-process memory
+# leak). Oldest-first eviction keeps it bounded. Per-process is fine — see SCALING.md.
+CLIENT_CACHE_MAX = int(os.getenv("CLIENT_CACHE_MAX", "500"))
 
 # { tenant_id: (store_client, created_at_monotonic) }
 _CLIENT_CACHE: dict[str, tuple[Any, float]] = {}
 _CACHE_LOCK = asyncio.Lock()
+
+
+async def _evict_oldest_if_full() -> None:
+    """Evict oldest-by-creation entries until under CLIENT_CACHE_MAX. Caller holds _CACHE_LOCK."""
+    while len(_CLIENT_CACHE) >= CLIENT_CACHE_MAX:
+        oldest_id = min(_CLIENT_CACHE, key=lambda k: _CLIENT_CACHE[k][1])
+        client, _ = _CLIENT_CACHE.pop(oldest_id)
+        try:
+            await client.close()
+        except Exception:
+            pass
+        logger.debug("Client cache full — evicted oldest tenant=%s", oldest_id)
 
 
 async def invalidate_tenant_client(tenant_id: str) -> None:
@@ -104,6 +121,7 @@ async def create_store_client_for_tenant(
             except Exception:
                 pass
 
+        await _evict_oldest_if_full()
         client = _build_client(tenant, redis_client=redis_client)
         _CLIENT_CACHE[tenant_id] = (client, time.monotonic())
         logger.debug(

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .repository import WebhookRepository
 from .models import WebhookEvent
+from ...core.database import set_tenant_guc
 
 logger = logging.getLogger(__name__)
 
@@ -355,6 +356,10 @@ class WebhookService:
         processed = 0
 
         for event in events:
+            # Scope RLS to THIS event's tenant before dispatch — the handler may
+            # upsert product_cache / orders (RLS tables) via self.db. The pending
+            # scan above is on webhook_events (RLS-excluded), so it ran un-scoped.
+            await set_tenant_guc(self.db, event.tenant_id)
             handler = _HANDLERS.get(event.topic)
             try:
                 payload = json.loads(event.payload) if event.payload else {}

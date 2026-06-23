@@ -68,10 +68,10 @@ class SessionFactsService:
         self._r = redis_client
         self._mem: dict[str, dict[str, Any]] = {}
 
-    async def update(self, session_id: str, user_message: str, tool_results: Optional[list[dict]] = None) -> None:
+    async def update(self, tenant_id: str, session_id: str, user_message: str, tool_results: Optional[list[dict]] = None) -> None:
         extracted = _extract_facts(user_message, tool_results or [])
         new_category = _detect_category(user_message)
-        current = await self.get(session_id)
+        current = await self.get(tenant_id, session_id)
         changed = False
 
         # Topic switch → drop product-specific prefs so old size/colour/product
@@ -95,10 +95,10 @@ class SessionFactsService:
                 changed = True
 
         if changed:
-            await self._save(session_id, current)
+            await self._save(tenant_id, session_id, current)
 
-    async def get(self, session_id: str) -> dict[str, Any]:
-        return await self._load(session_id)
+    async def get(self, tenant_id: str, session_id: str) -> dict[str, Any]:
+        return await self._load(tenant_id, session_id)
 
     def format_for_prompt(self, facts: dict[str, Any]) -> str:
         if not facts:
@@ -114,30 +114,31 @@ class SessionFactsService:
             parts.append(f"last discussed: {facts['last_product_name']}")
         return ("Customer preferences — " + ", ".join(parts) + ".") if parts else ""
 
-    def _redis_key(self, session_id: str) -> str:
-        return f"session_facts:{session_id}"
+    def _redis_key(self, tenant_id: str, session_id: str) -> str:
+        return f"session_facts:{tenant_id}:{session_id}"
 
-    async def _load(self, session_id: str) -> dict[str, Any]:
+    async def _load(self, tenant_id: str, session_id: str) -> dict[str, Any]:
+        mem_key = f"{tenant_id}:{session_id}"
         if self._r is not None:
             try:
-                raw = await self._r.get(self._redis_key(session_id))
+                raw = await self._r.get(self._redis_key(tenant_id, session_id))
                 if raw:
                     return json.loads(raw)
             except Exception as e:
                 logger.debug("SessionFacts Redis GET failed: %s", e)
-        return dict(self._mem.get(session_id, {}))
+        return dict(self._mem.get(mem_key, {}))
 
-    async def _save(self, session_id: str, facts: dict[str, Any]) -> None:
+    async def _save(self, tenant_id: str, session_id: str, facts: dict[str, Any]) -> None:
         if self._r is not None:
             try:
                 await self._r.setex(
-                    self._redis_key(session_id),
+                    self._redis_key(tenant_id, session_id),
                     SESSION_FACTS_TTL,
                     json.dumps(facts, ensure_ascii=False),
                 )
             except Exception as e:
                 logger.debug("SessionFacts Redis SET failed: %s", e)
-        self._mem[session_id] = facts
+        self._mem[f"{tenant_id}:{session_id}"] = facts
 
 
 def _extract_facts(message: str, tool_results: list[dict]) -> dict[str, Any]:

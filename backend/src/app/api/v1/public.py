@@ -15,7 +15,11 @@ from ...core.database import get_db
 from ...core.ratelimit import rate_limit
 from ...modules.billing.dependencies import check_conversation_quota
 from ...modules.billing.service import BillingService
-from ...modules.tenants.dependencies import get_tenant_store_client
+from ...modules.tenants.dependencies import (
+    DEV_TENANT_ID,
+    get_tenant_store_client,
+    resolve_tenant_id_from_request,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["widget"])
@@ -67,8 +71,12 @@ async def greet_endpoint(
     session_id = payload.session_id
     store_name = payload.store_name or "this store"
 
-    session_meta = await session_service.get_meta(session_id) if session_service else {}
-    history = await session_service.get_history(session_id) if session_service else []
+    # Resolve tenant once: real id (or None) for billing; key-safe id for session keys.
+    resolved_tid = await resolve_tenant_id_from_request(req, db)
+    tenant_id = resolved_tid or DEV_TENANT_ID
+
+    session_meta = await session_service.get_meta(tenant_id, session_id) if session_service else {}
+    history = await session_service.get_history(tenant_id, session_id) if session_service else []
 
     if str(payload.language or "").strip().lower() == "auto":
         if session_meta.get("language"):
@@ -145,7 +153,7 @@ async def greet_endpoint(
     if tts_service:
         try:
             save_meta_coro = (
-                session_service.save_meta(session_id, {**session_meta, "greeted": True, "language": language})
+                session_service.save_meta(tenant_id, session_id, {**session_meta, "greeted": True, "language": language})
                 if session_service else asyncio.sleep(0)
             )
             audio_b64, _ = await asyncio.gather(
@@ -155,7 +163,7 @@ async def greet_endpoint(
         except Exception as exc:
             logger.warning("TTS synthesis failed: %s", exc)
     elif session_service:
-        await session_service.save_meta(session_id, {**session_meta, "greeted": True, "language": language})
+        await session_service.save_meta(tenant_id, session_id, {**session_meta, "greeted": True, "language": language})
 
     suggested_replies_map = {
         "en": (
@@ -177,31 +185,14 @@ async def greet_endpoint(
     }
     suggested_replies = suggested_replies_map.get(language, suggested_replies_map["en"])
 
-    # Resolve tenant_id for credit recording (mirrors check_conversation_quota logic).
-    from ...modules.tenants.repository import TenantRepository
-    _tenant_id: Optional[str] = None
-    try:
-        _repo = TenantRepository(db)
-        _shop = req.query_params.get("shop", "").strip()
-        if _shop:
-            _t = await _repo.get_by_shopify_domain(_shop)
-            if _t:
-                _tenant_id = _t.id
-        if not _tenant_id:
-            _tid_header = req.headers.get("X-Tenant-ID", "").strip()
-            if _tid_header:
-                _t = await _repo.get_by_id(_tid_header)
-                if _t and _t.is_active:
-                    _tenant_id = _t.id
-    except Exception:
-        pass
-
-    if _tenant_id:
+    # Credit recording uses the REAL resolved tenant (resolved at the top); the dev
+    # sentinel is never billed.
+    if resolved_tid:
         try:
-            await BillingService(db).record_usage(_tenant_id, "credits", 1)
+            await BillingService(db).record_usage(resolved_tid, "credits", 1)
             await db.commit()
         except Exception as exc:
-            logger.warning("Failed to record greet credit: tenant=%s: %s", _tenant_id, exc)
+            logger.warning("Failed to record greet credit: tenant=%s: %s", resolved_tid, exc)
 
     return {
         "session_id": session_id,

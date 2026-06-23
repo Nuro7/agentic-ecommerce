@@ -7,6 +7,7 @@ POST-VALIDATION pipeline (the hallucination killer):
 """
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from typing import Any, Dict, List, Optional, Set
@@ -152,10 +153,20 @@ _PRODUCT_MENTION_RE = re.compile(r"\b([A-Z][\w-]*(?:\s+[A-Z0-9][\w-]*)+)\b")
 _NEGATION_CONTEXT_RE = re.compile(
     r"(?:\bno\b|\bnot\b|n't|\bnever\b|\bwithout\b|\bsorry\b|unavailable|out of stock|"
     r"don'?t have|do not have|couldn'?t find|could not find|no longer|"
+    # negation + a stocking verb between it and the product ("we don't carry X",
+    # "we don't stock/sell/offer X", "doesn't currently have X").
+    r"(?:don'?t|do not|doesn'?t|does not|couldn'?t|could not|can'?t|cannot|won'?t)"
+    r"(?:\s+\w+){0,3}\s+(?:carry|carrying|stock|stocking|sell|selling|offer|offering|have|has)|"
     r"we don'?t|isn'?t|aren'?t)\s*$",
     re.IGNORECASE,
 )
 _LEADING_NEGATION_RE = re.compile(r"^(?:no|not|never|without|any|these|those|our)\b", re.IGNORECASE)
+
+# A "model-number" token: letter+digit, digit+letter, or 2+ digits (e.g. "X50",
+# "S24", "128gb", "13"). Used to split a product mention into the digit-free path
+# (P1-8 fuzzy match vs full names) and the model-number path (P1-8b: every model
+# token must appear literally in the retrieved name-token set).
+_MODEL_TOKEN_RE = re.compile(r"(?:[a-z][0-9]|[0-9][a-z]|[0-9]{2,})")
 
 # Generic words that appear in many product names ("Edition", "Pro", "Max"). They
 # must NOT count as a name match — otherwise a fabricated "iPhone 13 Blue Edition"
@@ -185,6 +196,7 @@ def check_output(
     retrieved_prices: Optional[Set[str]] = None,
     retrieved_attributes: Optional[Set[str]] = None,
     retrieved_names: Optional[Set[str]] = None,
+    retrieved_full_names: Optional[Set[str]] = None,
     detected_language: str = "en",
     allow_retry: bool = True,
 ) -> str:
@@ -227,7 +239,9 @@ def check_output(
     # contains a model-number token AND is NOT in a negation context. Saying you
     # DON'T have something ("No Casio G-Shock watches are available") is never a
     # hallucination, so negated phrases are skipped entirely.
-    if retrieved_names:
+    names_tok: Set[str] = retrieved_names or set()
+    full_names: Set[str] = retrieved_full_names or set()
+    if names_tok or full_names:
         for m in _PRODUCT_MENTION_RE.finditer(cleaned):
             phrase = m.group(1)
             # Skip negation context: "no/not/don't/can't/couldn't/without …" just
@@ -241,13 +255,43 @@ def check_output(
             ]
             if not toks:
                 continue
-            # Require a model-number token (e.g. "X50", "S24", "13"). The bare
-            # "3+ Capitalised words" trigger caused false positives on plain brand
-            # phrases ("No Casio G-Shock", "Best Express Shipping").
-            has_model = any(re.search(r"(?:[a-z][0-9]|[0-9][a-z]|[0-9]{2,})", t) for t in toks)
-            if not has_model:
-                continue
-            if not any(t in retrieved_names for t in toks):
+
+            model_toks = [t for t in toks if _MODEL_TOKEN_RE.search(t)]
+            hallucinated = False
+            if model_toks:
+                # ── Model-number path ──────────────────────────────────────────
+                # Keep the original token-match sanity check (some brand/model token
+                # must be from retrieved data) AND require EVERY model-number token to
+                # appear literally in the retrieved TOKEN set — so "Galaxy S25" is
+                # flagged even when "galaxy"/"s24" were retrieved (P1-8b). Runs against
+                # retrieved_names (tokens) ONLY — never the full-name set.
+                if not any(t in names_tok for t in toks):
+                    hallucinated = True
+                elif not all(mt in names_tok for mt in model_toks):
+                    hallucinated = True
+            else:
+                # ── Digit-free path (P1-8) ─────────────────────────────────────
+                # Conservative fuzzy match against the retrieved FULL names ONLY
+                # (never the token set). Needs ≥2 distinctive tokens and a full-name
+                # set to compare against. token-overlap handles reordered/partial real
+                # names; SequenceMatcher tolerates plurals/typos. Threshold 0.80 errs
+                # toward PASSING real products (a false reject makes Aria refuse a real
+                # item — worse than letting a borderline mention through).
+                if full_names and len(toks) >= 2:
+                    joined = " ".join(toks)
+                    said = set(toks)
+                    best = 0.0
+                    for name in full_names:
+                        name_toks = set(re.findall(r"[a-z0-9]+", name))
+                        overlap = len(said & name_toks) / len(said)
+                        ratio = difflib.SequenceMatcher(None, joined, name).ratio()
+                        best = max(best, overlap, ratio)
+                        if best >= 0.80:
+                            break
+                    if best < 0.80:
+                        hallucinated = True
+
+            if hallucinated:
                 msg = f"hallucinated product name: {phrase!r}"
                 logger.warning("Output validation FAIL — %s", msg)
                 if allow_retry:
@@ -259,6 +303,13 @@ def check_output(
     if retrieved_prices:
         mentioned_prices_raw = re.findall(r"[₹$€£¥]\s*[\d,]+(?:\.\d{1,2})?", cleaned)
         mentioned_prices = {re.sub(r"[\s,]", "", p) for p in mentioned_prices_raw}
+        # P1-8c: symbol-less / currency-WORD prices the symbol regex misses —
+        # "Rs 9999" / "INR 9999" (prefix) and "9999 rupees" / "9999 rs" (suffix).
+        # Anchored to a currency word so plain sizes/counts ("2 items") aren't caught.
+        for _m in re.findall(r"(?:rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)", cleaned, re.IGNORECASE):
+            mentioned_prices.add(re.sub(r"[\s,]", "", _m))
+        for _m in re.findall(r"([\d,]+(?:\.\d{1,2})?)\s*(?:rupees?|rs\b|inr)", cleaned, re.IGNORECASE):
+            mentioned_prices.add(re.sub(r"[\s,]", "", _m))
         normalized_retrieved = {re.sub(r"[\s,]", "", p) for p in retrieved_prices}
         unknown_prices = mentioned_prices - normalized_retrieved
         if unknown_prices:
@@ -312,6 +363,44 @@ def check_output(
                 raise OutputValidationError(msg)
 
     return cleaned
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VOICE MONITOR  (P1-11 — re-validate Gemini's SPOKEN transcript)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def validate_spoken_text(
+    text: str,
+    *,
+    retrieved_full_names: Optional[Set[str]] = None,
+    retrieved_names: Optional[Set[str]] = None,
+    retrieved_prices: Optional[Set[str]] = None,
+    detected_language: str = "en",
+) -> tuple[bool, str]:
+    """Monitor the voice channel's SPOKEN transcript against the brain's grounding.
+
+    Pipeline A speaks the brain's answer in Gemini's own words; the relay-verbatim
+    system prompt is the PRIMARY guard. This is the secondary MONITOR — it reuses the
+    same name/price checks as check_output but NEVER raises into the audio path.
+
+    Returns (is_grounded, cleaned). is_grounded=False means a fabricated product
+    name/price was detected in the transcript — the caller substitutes the brain's
+    verified text on the displayed bubble and logs the divergence.
+    """
+    if not text or not text.strip():
+        return True, text
+    try:
+        cleaned = check_output(
+            text,
+            retrieved_names=retrieved_names,
+            retrieved_full_names=retrieved_full_names,
+            retrieved_prices=retrieved_prices,
+            detected_language=detected_language,
+            allow_retry=True,
+        )
+        return True, cleaned
+    except OutputValidationError:
+        return False, text
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -381,28 +470,32 @@ def strip_inline_prices(text: str) -> str:
 
 def build_retrieved_context(
     tool_results: List[Dict[str, Any]],
-) -> tuple[Set[str], Set[str], Set[str], Set[str]]:
-    """Extract product IDs, prices, attribute values, and NAME TOKENS from results.
+) -> tuple[Set[str], Set[str], Set[str], Set[str], Set[str]]:
+    """Extract product IDs, prices, attribute values, NAME TOKENS, and FULL NAMES.
 
     Pass the return value into check_output() so it can validate the LLM
     response against only what was actually retrieved.
 
-    Returns (product_id_set, price_set, attribute_value_set, name_token_set).
-    name_token_set holds the significant lowercased tokens of every retrieved
-    product name — check_output uses it to catch fabricated product names.
+    Returns (product_id_set, price_set, attribute_value_set, name_token_set,
+    full_name_set). name_token_set holds the significant lowercased tokens of every
+    retrieved name (used for the model-number literal check); full_name_set holds the
+    whole lowercased product names (used for the digit-free fuzzy match). The two are
+    kept separate on purpose — check_output never crosses them.
     """
     product_ids: Set[str] = set()
     prices: Set[str] = set()
     attributes: Set[str] = set()
     name_tokens: Set[str] = set()
+    full_names: Set[str] = set()
 
     def _extract_product(p: dict) -> None:
         pid = p.get("id") or p.get("product_id")
         if pid:
             product_ids.add(str(pid))
-        # Collect significant name tokens (len>2) for name-grounding in check_output.
+        # Collect significant name tokens (len>2) AND the whole name for grounding.
         name = str(p.get("name") or "").strip().lower()
         if name:
+            full_names.add(name)
             for tok in re.findall(r"[a-z0-9]+", name):
                 if len(tok) > 2 and tok not in _GENERIC_NAME_TOKENS:
                     name_tokens.add(tok)
@@ -445,4 +538,4 @@ def build_retrieved_context(
         if "product" in payload and isinstance(payload["product"], dict):
             _extract_product(payload["product"])
 
-    return product_ids, prices, attributes, name_tokens
+    return product_ids, prices, attributes, name_tokens, full_names

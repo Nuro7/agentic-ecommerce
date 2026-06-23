@@ -25,6 +25,7 @@ from typing import Any
 
 from google.genai import types
 
+from ....agent.guardrails import build_retrieved_context, validate_spoken_text
 from ....agent.gemini_client import (
     client,
     _GEMINI_LIVE_MODEL,
@@ -173,6 +174,7 @@ class PipelineA:
         language: str,
         cart_context: Any,
         store_client: Any,
+        tenant_id: str = "_dev",
     ) -> None:
         """Typed text → Brain DIRECTLY (deterministic), bypassing Gemini Live.
 
@@ -188,6 +190,7 @@ class PipelineA:
                 user_message=text,
                 language=language,
                 cart_context=cart_context,
+                tenant_id=tenant_id,
             )
             response_text = result.get("response_text") or result.get("text") or ""
             ui_actions = result.get("ui_actions") or result.get("actions") or []
@@ -218,7 +221,8 @@ class PipelineA:
         except Exception:
             pass
 
-    async def run(self, websocket: Any, session_id: str, store_client: Any) -> None:
+    async def run(self, websocket: Any, session_id: str, store_client: Any,
+                  tenant_id: str = "_dev") -> None:
         """
         Run Pipeline A for one WebSocket session.
         Raises on unrecoverable error so the router can trigger circuit breaker.
@@ -265,12 +269,18 @@ class PipelineA:
 
                 # Seed session history BEFORE starting dual tasks.
                 # Must complete before audio relay or Gemini stays paused.
-                await inject_reconnect_context(gemini_session, self.session_service, session_id)
+                await inject_reconnect_context(gemini_session, self.session_service, tenant_id, session_id)
 
                 # Latest cart snapshot from the widget (sent on text_input frames),
                 # so ask_brain reasons about the customer's REAL cart. Mutable holder
                 # shared between Task A (writes) and Task B (reads).
                 session_cart: dict = {"value": None}
+
+                # P1-11 voice MONITOR: the brain's verified grounding for the current
+                # turn. Set when ask_brain runs; the output_transcription handler checks
+                # Gemini's SPOKEN words against it and substitutes the verified text if
+                # Gemini invents a product. Reset on turn_complete so it can't go stale.
+                spoken_truth: dict = {"names": set(), "full_names": set(), "prices": set(), "verified": ""}
 
                 # ── Task A: Browser → Gemini ──────────────────────────────────
                 async def receive_from_frontend() -> None:
@@ -321,6 +331,7 @@ class PipelineA:
                                             websocket, session_id, ctrl["text"],
                                             ctrl.get("language", "en"),
                                             session_cart["value"], store_client,
+                                            tenant_id,
                                         )
                                 except (json.JSONDecodeError, KeyError):
                                     pass
@@ -370,10 +381,26 @@ class PipelineA:
                                         logger.info(
                                             f"Assistant: [{assistant_text[:100]}] session={session_id}"
                                         )
+                                        # P1-11 MONITOR: if a turn produced grounding and
+                                        # Gemini's spoken words name a product/price the brain
+                                        # didn't, show the brain's verified text instead + log.
+                                        out_text = assistant_text
+                                        if spoken_truth["names"] or spoken_truth["full_names"]:
+                                            ok, _clean = validate_spoken_text(
+                                                assistant_text,
+                                                retrieved_names=spoken_truth["names"] or None,
+                                                retrieved_full_names=spoken_truth["full_names"] or None,
+                                                retrieved_prices=spoken_truth["prices"] or None,
+                                            )
+                                            if not ok:
+                                                out_text = spoken_truth["verified"] or assistant_text
+                                                logger.warning(
+                                                    "Spoken transcript diverged from brain — "
+                                                    "substituting verified text: session=%s", session_id)
                                         try:
                                             await websocket.send_text(json.dumps({
                                                 "type": "transcript",
-                                                "text": assistant_text,
+                                                "text": out_text,
                                             }))
                                         except Exception:
                                             pass
@@ -395,6 +422,9 @@ class PipelineA:
 
                                 # Signal widget to finalise the streaming bubble
                                 if getattr(sc, "turn_complete", False):
+                                    # Clear the turn's grounding so it can't flag the next turn.
+                                    spoken_truth.update(
+                                        names=set(), full_names=set(), prices=set(), verified="")
                                     try:
                                         await websocket.send_text(
                                             json.dumps({"type": "turn_complete"})
@@ -422,6 +452,7 @@ class PipelineA:
                                                 user_message=query,
                                                 language=language,
                                                 cart_context=session_cart["value"],
+                                                tenant_id=tenant_id,
                                             )
                                             # Orchestrator returns a dict with:
                                             # text, response_text, ui_actions, actions, suggested_replies
@@ -432,6 +463,19 @@ class PipelineA:
                                                 or ""
                                             )
                                             ui_actions = result.get("ui_actions") or result.get("actions") or []
+
+                                            # P1-11: capture the brain's verified grounding for this
+                                            # turn (same build_retrieved_context the brain used → no
+                                            # drift) so the spoken-transcript monitor can check Gemini.
+                                            try:
+                                                _ids, _pr, _at, _nm, _full = build_retrieved_context(
+                                                    [a.get("payload", {}) for a in ui_actions
+                                                     if isinstance(a, dict)])
+                                                spoken_truth.update(
+                                                    names=_nm, full_names=_full, prices=_pr,
+                                                    verified=response_text)
+                                            except Exception:
+                                                pass
 
                                             # Forward UI actions to widget (add-to-cart, show-products, etc.)
                                             for action in ui_actions:

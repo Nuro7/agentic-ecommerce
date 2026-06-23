@@ -31,7 +31,9 @@ class ProductCache(Base):
     price: Mapped[float] = mapped_column(Numeric(10, 2), default=0)
     currency: Mapped[str] = mapped_column(String(10), default="USD")
     image_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
-    in_stock: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Nullable: webhook/ingest writes NULL for "stock unknown" (no recognizable stock
+    # field) rather than faking True — see migration 0014 + webhooks/service.upsert_product.
+    in_stock: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=True)
     cached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Added in migration 0005

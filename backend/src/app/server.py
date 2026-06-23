@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
@@ -9,11 +10,112 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
+from sqlalchemy import text
+
 from .config import settings
 from .api.v1.router import api_router
 from .api.v1.voice import router as voice_router
 
 logger = logging.getLogger(__name__)
+
+
+def _truthy(val: str | None) -> bool:
+    return (val or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _assert_single_process_or_acked() -> None:
+    """Guard the single-replica assumption.
+
+    The voice concurrency cap (`_voice_active` in api/v1/voice.py) and the LLM circuit
+    breakers (core/circuit_breaker.py) hold state in process memory — correct for ONE
+    web process, silently wrong across many (N×voice-cap against a global provider quota;
+    unshared breaker state). Until those are Redis-shared (see SCALING.md), refuse to boot
+    multi-process unless the operator explicitly acknowledges the risk.
+    """
+    web_concurrency = int(os.getenv("WEB_CONCURRENCY", "1") or "1")
+    declared_replicas = int(os.getenv("SPEAKO_WEB_REPLICAS", "1") or "1")
+    if web_concurrency <= 1 and declared_replicas <= 1:
+        return
+    msg = (
+        "Multi-process web detected (WEB_CONCURRENCY=%s, SPEAKO_WEB_REPLICAS=%s), but the "
+        "voice concurrency cap and LLM circuit breakers are PER-PROCESS. Make them "
+        "Redis-shared before scaling out (see backend/SCALING.md → 'Scaling out')."
+    ) % (web_concurrency, declared_replicas)
+    if _truthy(os.getenv("SPEAKO_ALLOW_MULTI_PROCESS")):
+        logger.warning("%s — proceeding because SPEAKO_ALLOW_MULTI_PROCESS is set.", msg)
+        return
+    raise RuntimeError(msg + " Set SPEAKO_ALLOW_MULTI_PROCESS=true to override.")
+
+
+def _enforce_rls_role(role: str, rolsuper: bool, rolbypassrls: bool, *, rls_enabled: bool) -> None:
+    """Decide the RLS-role boot outcome (pure → unit-testable).
+
+    A superuser / BYPASSRLS role ignores RLS policies even with FORCE, so RLS (migration
+    0013) would look enabled while providing NO cross-tenant protection. Only enforced when
+    RLS is actually on the tables — so local dev (superuser role, 0013 not applied) still boots.
+    """
+    if not (rolsuper or rolbypassrls):
+        return  # (f, f) — safe role
+    detail = "DB role '%s' has rolsuper=%s rolbypassrls=%s — it BYPASSES Row-Level Security" % (
+        role, rolsuper, rolbypassrls,
+    )
+    if not rls_enabled:
+        # RLS not applied yet → the role is currently harmless, but will silently neuter RLS
+        # the moment 0013 is enabled. Warn loudly; don't block a pre-RLS environment.
+        logger.warning(
+            "%s. RLS is not yet enabled on product_cache (migration 0013 not applied) — fix the "
+            "app role to NOSUPERUSER NOBYPASSRLS BEFORE enabling RLS, or it will be inert.", detail,
+        )
+        return
+    msg = (
+        detail + ", so RLS (migration 0013) is silently INERT and provides no cross-tenant "
+        "protection. Use a NOSUPERUSER NOBYPASSRLS app role (see backend/SCALING.md)."
+    )
+    if _truthy(os.getenv("SPEAKO_ALLOW_RLS_BYPASS")):
+        logger.warning("%s — proceeding because SPEAKO_ALLOW_RLS_BYPASS is set.", msg)
+        return
+    raise RuntimeError(msg + " Set SPEAKO_ALLOW_RLS_BYPASS=true to override.")
+
+
+async def _assert_rls_role_safe() -> None:
+    """On Postgres, refuse to boot if the app's DB role bypasses RLS while RLS is enabled.
+
+    Converts the manual `SELECT rolsuper, rolbypassrls` pre-prod check into an automatic
+    boot-time assertion. SQLite (tests) has no such concept → no-op.
+    """
+    from .core.database import engine, AsyncSessionLocal
+
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        async with AsyncSessionLocal() as s:
+            role_row = (
+                await s.execute(
+                    text(
+                        "SELECT current_user AS role, rolsuper, rolbypassrls "
+                        "FROM pg_roles WHERE rolname = current_user"
+                    )
+                )
+            ).one_or_none()
+            # Is RLS actually forced on a representative customer table (0013 applied)?
+            rls_on = (
+                await s.execute(
+                    text(
+                        "SELECT relrowsecurity AND relforcerowsecurity "
+                        "FROM pg_class WHERE relname = 'product_cache'"
+                    )
+                )
+            ).scalar()
+    except Exception as exc:
+        logger.warning("RLS-role guard could not query the catalog (%s) — proceeding.", exc)
+        return
+    if role_row is None:
+        logger.warning("RLS-role guard: current_user not found in pg_roles — proceeding.")
+        return
+    _enforce_rls_role(
+        str(role_row.role), bool(role_row.rolsuper), bool(role_row.rolbypassrls),
+        rls_enabled=bool(rls_on),
+    )
 
 
 @asynccontextmanager
@@ -23,7 +125,9 @@ async def lifespan(app: FastAPI):
     from .agent.memory.session import SessionService
     from .agent.beta_logger import get_beta_logger
 
+    _assert_single_process_or_acked()
     await init_db()
+    await _assert_rls_role_safe()
     await init_cache()
 
     # ── Redis ────────────────────────────────────────────────────────────────
@@ -196,6 +300,13 @@ def create_app() -> FastAPI:
         version=settings.version,
         lifespan=lifespan,
     )
+
+    # Translate domain AppError subclasses (UnauthorizedError→401, ForbiddenError→403,
+    # NotFoundError→404, …) into proper HTTP responses. Without this, every raised
+    # AppError bubbles up as a 500 — e.g. a wrong-password login would 500 instead of 401.
+    from .core.exceptions import AppError
+    from .core.middleware import app_error_handler
+    app.add_exception_handler(AppError, app_error_handler)
 
     @app.middleware("http")
     async def add_cors_to_static(request: Request, call_next) -> Response:

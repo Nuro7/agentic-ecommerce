@@ -1,6 +1,7 @@
 """Tool execution dispatcher and OpenAI-compatible tool schema."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -9,12 +10,43 @@ from .text_utils import safe_int, safe_optional_int, safe_float, normalize_disco
 logger = logging.getLogger(__name__)
 
 
+async def _fetch_compare_item(store_client: Any, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Fetch + assemble one comparison row (search-or-detail + variations). Returns None if not found."""
+    from .text_utils import in_stock as _in_stock
+
+    row = None
+    if item.get("id"):
+        row = await store_client.get_product_details(int(item["id"]))
+    elif item.get("name"):
+        rows = await store_client.search_products(query=item["name"], in_stock_only=False, limit=1)
+        row = rows[0] if rows else None
+    if not (row and row.get("id")):
+        return None
+    details = (
+        await store_client.get_product_details(int(row.get("id") or row.get("product_id") or 0))
+        if not row.get("variations")
+        else row
+    )
+    return {
+        "id": details.get("id") or row.get("id"),
+        "name": details.get("name") or row.get("name"),
+        "price": details.get("price") or row.get("price"),
+        "sale_price": details.get("sale_price") or row.get("sale_price"),
+        "in_stock": _in_stock(details or row),
+        "image_url": (details or row).get("image_url") or "",
+        "permalink": (details or row).get("permalink", ""),
+        "short_description": (details or row).get("short_description", ""),
+        "rating": (details or row).get("average_rating") or (details or row).get("rating_count"),
+    }
+
+
 async def execute_tool_call(
     tool_name: str,
     tool_args: Dict[str, Any],
     session_id: str,
     cart_context: Optional[Dict[str, Any]],
     *,
+    tenant_id: str,
     store_client: Any,
     session_service: Any,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
@@ -83,7 +115,7 @@ async def execute_tool_call(
         actions.append({"type": "show_products", "payload": {"products": products}})
         product_ids = [p.get("id") for p in products if p.get("id")]
         if products:
-            await session_service.save_meta(session_id, {"last_products": products[:8]})
+            await session_service.save_meta(tenant_id, session_id, {"last_products": products[:8]})
         compact = [
             {"id": p.get("id"), "name": p.get("name"), "price": p.get("price"), "in_stock": p.get("in_stock")}
             for p in products
@@ -110,10 +142,10 @@ async def execute_tool_call(
             product_ids.append(product.get("id"))
         actions.append({"type": "show_product_detail", "payload": {"product": product}})
         if product.get("id"):
-            existing = await session_service.get_meta(session_id)
+            existing = await session_service.get_meta(tenant_id, session_id)
             last = existing.get("last_products", [])
             last = [product] + [p for p in last if (p.get("id") if isinstance(p, dict) else p) != product["id"]]
-            await session_service.save_meta(session_id, {"last_products": last[:8]})
+            await session_service.save_meta(tenant_id, session_id, {"last_products": last[:8]})
         return {"product": product}, actions, product_ids, None
 
     if tool_name == "check_inventory":
@@ -288,7 +320,6 @@ async def execute_tool_call(
         return {"store_info": info}, actions, [], None
 
     if tool_name == "compare_products":
-        compare_items: List[Dict[str, Any]] = []
         raw_ids = tool_args.get("product_ids") or []
         raw_names = [tool_args.get("product_a"), tool_args.get("product_b")]
         to_fetch: List[Any] = []
@@ -296,27 +327,20 @@ async def execute_tool_call(
             to_fetch = [{"id": int(x)} for x in raw_ids if x]
         else:
             to_fetch = [{"name": str(n).strip()} for n in raw_names if n]
-        for item in to_fetch[:3]:
-            row = None
-            if item.get("id"):
-                row = await store_client.get_product_details(int(item["id"]))
-            elif item.get("name"):
-                rows = await store_client.search_products(query=item["name"], in_stock_only=False, limit=1)
-                row = rows[0] if rows else None
-            if row and row.get("id"):
-                from .text_utils import in_stock as _in_stock
-                details = await store_client.get_product_details(int(row.get("id") or row.get("product_id") or 0)) if not row.get("variations") else row
-                compare_items.append({
-                    "id": details.get("id") or row.get("id"),
-                    "name": details.get("name") or row.get("name"),
-                    "price": details.get("price") or row.get("price"),
-                    "sale_price": details.get("sale_price") or row.get("sale_price"),
-                    "in_stock": _in_stock(details or row),
-                    "image_url": (details or row).get("image_url") or "",
-                    "permalink": (details or row).get("permalink", ""),
-                    "short_description": (details or row).get("short_description", ""),
-                    "rating": (details or row).get("average_rating") or (details or row).get("rating_count"),
-                })
+        to_fetch = to_fetch[:3]
+        # Each item is an independent API chain — fetch them concurrently instead of
+        # awaiting one-at-a-time (was the slow part of a multi-product compare).
+        results = await asyncio.gather(
+            *[_fetch_compare_item(store_client, item) for item in to_fetch],
+            return_exceptions=True,
+        )
+        compare_items: List[Dict[str, Any]] = []
+        for item, res in zip(to_fetch, results):
+            if isinstance(res, BaseException):
+                logger.warning("compare_products fetch failed for %s: %s", item, res)
+                continue
+            if res:
+                compare_items.append(res)
         if len(compare_items) >= 2:
             actions.append({"type": "show_comparison", "payload": {"items": compare_items}})
         return {"comparison": compare_items, "count": len(compare_items)}, actions, [i.get("id") for i in compare_items if i.get("id")], None

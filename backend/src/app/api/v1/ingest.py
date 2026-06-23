@@ -30,7 +30,7 @@ from collections import defaultdict
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...core.database import get_db
+from ...core.database import get_db, set_request_tenant, set_tenant_guc
 from ...modules.tenants.repository import TenantRepository
 from ...modules.webhooks.service import WebhookService
 
@@ -62,6 +62,11 @@ async def bulk_ingest_products(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key — check your custom_api_key from onboarding",
         )
+    # This endpoint resolves the tenant inline (custom_api_key, not the shared deps)
+    # and then upserts product_cache (an RLS table) on this same session — so scope
+    # the GUC here, or WITH CHECK rejects the inserts under the begin-time GUC=''.
+    set_request_tenant(tenant.id)
+    await set_tenant_guc(db, tenant.id)
 
     try:
         body = await request.json()

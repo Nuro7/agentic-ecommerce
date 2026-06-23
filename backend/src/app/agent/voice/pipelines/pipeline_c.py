@@ -50,7 +50,8 @@ class PipelineC:
             )
         return self._orchestrators[session_id]
 
-    async def run(self, websocket: Any, session_id: str, store_client: Any = None) -> None:
+    async def run(self, websocket: Any, session_id: str, store_client: Any = None,
+                  tenant_id: str = "_dev") -> None:
         """
         Run Pipeline C — text-only mode.
         Activates when both Pipeline A and Pipeline B have failed.
@@ -115,6 +116,7 @@ class PipelineC:
                         session_id=session_id,
                         user_message=query,
                         language=language,
+                        tenant_id=tenant_id,
                     )
                     response_text = (
                         result.get("speech_text")

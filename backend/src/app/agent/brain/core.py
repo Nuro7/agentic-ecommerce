@@ -34,7 +34,9 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ...core.database import set_request_tenant
 from ...core.security import sanitize_text
+from ...modules.tenants.dependencies import DEV_TENANT_ID
 from ..prompts.filtering import detect_language, make_speech_friendly
 from ..beta_logger import get_beta_logger
 from ..llm_clients import ANY_LLM_AVAILABLE
@@ -147,9 +149,12 @@ def _evict_catalog_cache() -> None:
         _catalog_cache.pop(k, None)
 
 
-async def _get_store_catalog(store_client: Any) -> str:
+async def _get_store_catalog(tenant_id: str, store_client: Any) -> str:
     """Return a short catalog summary string for the system prompt (5-min TTL)."""
-    key = _store_key(store_client)
+    # Tenant-prefix the key so two tenants can never share a catalog entry even if
+    # their store clients resolve to the same _store_key (shared base_url, or the
+    # id() fallback after a client rebuild).
+    key = f"{tenant_id}|{_store_key(store_client)}"
     cached_text, cached_ts = _catalog_cache.get(key, ("", 0.0))
     if cached_text and (time.monotonic() - cached_ts) < _CATALOG_TTL:
         return cached_text
@@ -210,8 +215,9 @@ async def _run_retrieval(
     try:
         if db_session_factory is not None:
             db = db_session_factory()
-    except Exception:
-        pass
+    except Exception as e:
+        # Falling back to Redis-only search silently hid DB outages — surface it.
+        logger.warning("Retrieval DB session factory failed, using Redis-only search: %s", e)
     try:
         return await hybrid_search(
             tenant_id=tenant_id,
@@ -225,11 +231,12 @@ async def _run_retrieval(
         if db is not None:
             try:
                 await db.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Retrieval DB session close failed: %s", e)
 
 
 async def _fetch_cart(
+    tenant_id: str,
     session_id: str,
     cart_context: Optional[Dict[str, Any]],
     store_client: Any,
@@ -240,11 +247,11 @@ async def _fetch_cart(
         return cart_context
     try:
         cart = await store_client.get_live_cart(session_id=session_id)
-        await session_service.save_cart(session_id, cart)
+        await session_service.save_cart(tenant_id, session_id, cart)
         return cart
     except Exception as exc:
         logger.warning("Live cart fetch failed, using cache: %s", exc)
-        cart = await session_service.get_cart(session_id)
+        cart = await session_service.get_cart(tenant_id, session_id)
         if cart and not cart.get("is_empty", True):
             return cart
         return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
@@ -275,6 +282,18 @@ async def ask_brain(
     store_context = store_context or {}
     page_context = page_context or {}
 
+    # Tenant scope for ALL session/facts/cart keys this turn. Callers (voice handler
+    # via pipelines, /chat, /greet) put the resolved tenant_id into store_context;
+    # fall back to the dev sentinel so keys stay well-formed in single-tenant dev.
+    tenant_id = str(store_context.get("tenant_id") or DEV_TENANT_ID)
+
+    # Reinforce RLS scoping for the agent's OWN db sessions (e.g. hybrid_search opens
+    # its own AsyncSessionLocal). Only when a REAL tenant id is present — never the
+    # dev sentinel, which matches no DB rows and would hide the whole catalog.
+    _real_tid = store_context.get("tenant_id")
+    if _real_tid:
+        set_request_tenant(str(_real_tid))
+
     # Per-turn trace — one structured line per turn so latency/route/cache are
     # observable. Without this the same input looks fast/slow/silent for no
     # visible reason (the "unpredictable" complaint).
@@ -302,8 +321,8 @@ async def ask_brain(
 
     gather_results = await asyncio.gather(
         get_classifier().classify(cleaned_message, detected_lang),
-        session_service.get_session(session_id),
-        session_service.get_meta(session_id),
+        session_service.get_session(tenant_id, session_id),
+        session_service.get_meta(tenant_id, session_id),
         return_exceptions=True,
     )
 
@@ -325,7 +344,7 @@ async def ask_brain(
     # ── Step 3: Language resolution ───────────────────────────────────────────
     prev_lang = session_meta.get("language", "en") if isinstance(session_meta, dict) else "en"
     lang = detected_lang if detected_lang != "en" else prev_lang
-    await session_service.save_meta(session_id, {**session_meta, "language": lang})
+    await session_service.save_meta(tenant_id, session_id, {**session_meta, "language": lang})
 
     logger.debug(
         "Brain: intent=%s conf=%.2f via=%s lang=%s session=%s",
@@ -334,7 +353,7 @@ async def ask_brain(
     )
 
     # ── Step 4: Cart fetch ────────────────────────────────────────────────────
-    cart = await _fetch_cart(session_id, cart_context, store_client, session_service)
+    cart = await _fetch_cart(tenant_id, session_id, cart_context, store_client, session_service)
     cart_for_prompt = {
         "is_empty": (int(cart.get("item_count") or cart.get("count") or 0) == 0),
         "item_count": int(cart.get("item_count") or cart.get("count") or 0),
@@ -371,6 +390,7 @@ async def ask_brain(
         try:
             result = await run_fast_intent(
                 cleaned_message, session_id, lang, store_context,
+                tenant_id=tenant_id,
                 store_client=store_client, session_service=session_service,
             )
         except Exception as exc:
@@ -543,8 +563,9 @@ async def ask_brain(
                     "availability. Do not guess, invent, or assume any product information."
                 )
             else:
-                store_catalog = await _get_store_catalog(store_client)
+                store_catalog = await _get_store_catalog(tenant_id, store_client)
             result = await run_llm_agent(
+                tenant_id=tenant_id,
                 session_id=session_id,
                 user_message=cleaned_message,
                 store_context=store_context,
@@ -568,6 +589,7 @@ async def ask_brain(
         try:
             result = await run_fast_intent(
                 cleaned_message, session_id, lang, store_context,
+                tenant_id=tenant_id,
                 store_client=store_client, session_service=session_service,
             )
         except Exception as exc:
@@ -612,16 +634,48 @@ async def ask_brain(
     retrieved_ids: Set[str] = set()
     retrieved_prices: Set[str] = set()
     retrieved_names: Set[str] = set()
+    retrieved_full_names: Set[str] = set()
     try:
-        retrieved_ids, retrieved_prices, retrieved_attrs, retrieved_names = build_retrieved_context(
+        retrieved_ids, retrieved_prices, retrieved_attrs, retrieved_names, retrieved_full_names = build_retrieved_context(
             [a.get("payload", {}) for a in ui_actions if isinstance(a, dict)]
         )
+
+        # P1-9: also ground against products from MEMORY (session last_products +
+        # facts last_product_*), so a memory-only answer (no fresh search this turn)
+        # is still validated instead of skipped. Tokens feed retrieved_names (model
+        # check); whole names feed retrieved_full_names (digit-free fuzzy) — kept apart.
+        def _add_mem_name(nm: Any) -> None:
+            nm = str(nm or "").strip().lower()
+            if not nm:
+                return
+            retrieved_full_names.add(nm)
+            for _tok in re.findall(r"[a-z0-9]+", nm):
+                if len(_tok) > 2:
+                    retrieved_names.add(_tok)
+
+        for _p in (last_products or []):
+            if isinstance(_p, dict):
+                _add_mem_name(_p.get("name"))
+                _pid = _p.get("id") or _p.get("product_id")
+                if _pid:
+                    retrieved_ids.add(str(_pid))
+            elif _p:
+                retrieved_ids.add(str(_p))  # bare-id form
+        try:
+            _facts = await get_session_facts_service().get(tenant_id, session_id)
+            _add_mem_name(_facts.get("last_product_name"))
+            if _facts.get("last_product_id"):
+                retrieved_ids.add(str(_facts["last_product_id"]))
+        except Exception:
+            pass
+
         response_text = check_output(
             response_text,
             retrieved_product_ids=retrieved_ids or None,
             retrieved_prices=retrieved_prices or None,
             retrieved_attributes=retrieved_attrs or None,
             retrieved_names=retrieved_names or None,
+            retrieved_full_names=retrieved_full_names or None,
             detected_language=lang,
             allow_retry=True,
         )
@@ -635,6 +689,7 @@ async def ask_brain(
             retrieved_ids=retrieved_ids,
             retrieved_prices=retrieved_prices,
             retrieved_names=retrieved_names,
+            retrieved_full_names=retrieved_full_names,
         )
     except Exception as exc:
         logger.debug("Output guardrail skipped: %s", exc)
@@ -664,6 +719,7 @@ async def ask_brain(
         {"role": "assistant", "content": response_text},
     ])
     await session_service.update_session(
+        tenant_id,
         session_id,
         conversation_history=updated_history,
         cart_snapshot=cart,
@@ -677,7 +733,7 @@ async def ask_brain(
 
     try:
         facts_payload = [{"result": a.get("payload")} for a in ui_actions if isinstance(a, dict)]
-        await get_session_facts_service().update(session_id, cleaned_message, facts_payload)
+        await get_session_facts_service().update(tenant_id, session_id, cleaned_message, facts_payload)
     except Exception as exc:
         logger.debug("SessionFacts update failed (non-critical): %s", exc)
 
