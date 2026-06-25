@@ -3,6 +3,13 @@
 
 import re
 
+# A non-Latin script wins only if it's a real signal, not one stray glyph from a
+# noisy voice transcript: at least _SCRIPT_MIN_CHARS of that script AND at least
+# _SCRIPT_MIN_RATIO of the message's letters. "show me shirts" + 1 Malayalam char
+# → ratio ≈ 0.03 → English; a short genuine Malayalam message → high ratio → ml.
+_SCRIPT_MIN_CHARS = 2
+_SCRIPT_MIN_RATIO = 0.30
+
 
 def detect_language(text: str) -> str:
     if not text or not text.strip():
@@ -18,10 +25,18 @@ def detect_language(text: str) -> str:
         'gu': r'[઀-૿]',
         'pa': r'[਀-੿]',
     }
+    # Count matches per script and keep the strongest one (most chars).
+    letter_count = sum(1 for c in text if c.isalpha())
+    best_lang, best_count = None, 0
     for lang, pattern in script_map.items():
-        if re.search(pattern, text):
+        n = len(re.findall(pattern, text))
+        if n > best_count:
+            best_lang, best_count = lang, n
+    if best_lang is not None:
+        ratio = best_count / max(letter_count, 1)
+        if best_count >= _SCRIPT_MIN_CHARS and ratio >= _SCRIPT_MIN_RATIO:
             lang_map = {'kn': 'kn', 'gu': 'hi', 'pa': 'hi'}
-            return lang_map.get(lang, lang)
+            return lang_map.get(best_lang, best_lang)
 
     hinglish_words = {
         'kya', 'hai', 'nahi', 'nhi', 'mujhe', 'chahiye', 'kitna',

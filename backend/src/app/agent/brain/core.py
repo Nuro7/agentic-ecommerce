@@ -83,6 +83,22 @@ _CATALOG_MAX_ENTRIES = 500
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# A non-English language locks the session immediately, but it must DECAY back to
+# English over several clean-English turns — a single English turn doesn't flip it
+# (avoids flip-flop), and one stray non-English turn doesn't lock it forever.
+_ENGLISH_RESET_STREAK = 3
+
+
+def _resolve_language(detected: str, prev_lang: str, en_streak: int) -> Tuple[str, int]:
+    """Resolve the session language with English-decay. Returns (lang, new_en_streak)."""
+    if detected != "en":
+        return detected, 0                          # non-English wins; reset the streak
+    streak = en_streak + 1
+    if prev_lang == "en" or streak >= _ENGLISH_RESET_STREAK:
+        return "en", streak                         # decayed back to English
+    return prev_lang, streak                        # keep the sticky lang until the streak hits the threshold
+
+
 def _store_key(store_client: Any) -> str:
     # Prefer a tenant-stable attribute so the same store always maps to the same
     # cache entry (avoids both cross-tenant ambiguity and cache thrash). Falls
@@ -341,10 +357,14 @@ async def ask_brain(
         state.get("last_products", []) if isinstance(state, dict) else []
     )
 
-    # ── Step 3: Language resolution ───────────────────────────────────────────
+    # ── Step 3: Language resolution (with English-decay so a stray non-English
+    # transcript can't lock the session forever) ──────────────────────────────
     prev_lang = session_meta.get("language", "en") if isinstance(session_meta, dict) else "en"
-    lang = detected_lang if detected_lang != "en" else prev_lang
-    await session_service.save_meta(tenant_id, session_id, {**session_meta, "language": lang})
+    prev_streak = session_meta.get("en_streak", 0) if isinstance(session_meta, dict) else 0
+    lang, en_streak = _resolve_language(detected_lang, prev_lang, prev_streak)
+    await session_service.save_meta(
+        tenant_id, session_id, {**session_meta, "language": lang, "en_streak": en_streak}
+    )
 
     logger.debug(
         "Brain: intent=%s conf=%.2f via=%s lang=%s session=%s",
