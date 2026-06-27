@@ -262,8 +262,30 @@ async def execute_tool_call(
             "count": len(products),
         }, actions, product_ids, None
 
+    if tool_name == "place_order":
+        # Cash-on-Delivery order via the store's POST /api/orders. Items come from the
+        # client-side cart (cart_context) — no dependency on the store /cart endpoint.
+        if not hasattr(store_client, "create_order"):
+            return {"place_order": {"success": False, "message": "Ordering isn't available for this store."}}, actions, [], None
+        safe_cart = cart_context if isinstance(cart_context, dict) else {}
+        items = safe_cart.get("items") or []
+        email = str(tool_args.get("customer_email") or tool_args.get("email") or "").strip()
+        result = await store_client.create_order(
+            customer_name=str(tool_args.get("customer_name") or tool_args.get("name") or "").strip(),
+            customer_email=email,
+            customer_phone=str(tool_args.get("customer_phone") or tool_args.get("phone") or "").strip(),
+            address=str(tool_args.get("address") or "").strip(),
+            city=str(tool_args.get("city") or "").strip(),
+            postal_code=str(tool_args.get("postal_code") or tool_args.get("postalCode") or "").strip(),
+            country=str(tool_args.get("country") or "IN").strip(),
+            items=items,
+        )
+        if result.get("success"):
+            actions.append({"type": "order_placed", "payload": result})
+        return {"place_order": result}, actions, [], (email.lower() or None)
+
     if tool_name == "update_cart_quantity":
-        pid = safe_int(tool_args.get("product_id"), 0)
+        pid = str(tool_args.get("product_id") or "").strip()
         qty = safe_int(tool_args.get("quantity"), 0)
         result = await store_client.update_cart_quantity(session_id=session_id, product_id=pid, quantity=qty)
         actions.append({"type": "cart_updated", "payload": result})
@@ -364,7 +386,7 @@ async def execute_tool_call(
         items_to_add = tool_args.get("items") or []
         results = []
         for item in items_to_add[:5]:
-            pid = safe_int(item.get("product_id"), 0)
+            pid = str(item.get("product_id") or "").strip()
             if not pid:
                 continue
             qty = max(1, safe_int(item.get("quantity"), 1))
@@ -372,7 +394,7 @@ async def execute_tool_call(
                 "type": "add_to_cart",
                 "payload": {
                     "product_id": pid,
-                    "variation_id": safe_int(item.get("variation_id"), 0),
+                    "variation_id": str(item.get("variation_id") or "").strip(),
                     "variation": item.get("attributes") or {},
                     "quantity": qty,
                 },
@@ -608,6 +630,31 @@ def tool_schema() -> List[Dict[str, Any]]:
                         "name": {"type": "string"},
                     },
                     "required": ["product_id", "rating", "review", "name"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "place_order",
+                "description": (
+                    "Place the customer's Cash-on-Delivery order using the items already in their cart. "
+                    "Call this ONLY after you have collected ALL of: full name, email, phone, street address, "
+                    "city, postal code, and country, and the customer has confirmed. Items are taken from the "
+                    "cart automatically — do not pass items."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "customer_name":  {"type": "string", "description": "Customer's full name"},
+                        "customer_email": {"type": "string", "description": "Customer's email"},
+                        "customer_phone": {"type": "string", "description": "Customer's phone number"},
+                        "address":        {"type": "string", "description": "Street address"},
+                        "city":           {"type": "string", "description": "City"},
+                        "postal_code":    {"type": "string", "description": "Postal / PIN code"},
+                        "country":        {"type": "string", "description": "Country (default India)"},
+                    },
+                    "required": ["customer_name", "customer_email", "customer_phone", "address", "city", "postal_code"],
                 },
             },
         },

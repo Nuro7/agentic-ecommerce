@@ -493,6 +493,70 @@ class CustomApiClient(BaseStoreClient):
         except Exception:
             return []
 
+    async def create_order(
+        self,
+        *,
+        customer_name: str,
+        customer_email: str,
+        customer_phone: str,
+        address: str,
+        city: str,
+        postal_code: str,
+        country: str = "IN",
+        items: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Place a Cash-on-Delivery order via the store's POST /api/orders.
+
+        The order endpoint lives at the STORE ROOT (…/api/orders), NOT under the
+        /api/speako base_url — so build the absolute URL by replacing the base's
+        last path segment (…/api/speako → …/api/orders).
+        """
+        order_url = self.base_url.rsplit("/", 1)[0] + "/orders"
+        clean_items: List[Dict[str, Any]] = []
+        for it in (items or []):
+            if not isinstance(it, dict):
+                continue
+            pid = str(it.get("productId") or it.get("product_id") or it.get("id") or "").strip()
+            qty = it.get("quantity") or it.get("qty") or 1
+            try:
+                qty = max(1, int(qty))
+            except (TypeError, ValueError):
+                qty = 1
+            if pid:
+                clean_items.append({"productId": pid, "quantity": qty})
+        if not clean_items:
+            return {"success": False, "error": "empty_cart", "message": "Your cart is empty — add an item before checkout."}
+
+        body = {
+            "customerName":  customer_name,
+            "customerEmail": customer_email,
+            "customerPhone": customer_phone,
+            "address":       address,
+            "city":          city,
+            "postalCode":    postal_code,
+            "country":       country or "IN",
+            "items":         clean_items,
+        }
+        try:
+            resp = await request_with_retries(
+                lambda: self._client.post(order_url, json=body),
+                attempts=self._retries,
+                label="custom-api-create-order",
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            order = data.get("order") if isinstance(data, dict) else None
+            order = order if isinstance(order, dict) else (data if isinstance(data, dict) else {})
+            return {
+                "success":  True,
+                "order_id": str(order.get("id") or order.get("order_id") or order.get("orderNumber") or ""),
+                "total":    str(order.get("total") or order.get("totalAmount") or order.get("totalPrice") or ""),
+                "message":  (data.get("message") if isinstance(data, dict) else None) or "Order placed successfully",
+            }
+        except Exception as exc:
+            logger.warning("CustomApiClient create_order failed: %s", exc)
+            return {"success": False, "error": str(exc), "message": "Sorry, I couldn't place the order just now."}
+
     # ── Reviews ───────────────────────────────────────────────────────────────
 
     async def get_reviews(self, product_id: int) -> dict:
