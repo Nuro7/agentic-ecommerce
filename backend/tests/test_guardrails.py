@@ -130,3 +130,40 @@ def test_spoken_text_passes_grounded():
         retrieved_full_names={"royal mysore silk saree"},
     )
     assert ok is True
+
+
+# ── Fix 3: empty retrieval must still block fabricated product NAME claims ─────
+# When a search returns zero products, both grounding sets are empty. Naming a
+# model-numbered product anyway is the hallucination — it must NOT pass just
+# because there's nothing to compare against. Greetings/negations stay safe.
+
+def test_empty_retrieval_named_product_rejected():
+    # Zero products retrieved → empty sets. "Audemars Piguet X1007" carries a model
+    # token with no grounding → must fail (this is the production bug being closed).
+    with pytest.raises(OutputValidationError):
+        check_output(
+            "We have the Audemars Piguet X1007 for ₹12,500.",
+            retrieved_names=set(),
+            retrieved_full_names=set(),
+        )
+
+
+def test_empty_retrieval_greeting_passes():
+    # False-positive guard: a benign greeting with empty retrieval must NOT raise.
+    out = check_output(
+        "Hi! Welcome to the store. How can I help you today?",
+        retrieved_names=set(),
+        retrieved_full_names=set(),
+    )
+    assert isinstance(out, str)
+
+
+def test_empty_retrieval_negation_passes():
+    # False-positive guard: "we don't carry X" is the agent saying it does NOT have
+    # the item — never a hallucination — even with a model token and empty sets.
+    out = check_output(
+        "Sorry, we don't carry the Rolex GMT2 right now.",
+        retrieved_names=set(),
+        retrieved_full_names=set(),
+    )
+    assert isinstance(out, str)
