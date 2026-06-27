@@ -14,6 +14,7 @@ All endpoints receive Authorization: Bearer {api_key} when an api_key is configu
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -339,7 +340,14 @@ class CustomApiClient(BaseStoreClient):
 
     async def get_cart(self, *, session_id: str) -> Dict[str, Any]:
         try:
-            data = await self._get("/cart", {"session_id": session_id})
+            # Cart is non-essential to answering a query and sits on the chat/greet
+            # critical path — cap it tighter than product calls so a slow/broken store
+            # /cart fails fast to an empty cart instead of blocking ~timeout×retries.
+            # asyncio.TimeoutError ⊂ Exception, so the except below catches it.
+            data = await asyncio.wait_for(
+                self._get("/cart", {"session_id": session_id}),
+                timeout=settings.custom_api_cart_timeout,
+            )
             return self._normalize_cart(data)
         except Exception:
             return {"items": [], "item_count": 0, "total": "0", "is_empty": True}

@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     custom_api_timeout: float = 8.0          # read timeout (seconds)
     custom_api_connect_timeout: float = 3.0  # connect timeout (seconds)
     custom_api_retries: int = 3              # total attempts (1 = no retry)
+    # The cart is non-essential to answering a product query, so cap it TIGHTER than
+    # product calls — a slow/broken store /cart must never dominate chat/greet latency.
+    custom_api_cart_timeout: float = 2.0     # env CUSTOM_API_CART_TIMEOUT (seconds)
 
     openai_api_key: str = ""
     groq_api_key: str = ""
