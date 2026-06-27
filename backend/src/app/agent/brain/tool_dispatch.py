@@ -129,15 +129,15 @@ async def execute_tool_call(
         return result, actions, product_ids, None
 
     if tool_name == "get_product_details":
-        raw_pid = tool_args.get("product_id")
-        product_id = safe_int(raw_pid, 0)
-        if not product_id and raw_pid and isinstance(raw_pid, str):
-            logger.info("get_product_details: resolving name '%s' to ID via search", raw_pid)
+        # Product IDs may be UUIDs (custom_api) or ints (woo/shopify) — keep as string.
+        raw_pid = str(tool_args.get("product_id") or "").strip()
+        product = await store_client.get_product_details(raw_pid) if raw_pid else {}
+        if not product.get("id") and raw_pid:
+            # The model may have passed a NAME instead of an id → resolve via search.
+            logger.info("get_product_details: resolving '%s' via search", raw_pid)
             matches = await store_client.search_products(query=raw_pid, in_stock_only=False, limit=1)
             if matches:
-                product_id = int(matches[0].get("id") or 0)
-                logger.info("Resolved product name '%s' → id=%d", raw_pid, product_id)
-        product = await store_client.get_product_details(product_id)
+                product = await store_client.get_product_details(str(matches[0].get("id") or ""))
         if product.get("id"):
             product_ids.append(product.get("id"))
         actions.append({"type": "show_product_detail", "payload": {"product": product}})
@@ -149,10 +149,10 @@ async def execute_tool_call(
         return {"product": product}, actions, product_ids, None
 
     if tool_name == "check_inventory":
-        product_id = safe_int(tool_args.get("product_id"), 0)
+        product_id = str(tool_args.get("product_id") or "").strip()
         inventory = await store_client.check_inventory(
             product_id=product_id,
-            variation_id=safe_optional_int(tool_args.get("variation_id")),
+            variation_id=tool_args.get("variation_id") or None,
             attributes=tool_args.get("attributes"),
         )
         details = await store_client.get_product_details(product_id)
@@ -196,8 +196,10 @@ async def execute_tool_call(
         return {"cart": safe_cart}, actions, [], None
 
     if tool_name == "add_to_cart":
-        product_id = safe_int(tool_args.get("product_id"), 0)
-        variation_id = safe_int(tool_args.get("variation_id"), 0)
+        # Keep product_id as a STRING — custom_api uses UUIDs; int() would zero them
+        # out and the widget would add the wrong product.
+        product_id = str(tool_args.get("product_id") or "").strip()
+        variation_id = str(tool_args.get("variation_id") or "").strip()
         quantity = max(1, min(safe_int(tool_args.get("quantity"), 1), 20))
         variation_data: Dict[str, Any] = {}
         if not variation_id and tool_args.get("attributes"):
@@ -205,7 +207,7 @@ async def execute_tool_call(
                 product_id=product_id,
                 attributes=tool_args.get("attributes"),
             )
-            variation_id = safe_int(inv.get("variation_id"), 0)
+            variation_id = str(inv.get("variation_id") or "").strip()
             if hasattr(store_client, "_attributes_to_variation_map"):
                 variation_data = store_client._attributes_to_variation_map(inv.get("attributes", []))
         actions.append({

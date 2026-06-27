@@ -189,7 +189,7 @@ class CustomApiClient(BaseStoreClient):
 
     async def get_product_details(self, product_id: int) -> Dict[str, Any]:
         try:
-            data = await self._get(f"/products/{int(product_id)}")
+            data = await self._get(f"/products/{str(product_id)}")
             return self._normalize_product_detail(data)
         except Exception:
             return {}
@@ -238,11 +238,11 @@ class CustomApiClient(BaseStoreClient):
 
     async def get_product_variations(self, product_id: int) -> dict:
         try:
-            data = await self._get(f"/products/{int(product_id)}/variations")
+            data = await self._get(f"/products/{str(product_id)}/variations")
             variations = data if isinstance(data, list) else data.get("variations") or data.get("data") or []
-            return {"product_id": int(product_id), "variations": variations}
+            return {"product_id": str(product_id), "variations": variations}
         except Exception:
-            return {"product_id": int(product_id), "variations": []}
+            return {"product_id": str(product_id), "variations": []}
 
     async def find_variants(self, *, product_id: int) -> Dict[str, Any]:
         result = await self.get_product_variations(product_id)
@@ -296,9 +296,9 @@ class CustomApiClient(BaseStoreClient):
             if attributes:
                 for k, v in attributes.items():
                     params[f"attr_{k}"] = v
-            data = await self._get(f"/products/{int(product_id)}/inventory", params if params else None)
+            data = await self._get(f"/products/{str(product_id)}/inventory", params if params else None)
             return {
-                "product_id":     int(product_id),
+                "product_id":     str(product_id),
                 "variation_id":   variation_id or 0,
                 "in_stock":       bool(data.get("in_stock", True)),
                 "stock_quantity": data.get("stock_quantity"),
@@ -309,14 +309,14 @@ class CustomApiClient(BaseStoreClient):
             try:
                 detail = await self.get_product_details(product_id)
                 return {
-                    "product_id":     int(product_id),
+                    "product_id":     str(product_id),
                     "variation_id":   0,
                     "in_stock":       bool(detail.get("in_stock", True)),
                     "stock_quantity": detail.get("stock_quantity"),
                     "attributes":     [],
                 }
             except Exception:
-                return {"product_id": int(product_id), "variation_id": 0, "in_stock": True, "stock_quantity": None, "attributes": []}
+                return {"product_id": str(product_id), "variation_id": 0, "in_stock": True, "stock_quantity": None, "attributes": []}
 
     async def get_categories(self) -> List[Dict[str, Any]]:
         try:
@@ -371,7 +371,7 @@ class CustomApiClient(BaseStoreClient):
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {
             "session_id":   session_id,
-            "product_id":   int(product_id),
+            "product_id":   str(product_id),
             "variation_id": int(variation_id or 0),
             "quantity":     max(1, int(quantity or 1)),
         }
@@ -396,7 +396,7 @@ class CustomApiClient(BaseStoreClient):
         if cart_item_key:
             body["cart_item_key"] = cart_item_key
         if product_id:
-            body["product_id"] = int(product_id)
+            body["product_id"] = str(product_id)
         try:
             data = await self._post("/cart/remove", body)
             success = bool(data.get("success", True)) if isinstance(data, dict) else True
@@ -414,7 +414,7 @@ class CustomApiClient(BaseStoreClient):
     ) -> dict:
         if quantity <= 0:
             return await self.remove_from_cart(session_id=session_id, product_id=product_id)
-        body = {"session_id": session_id, "product_id": int(product_id), "quantity": int(quantity)}
+        body = {"session_id": session_id, "product_id": str(product_id), "quantity": int(quantity)}
         try:
             data = await self._put("/cart/update", body)
             success = bool(data.get("success", True)) if isinstance(data, dict) else True
@@ -497,19 +497,19 @@ class CustomApiClient(BaseStoreClient):
 
     async def get_reviews(self, product_id: int) -> dict:
         try:
-            data = await self._get(f"/products/{int(product_id)}/reviews")
+            data = await self._get(f"/products/{str(product_id)}/reviews")
             reviews = data if isinstance(data, list) else data.get("reviews") or data.get("data") or []
             average_rating = None
             if isinstance(data, dict):
                 average_rating = data.get("average_rating") or data.get("average") or data.get("rating")
             return {
-                "product_id":    int(product_id),
+                "product_id":    str(product_id),
                 "reviews":       reviews,
                 "count":         len(reviews),
                 "average_rating": average_rating,
             }
         except Exception:
-            return {"product_id": int(product_id), "reviews": [], "count": 0}
+            return {"product_id": str(product_id), "reviews": [], "count": 0}
 
     async def submit_review(
         self,
@@ -521,7 +521,7 @@ class CustomApiClient(BaseStoreClient):
         email: Optional[str] = None,
     ) -> dict:
         body: Dict[str, Any] = {
-            "product_id": int(product_id),
+            "product_id": str(product_id),
             "rating":     max(1, min(5, int(rating))),
             "review":     review,
         }
@@ -530,7 +530,7 @@ class CustomApiClient(BaseStoreClient):
         if email:
             body["email"] = email
         try:
-            data = await self._post(f"/products/{int(product_id)}/reviews", body)
+            data = await self._post(f"/products/{str(product_id)}/reviews", body)
             return {"success": True, "message": data.get("message") or "Review submitted", "review": data}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
