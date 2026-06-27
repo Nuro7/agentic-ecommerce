@@ -16,17 +16,17 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from ..base.commerce import BaseStoreClient
 from ..adapters.custom_adapter import CustomAdapter
+from ...config import settings
 from ...core.http_retry import request_with_retries
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_TIMEOUT = httpx.Timeout(8.0, connect=3.0)
 
 
 class CustomApiClient(BaseStoreClient):
@@ -45,10 +45,16 @@ class CustomApiClient(BaseStoreClient):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
+        # Per-call HTTP budget is env-tunable per store (see SCALING.md). Defaults
+        # match the prior hardcoded 8s/3s. Set CUSTOM_API_TIMEOUT above your store's
+        # measured p95; CUSTOM_API_RETRIES bounds total attempts.
+        self._timeout = httpx.Timeout(settings.custom_api_timeout, connect=settings.custom_api_connect_timeout)
+        self._retries = max(1, settings.custom_api_retries)
+
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             headers=headers,
-            timeout=_DEFAULT_TIMEOUT,
+            timeout=self._timeout,
             # SSRF hardening: do not follow redirects, which could bounce a
             # validated public URL to an internal address (metadata / RFC1918).
             follow_redirects=False,
@@ -57,19 +63,28 @@ class CustomApiClient(BaseStoreClient):
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        # Log per-call latency (Render→store path) so operators can measure the
+        # store's real p50/p95 and set CUSTOM_API_TIMEOUT above it. Greppable prefix:
+        #   grep "custom-api-latency" | grep -oE '[0-9]+ms' | tr -d 'ms' | sort -n
+        start = time.monotonic()
         try:
             clean = {k: v for k, v in (params or {}).items() if v is not None}
             resp = await request_with_retries(
                 lambda: self._client.get(path, params=clean),
+                attempts=self._retries,
                 label="custom-api-get",
             )
             resp.raise_for_status()
+            logger.info("custom-api-latency GET %s %d %.0fms",
+                        path, resp.status_code, (time.monotonic() - start) * 1000)
             return resp.json()
         except httpx.HTTPStatusError as exc:
-            logger.warning("CustomApiClient GET %s → %s", path, exc.response.status_code)
+            logger.warning("CustomApiClient GET %s → %s (%.0fms)",
+                           path, exc.response.status_code, (time.monotonic() - start) * 1000)
             raise
         except Exception as exc:
-            logger.warning("CustomApiClient GET %s failed: %s", path, exc)
+            logger.warning("CustomApiClient GET %s failed: %s (%.0fms)",
+                           path, exc, (time.monotonic() - start) * 1000)
             raise
 
     async def _post(self, path: str, body: Dict[str, Any]) -> Any:

@@ -99,6 +99,32 @@ tenant) leaves the GUC empty → product queries return nothing. In dev, resolve
 
 ---
 
+## Custom-store API latency (timeout / retries)
+
+The `custom_api` adapter calls the merchant's own REST store. A slow/unreachable store stalls the agent
+(default `timeout × retries` ≈ `8s × 3` ≈ 25s), which makes voice feel broken. Tune per store:
+
+| Env var | Default | Meaning |
+|---------|---------|---------|
+| `CUSTOM_API_TIMEOUT` | `8.0` | per-request **read** timeout (seconds) |
+| `CUSTOM_API_CONNECT_TIMEOUT` | `3.0` | connect timeout (seconds) |
+| `CUSTOM_API_RETRIES` | `3` | total attempts (1 = no retry) |
+
+**Set `CUSTOM_API_TIMEOUT` ABOVE the store's measured p95** (round toward p99 + margin) so real requests
+aren't failed. Worst-case wait ≈ `CUSTOM_API_TIMEOUT × CUSTOM_API_RETRIES + backoff` — keep it within the
+voice budget (~< 6–8s total).
+
+**Measure the real (Render→store) p50/p95** from the latency log the adapter emits:
+```bash
+# drive ~50–100 searches, then over the logs:
+grep "custom-api-latency" | grep -oE '[0-9]+ms' | tr -d 'ms' | sort -n
+# p50 = middle value; p95 = value 95% down the sorted list
+```
+(Or `hey -n 200 -c 5 "https://<store>/products/search?q=shoes&limit=6&in_stock_only=true"` from a
+Render-region host for a quick external estimate.)
+
+---
+
 ## Scaling out (multi-replica)
 
 **The app targets a SINGLE web process today** (`render.yaml` `speako-web`: no `numInstances`/autoscaling
