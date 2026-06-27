@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -149,6 +150,16 @@ async def bm25_search(
         except Exception:
             pass
 
+    # OR fallback — a conversational query ("what formal shoes are available in your
+    # store") becomes an AND of every token under plainto_tsquery, and filler words
+    # ("available", "store", "need") match no product, so the AND returns 0 rows. Retry
+    # with an OR over the meaningful tokens so the query still matches; ts_rank keeps the
+    # rows matching the MOST terms (e.g. "formal" + "shoes") on top. Runs only when the
+    # AND above produced nothing.
+    or_candidates = await _or_search(db, tenant_id, nq)
+    if or_candidates:
+        return or_candidates
+
     # ILIKE fallback — no tsvector matches or extension missing
     return await _ilike_search(db, tenant_id, nq)
 
@@ -206,6 +217,92 @@ async def _ilike_search(
         return candidates
     except Exception as exc:
         logger.warning("ILIKE fallback also failed: %s", exc)
+        return []
+
+
+# Conversational filler that is never part of a product name/description. Stripped
+# before building the OR tsquery so "what formal shoes are AVAILABLE in your STORE"
+# searches on the meaningful tokens ("formal", "shoes") instead of failing the AND.
+_OR_STOPWORDS = frozenset({
+    "available", "store", "need", "want", "have", "has", "there", "any", "the", "are",
+    "is", "in", "on", "at", "of", "to", "for", "your", "you", "yours", "what", "which",
+    "do", "does", "did", "me", "my", "i", "we", "show", "find", "get", "give", "a", "an",
+    "and", "or", "with", "that", "this", "these", "those", "please", "can", "could",
+    "would", "looking", "want", "some", "all", "products", "product", "item", "items",
+})
+
+
+def _or_tsquery(clean: str) -> str:
+    """Build an OR tsquery ("formal | shoes") from a query's meaningful tokens."""
+    toks = [
+        t for t in re.findall(r"[a-z0-9]+", (clean or "").lower())
+        if len(t) > 1 and t not in _OR_STOPWORDS
+    ]
+    return " | ".join(toks)
+
+
+async def _or_search(
+    db: AsyncSession,
+    tenant_id: str,
+    nq: NormalizedQuery,
+) -> list[RawCandidate]:
+    """tsvector search with OR semantics — used only when the AND query found nothing."""
+    orq = _or_tsquery(nq.clean)
+    if not orq:
+        return []
+    try:
+        sql = text("""
+            SELECT
+                platform_id, tenant_id, name,
+                COALESCE(description, '') AS description,
+                CAST(price AS FLOAT) AS price,
+                currency, image_url, in_stock, category_slug, tags,
+                ts_rank(search_vector, to_tsquery('english', :orq)) AS rank
+            FROM product_cache
+            WHERE
+                tenant_id = :tenant_id
+                AND search_vector @@ to_tsquery('english', :orq)
+                AND (CAST(:min_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) >= CAST(:min_price AS FLOAT))
+                AND (CAST(:max_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) <= CAST(:max_price AS FLOAT))
+                AND (CAST(:in_stock AS BOOLEAN) IS NULL OR in_stock = CAST(:in_stock AS BOOLEAN))
+            ORDER BY rank DESC
+            LIMIT :limit
+        """)
+        result = await db.execute(sql, {
+            "orq":        orq,
+            "tenant_id":  tenant_id,
+            "min_price":  nq.min_price,
+            "max_price":  nq.max_price,
+            "in_stock":   True if nq.in_stock_only else None,
+            "limit":      _BM25_LIMIT,
+        })
+        rows = result.mappings().all()
+        candidates = [
+            RawCandidate(
+                platform_id=r["platform_id"],
+                tenant_id=r["tenant_id"],
+                name=r["name"],
+                description=r["description"],
+                price=float(r["price"]),
+                currency=r["currency"],
+                image_url=r["image_url"],
+                in_stock=bool(r["in_stock"]),
+                category_slug=r.get("category_slug"),
+                tags=r.get("tags"),
+                bm25_rank=float(r["rank"]),
+            )
+            for r in rows
+        ]
+        for i, c in enumerate(candidates):
+            c.bm25_pos = i + 1
+        logger.debug("OR tsquery: %d results for '%s' tenant=%s", len(candidates), orq[:40], tenant_id)
+        return candidates
+    except Exception as exc:
+        logger.warning("OR tsquery fallback failed (%s)", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
         return []
 
 
