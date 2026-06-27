@@ -195,7 +195,7 @@ async def run_fast_intent(
                 name = first.get("name", "")
                 price = first.get("price") or first.get("regular_price") or ""
                 price_str = f"₹{price}" if price else ""
-                reply = f"{name}{(', ' + price_str) if price_str else ''}. Want me to tell you more, or check size options?"
+                reply = f"{name}{(', ' + price_str) if price_str else ''}. Want me to add it to your cart?"
                 return with_actions_alias({
                     "response_text": reply,
                     "ui_actions": [{"type": "show_products", "payload": {"products": [first]}}],
@@ -215,7 +215,7 @@ async def run_fast_intent(
                 name = first.get("name", "")
                 price = first.get("price") or first.get("regular_price") or ""
                 price_str = f"₹{price}" if price else ""
-                reply = f"{name}{(', ' + price_str) if price_str else ''}. Want me to tell you more, or shall I check size options?"
+                reply = f"{name}{(', ' + price_str) if price_str else ''}. Want me to add it to your cart?"
                 return with_actions_alias({
                     "response_text": reply,
                     "ui_actions": [{"type": "show_products", "payload": {"products": [first]}}],
@@ -278,7 +278,7 @@ async def handle_product_discovery(
     name = products[0].get("name", "")
     price = products[0].get("price", "")
     price_text = f", ₹{price}" if price else ""
-    response = f"{name}{price_text} — want me to show the size and color options?"
+    response = f"{name}{price_text} — want me to add it to your cart?"
 
     return with_actions_alias({
         "response_text": response,
