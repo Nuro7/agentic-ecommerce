@@ -201,11 +201,18 @@ def has_buy_intent(lower: str) -> bool:
 
 
 def has_add_intent(lower: str) -> bool:
-    return any(token in lower for token in [
+    if any(token in lower for token in [
         "add to cart", "add this to cart", "add it to cart",
         "buy this", "yes add", "put in cart", "add one",
         "add it", "add this", "yes, add",
-    ])
+    ]):
+        return True
+    # "add the first one (to my cart)", "add the second", "add that", "put it in cart"
+    if ("add" in lower or "put " in lower) and any(
+        w in lower for w in ("cart", "first", "second", "third", "this", "that", "it ", " one")
+    ):
+        return True
+    return False
 
 
 def has_remove_intent(lower: str) -> bool:

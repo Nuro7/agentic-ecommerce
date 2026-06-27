@@ -27,6 +27,7 @@ from .text_utils import (
     has_store_info_intent,
     has_cart_view_intent,
     has_remove_intent,
+    has_add_intent,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,19 @@ async def safe_get_cart(
     return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
 
 
+def _pick_product_for_add(lower: str, last: list) -> dict:
+    """Resolve which of the last-shown products the customer means."""
+    if ("second" in lower or "2nd" in lower) and len(last) > 1:
+        return last[1]
+    if ("third" in lower or "3rd" in lower) and len(last) > 2:
+        return last[2]
+    for p in last:  # name-token match against the shown products
+        toks = [t for t in str(p.get("name", "")).lower().split() if len(t) > 3]
+        if any(t in lower for t in toks[:5]):
+            return p
+    return last[0]  # "first" / "this" / "it" / default → the most recent first card
+
+
 async def run_fast_intent(
     message: str,
     session_id: str,
@@ -83,6 +97,39 @@ async def run_fast_intent(
     text = str(message or "")
     lower = text.lower()
     store_name = str((store_context or {}).get("store_name") or "").strip()
+
+    # ── Add to cart (deterministic) — resolve from the last shown products and write
+    # the SERVER session cart, so we don't depend on the LLM picking the UUID. ──────
+    if has_add_intent(lower):
+        meta = await session_service.get_meta(tenant_id, session_id)
+        last = [p for p in (meta.get("last_products") or []) if isinstance(p, dict) and p.get("id")] \
+            if isinstance(meta, dict) else []
+        if last:
+            chosen = _pick_product_for_add(lower, last)
+            qty = max(1, extract_quantity(lower) or 1)
+            cart = await session_service.get_cart(tenant_id, session_id)
+            cart = cart if isinstance(cart, dict) else {}
+            items = list(cart.get("items") or [])
+            pid = str(chosen.get("id"))
+            ex = next((it for it in items if str(it.get("product_id")) == pid), None)
+            if ex:
+                ex["quantity"] = int(ex.get("quantity") or 1) + qty
+            else:
+                items.append({"product_id": pid, "name": chosen.get("name", ""),
+                              "price": chosen.get("price", ""), "quantity": qty})
+            item_count = sum(int(it.get("quantity") or 1) for it in items)
+            new_cart = {"items": items, "item_count": item_count, "is_empty": False,
+                        "total": cart.get("total") or ""}
+            await session_service.save_cart(tenant_id, session_id, new_cart)
+            return with_actions_alias({
+                "response_text": say(language, "added_to_cart", name=chosen.get("name", ""), qty=qty),
+                "ui_actions": [
+                    {"type": "add_to_cart", "payload": {
+                        "product_id": pid, "variation_id": "", "variation": {}, "quantity": qty}},
+                    {"type": "show_cart", "payload": {"cart": normalize_cart_payload(new_cart)}},
+                ],
+                "suggested_replies": ["Checkout now", "Add more", "Show my cart"],
+            })
 
     if has_shipping_intent(lower):
         _shipping = os.getenv("STORE_SHIPPING_POLICY", "")
