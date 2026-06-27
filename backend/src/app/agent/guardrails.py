@@ -415,6 +415,39 @@ def validate_spoken_text(
         return False, text
 
 
+# Conservative "claims-unavailable" detector across the languages Aria supports. Kept
+# TIGHT — only unambiguous unavailability phrasings — and ALWAYS paired with a structured
+# products_found>0 check at the call site, so a localized match still needs a real product
+# count to trigger an override. Voice-relay safety net only.
+_UNAVAILABLE_PHRASES: tuple[str, ...] = (
+    # English
+    "not available", "unavailable", "out of stock", "no products", "none available",
+    "we don't have", "we do not have", "don't have any", "do not have any",
+    "couldn't find", "could not find", "nothing available", "no items", "not in stock",
+    # Malayalam (ലഭ്യമല്ല = not available; ഇല്ല = none/no)
+    "ലഭ്യമല്ല", "ലഭ്യമല്ലാ", "ഒന്നുമില്ല", "ഉൽപ്പന്നങ്ങളില്ല", "ഇല്ല",
+    # Hindi
+    "उपलब्ध नहीं", "नहीं है", "मौजूद नहीं", "कोई उत्पाद नहीं",
+    # Tamil
+    "கிடைக்கவில்லை", "இல்லை",
+    # Telugu
+    "అందుబాటులో లేదు", "లేదు",
+)
+
+
+def claims_unavailable(text: str) -> bool:
+    """True if the spoken transcript asserts unavailability/absence.
+
+    Deliberately conservative — the CALLER must also confirm products_found > 0 before
+    overriding, so this localized-text match is only ever the second half of a
+    (products_found AND claims-no-products) contradiction test.
+    """
+    if not text or not text.strip():
+        return False
+    low = text.lower()
+    return any(p.lower() in low for p in _UNAVAILABLE_PHRASES)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # SAFE FALLBACK  (used when retry also fails)
 # ═══════════════════════════════════════════════════════════════════════════════
