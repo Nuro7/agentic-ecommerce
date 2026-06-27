@@ -157,7 +157,10 @@ _NEGATION_CONTEXT_RE = re.compile(
     # "we don't stock/sell/offer X", "doesn't currently have X").
     r"(?:don'?t|do not|doesn'?t|does not|couldn'?t|could not|can'?t|cannot|won'?t)"
     r"(?:\s+\w+){0,3}\s+(?:carry|carrying|stock|stocking|sell|selling|offer|offering|have|has)|"
-    r"we don'?t|isn'?t|aren'?t)\s*$",
+    r"we don'?t|isn'?t|aren'?t)"
+    # Allow an optional determiner between the negated verb and the product, so
+    # "we don't carry the Rolex GMT2" is recognised as negation, not a fabrication.
+    r"(?:\s+(?:the|a|an|any|that|those|these|some))?\s*$",
     re.IGNORECASE,
 )
 _LEADING_NEGATION_RE = re.compile(r"^(?:no|not|never|without|any|these|those|our)\b", re.IGNORECASE)
@@ -234,14 +237,23 @@ def check_output(
 
     # ── Check 1b: product NAMES must come from retrieved data ─────────────────
     # Catches fabricated product names ("UltraSound X50") that pass the ID/price
-    # checks. Fires ONLY when a search ran (retrieved_names non-empty). VERY
+    # checks. Runs whether or not a search returned rows — including the empty case,
+    # where naming a model-numbered product is itself the hallucination. VERY
     # conservative to avoid false positives: a mention is flagged only when it
     # contains a model-number token AND is NOT in a negation context. Saying you
     # DON'T have something ("No Casio G-Shock watches are available") is never a
     # hallucination, so negated phrases are skipped entirely.
     names_tok: Set[str] = retrieved_names or set()
     full_names: Set[str] = retrieved_full_names or set()
-    if names_tok or full_names:
+    # Run even when grounding is empty: a zero-result retrieval is NOT a license to
+    # name products. With no grounding, a non-negated mention carrying a model-number
+    # token (e.g. "Audemars Piguet X1007") cannot be backed by retrieved data — the
+    # model-number path below flags it (empty names_tok ⇒ no token matches). The
+    # digit-free fuzzy path stays gated on full_names (no anchor to compare against),
+    # and negation/greeting text carries no model-number mention, so plain prose is
+    # not over-flagged.
+    grounding_empty = not names_tok and not full_names
+    if names_tok or full_names or grounding_empty:
         for m in _PRODUCT_MENTION_RE.finditer(cleaned):
             phrase = m.group(1)
             # Skip negation context: "no/not/don't/can't/couldn't/without …" just
