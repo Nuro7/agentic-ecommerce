@@ -215,6 +215,10 @@ def has_remove_intent(lower: str) -> bool:
 
 
 def has_cart_view_intent(lower: str) -> bool:
+    # "add X to my cart" / "put it in my cart" are ADD actions, not a cart view —
+    # don't let the "my cart" token hijack them.
+    if "add" in lower or "put " in lower:
+        return False
     return any(token in lower for token in [
         "show cart", "my cart", "view cart", "cart total", "open cart",
     ]) or lower.strip() == "cart"

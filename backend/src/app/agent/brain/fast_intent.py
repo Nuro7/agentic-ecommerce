@@ -52,16 +52,22 @@ async def safe_get_cart(
     store_client: Any,
     session_service: Any,
 ) -> Dict[str, Any]:
+    # The SERVER session cart is authoritative (add_to_cart writes it). Prefer it over
+    # the live store cart, which custom_api stores can't populate from the widget.
+    try:
+        cart = await session_service.get_cart(tenant_id, session_id)
+        if cart and not cart.get("is_empty", True) and cart.get("items"):
+            return cart
+    except Exception as e:
+        logger.warning("Session cart read failed: %s", e)
     try:
         cart = await store_client.get_live_cart(session_id=session_id)
-        await session_service.save_cart(tenant_id, session_id, cart)
-        return cart
-    except Exception as e:
-        logger.warning("Live cart fetch failed, using cache: %s", e)
-        cart = await session_service.get_cart(tenant_id, session_id)
-        if cart and not cart.get("is_empty", True):
+        if cart and cart.get("items"):
+            await session_service.save_cart(tenant_id, session_id, cart)
             return cart
-        return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
+    except Exception as e:
+        logger.warning("Live cart fetch failed: %s", e)
+    return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
 
 
 async def run_fast_intent(
