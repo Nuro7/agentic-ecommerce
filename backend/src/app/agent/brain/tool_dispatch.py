@@ -191,35 +191,46 @@ async def execute_tool_call(
         return {"inventory": inventory, "response_hint": hint}, actions, [product_id], None
 
     if tool_name == "get_cart":
-        safe_cart = cart_context if isinstance(cart_context, dict) else {}
+        safe_cart = await session_service.get_cart(tenant_id, session_id)
+        if not (isinstance(safe_cart, dict) and safe_cart.get("items")):
+            safe_cart = cart_context if isinstance(cart_context, dict) else {}
         actions.append({"type": "show_cart", "payload": {"cart": _normalize_cart(safe_cart)}})
         return {"cart": safe_cart}, actions, [], None
 
     if tool_name == "add_to_cart":
-        # Keep product_id as a STRING — custom_api uses UUIDs; int() would zero them
-        # out and the widget would add the wrong product.
+        # SERVER-SIDE cart — authoritative for checkout. UUID-safe and independent of the
+        # widget's client cart (which parseInt()s product ids and breaks UUID stores).
         product_id = str(tool_args.get("product_id") or "").strip()
-        variation_id = str(tool_args.get("variation_id") or "").strip()
         quantity = max(1, min(safe_int(tool_args.get("quantity"), 1), 20))
-        variation_data: Dict[str, Any] = {}
-        if not variation_id and tool_args.get("attributes"):
-            inv = await store_client.check_inventory(
-                product_id=product_id,
-                attributes=tool_args.get("attributes"),
-            )
-            variation_id = str(inv.get("variation_id") or "").strip()
-            if hasattr(store_client, "_attributes_to_variation_map"):
-                variation_data = store_client._attributes_to_variation_map(inv.get("attributes", []))
-        actions.append({
-            "type": "add_to_cart",
-            "payload": {
-                "product_id": product_id,
-                "variation_id": variation_id,
-                "variation": variation_data,
-                "quantity": quantity,
-            },
-        })
-        return {"add_to_cart": "client_side_action"}, actions, [product_id], None
+        # Resolve name/price from the last search results (no extra API call); fall back to a
+        # live product lookup if needed.
+        meta = await session_service.get_meta(tenant_id, session_id)
+        last = meta.get("last_products", []) if isinstance(meta, dict) else []
+        prod = next((p for p in last if isinstance(p, dict) and str(p.get("id")) == product_id), None)
+        if not prod and product_id:
+            try:
+                prod = await store_client.get_product_details(product_id)
+            except Exception:
+                prod = None
+        name = str((prod or {}).get("name", "")) if isinstance(prod, dict) else ""
+        price = (prod or {}).get("price", "") if isinstance(prod, dict) else ""
+        cart = await session_service.get_cart(tenant_id, session_id)
+        cart = cart if isinstance(cart, dict) else {}
+        items = list(cart.get("items") or [])
+        existing = next((it for it in items if str(it.get("product_id")) == product_id), None)
+        if existing:
+            existing["quantity"] = int(existing.get("quantity") or 1) + quantity
+        elif product_id:
+            items.append({"product_id": product_id, "name": name, "price": price, "quantity": quantity})
+        item_count = sum(int(it.get("quantity") or 1) for it in items)
+        new_cart = {"items": items, "item_count": item_count, "is_empty": item_count == 0,
+                    "total": cart.get("total") or ""}
+        await session_service.save_cart(tenant_id, session_id, new_cart)
+        # Fire the legacy client add (harmless) AND show the server cart so the widget renders it.
+        actions.append({"type": "add_to_cart", "payload": {
+            "product_id": product_id, "variation_id": "", "variation": {}, "quantity": quantity}})
+        actions.append({"type": "show_cart", "payload": {"cart": _normalize_cart(new_cart)}})
+        return {"add_to_cart": {"ok": True, "name": name, "item_count": item_count}}, actions, [product_id], None
 
     if tool_name == "remove_from_cart":
         cart_item_key = str(tool_args.get("cart_item_key") or "").strip()
@@ -267,7 +278,10 @@ async def execute_tool_call(
         # client-side cart (cart_context) — no dependency on the store /cart endpoint.
         if not hasattr(store_client, "create_order"):
             return {"place_order": {"success": False, "message": "Ordering isn't available for this store."}}, actions, [], None
-        safe_cart = cart_context if isinstance(cart_context, dict) else {}
+        # Items come from the SERVER session cart (authoritative); fall back to the client cart.
+        safe_cart = await session_service.get_cart(tenant_id, session_id)
+        if not (isinstance(safe_cart, dict) and safe_cart.get("items")):
+            safe_cart = cart_context if isinstance(cart_context, dict) else {}
         items = safe_cart.get("items") or []
         email = str(tool_args.get("customer_email") or tool_args.get("email") or "").strip()
         result = await store_client.create_order(
@@ -282,6 +296,9 @@ async def execute_tool_call(
         )
         if result.get("success"):
             actions.append({"type": "order_placed", "payload": result})
+            # Clear the session cart so the next turn starts fresh.
+            await session_service.save_cart(
+                tenant_id, session_id, {"items": [], "item_count": 0, "is_empty": True, "total": ""})
         return {"place_order": result}, actions, [], (email.lower() or None)
 
     if tool_name == "update_cart_quantity":
@@ -639,9 +656,9 @@ def tool_schema() -> List[Dict[str, Any]]:
                 "name": "place_order",
                 "description": (
                     "Place the customer's Cash-on-Delivery order using the items already in their cart. "
-                    "Call this ONLY after you have collected ALL of: full name, email, phone, street address, "
-                    "city, postal code, and country, and the customer has confirmed. Items are taken from the "
-                    "cart automatically — do not pass items."
+                    "Call this ONLY after you have collected: full name, phone, street address, city, and "
+                    "postal code, and the customer confirmed. Email and country are optional (country "
+                    "defaults to India). Items are taken from the cart automatically — do not pass items."
                 ),
                 "parameters": {
                     "type": "object",
@@ -654,7 +671,7 @@ def tool_schema() -> List[Dict[str, Any]]:
                         "postal_code":    {"type": "string", "description": "Postal / PIN code"},
                         "country":        {"type": "string", "description": "Country (default India)"},
                     },
-                    "required": ["customer_name", "customer_email", "customer_phone", "address", "city", "postal_code"],
+                    "required": ["customer_name", "customer_phone", "address", "city", "postal_code"],
                 },
             },
         },
