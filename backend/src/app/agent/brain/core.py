@@ -472,6 +472,13 @@ async def ask_brain(
                     "Retrieval: %d products for '%s'",
                     len(last_products), cleaned_message[:40],
                 )
+                # Persist for the deterministic add-to-cart fast-path ("add the first one")
+                # — the pre-fetch path may not call the search tool that normally saves this.
+                try:
+                    await session_service.save_meta(
+                        tenant_id, session_id, {"last_products": last_products[:8]})
+                except Exception:
+                    pass
             else:
                 logger.info(
                     "Retrieval: 0 products for intent=%s query='%s'",
