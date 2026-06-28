@@ -157,6 +157,28 @@ def _is_affirmative_followup(message: str, history: Any) -> bool:
     return False
 
 
+# Words that signal the assistant just asked for a checkout/contact detail.
+_DETAIL_ASK_RE = re.compile(
+    r"\b(name|phone|number|address|city|town|pin\s?code|pincode|postal|zip|email|"
+    r"delivery|deliver to|where should|confirm)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_detail_collection_followup(message: str, history: Any) -> bool:
+    """True when the assistant's last turn asked for a checkout/contact detail (name,
+    phone, address, city, postal, email, confirmation). The user's reply is the ANSWER,
+    not cold-start chitchat — route it to the LLM (which has the full history) so the
+    checkout flow continues instead of resetting to a greeting."""
+    if not message or not isinstance(history, list):
+        return False
+    for turn in reversed(history):
+        if isinstance(turn, dict) and str(turn.get("role")) == "assistant":
+            content = str(turn.get("content", ""))
+            return "?" in content and bool(_DETAIL_ASK_RE.search(content))
+    return False
+
+
 def _evict_catalog_cache() -> None:
     """Drop the oldest entries when the cache exceeds its bound."""
     if len(_catalog_cache) < _CATALOG_MAX_ENTRIES:
@@ -390,9 +412,16 @@ async def ask_brain(
 
     result: Optional[Dict[str, Any]] = None
     lower_msg = cleaned_message.lower()
+    # True when the user is answering the assistant's request for a checkout detail
+    # (name/phone/address/…). Used to bypass all canned/fast/retrieval paths so the
+    # checkout continues via the LLM instead of resetting to a greeting / "no products".
+    detail_followup = _is_detail_collection_followup(cleaned_message, history)
 
     # ── Step 5: Intent routing ────────────────────────────────────────────────
-    if intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
+    if detail_followup:
+        pass  # result stays None → LLM path with conversation history
+
+    elif intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
         result = off_topic_response(lang)
 
     elif intent_result.intent == CHITCHAT and intent_result.confidence >= 0.75:
@@ -450,7 +479,7 @@ async def ask_brain(
     # stop — the LLM should still get a chance using session history.
     retrieval_ran = False
     retrieval_found = False
-    if result is None and intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY):
+    if result is None and not detail_followup and intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY):
         try:
             retrieval_results = await _run_retrieval(
                 query=cleaned_message,
