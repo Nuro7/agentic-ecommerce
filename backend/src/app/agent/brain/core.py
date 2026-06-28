@@ -259,19 +259,25 @@ async def _fetch_cart(
     store_client: Any,
     session_service: Any,
 ) -> Dict[str, Any]:
-    """Return cart dict: prefer cart_context → live store → Redis cache → empty."""
+    """Return cart dict: client cart_context → SERVER session cart → live store → empty.
+
+    The server session cart (written by add_to_cart) is authoritative for custom_api —
+    do NOT overwrite it with an empty live-store cart, or items added this session vanish
+    on the next turn.
+    """
     if cart_context and isinstance(cart_context, dict) and cart_context.get("items"):
         return cart_context
+    cart = await session_service.get_cart(tenant_id, session_id)
+    if cart and isinstance(cart, dict) and cart.get("items"):
+        return cart
     try:
         cart = await store_client.get_live_cart(session_id=session_id)
-        await session_service.save_cart(tenant_id, session_id, cart)
-        return cart
-    except Exception as exc:
-        logger.warning("Live cart fetch failed, using cache: %s", exc)
-        cart = await session_service.get_cart(tenant_id, session_id)
-        if cart and not cart.get("is_empty", True):
+        if cart and isinstance(cart, dict) and cart.get("items"):
+            await session_service.save_cart(tenant_id, session_id, cart)
             return cart
-        return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
+    except Exception as exc:
+        logger.warning("Live cart fetch failed: %s", exc)
+    return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
