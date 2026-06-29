@@ -156,6 +156,25 @@ def _is_affirmative_followup(message: str, history: Any) -> bool:
     return False
 
 
+def _is_continuation_reply(message: str, history: Any) -> bool:
+    """True when a SHORT message arrives mid-conversation (the assistant has already
+    spoken). Such a message — a name ("John"), a number ("38"), a phone — is an ANSWER
+    to the prior turn, not a cold-start greeting, even though the classifier labels it
+    CHITCHAT. Route it to the LLM (which has the history) instead of the canned greeting.
+
+    Cold start (no prior assistant turn) returns False, so a genuine opening "hi" still
+    gets the fast canned greeting."""
+    if not isinstance(history, list) or not history:
+        return False
+    has_prior_assistant = any(
+        isinstance(t, dict) and str(t.get("role")) == "assistant" for t in history
+    )
+    if not has_prior_assistant:
+        return False
+    # Short, answer-like message — the kind the classifier mislabels as CHITCHAT.
+    return len(message.split()) <= 6
+
+
 def _evict_catalog_cache() -> None:
     """Drop the oldest entries when the cache exceeds its bound."""
     if len(_catalog_cache) < _CATALOG_MAX_ENTRIES:
@@ -393,7 +412,10 @@ async def ask_brain(
         # continuation, not cold-start chitchat. Don't short-circuit to the canned
         # greeting — fall through so the LLM (which gets the history) can act on the
         # offer ("Want me to search the home page?" → "yes" → it searches).
-        if _is_affirmative_followup(cleaned_message, history):
+        # Likewise, any SHORT reply mid-conversation (a name/number/phone the classifier
+        # mislabels as CHITCHAT) is an answer to the last turn — let the LLM continue
+        # with history instead of resetting to a greeting. Empty history still greets.
+        if _is_affirmative_followup(cleaned_message, history) or _is_continuation_reply(cleaned_message, history):
             pass  # result stays None → LLM path handles it with conversation history
         else:
             result = chitchat_response(lang, session_id)
