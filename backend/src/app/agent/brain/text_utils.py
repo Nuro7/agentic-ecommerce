@@ -201,18 +201,11 @@ def has_buy_intent(lower: str) -> bool:
 
 
 def has_add_intent(lower: str) -> bool:
-    if any(token in lower for token in [
+    return any(token in lower for token in [
         "add to cart", "add this to cart", "add it to cart",
         "buy this", "yes add", "put in cart", "add one",
         "add it", "add this", "yes, add",
-    ]):
-        return True
-    # "add the first one (to my cart)", "add the second", "add that", "put it in cart"
-    if ("add" in lower or "put " in lower) and any(
-        w in lower for w in ("cart", "first", "second", "third", "this", "that", "it ", " one")
-    ):
-        return True
-    return False
+    ])
 
 
 def has_remove_intent(lower: str) -> bool:
@@ -222,10 +215,6 @@ def has_remove_intent(lower: str) -> bool:
 
 
 def has_cart_view_intent(lower: str) -> bool:
-    # "add X to my cart" / "put it in my cart" are ADD actions, not a cart view —
-    # don't let the "my cart" token hijack them.
-    if "add" in lower or "put " in lower:
-        return False
     return any(token in lower for token in [
         "show cart", "my cart", "view cart", "cart total", "open cart",
     ]) or lower.strip() == "cart"

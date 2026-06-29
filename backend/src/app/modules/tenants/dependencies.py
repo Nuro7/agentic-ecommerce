@@ -7,7 +7,6 @@ get_tenant_store_client — resolves the calling tenant and returns their
 Resolution order:
   1. ?shop=<shopify_domain>   — Shopify widget identifies itself by shop domain
   2. X-Tenant-ID header       — explicit UUID for non-Shopify or server calls
-  2b. ?tenant_id= query param — UUID set by the widget loader (WS path parity)
   3. app.state.store_client   — single-tenant / dev fallback (no DB lookup)
 
 If no tenant is found the request gets a 503 so the widget shows an error
@@ -125,18 +124,6 @@ async def get_tenant_store_client(
             return await create_store_client_for_tenant(tenant, redis_client=redis)
         logger.warning("X-Tenant-ID=%s not found or inactive", tenant_id)
 
-    # 2b. ?tenant_id= (UUID in query string — set by the widget loader; the
-    # WebSocket path already reads this, see resolve_tenant_store_client_for_ws).
-    qp_tenant_id = request.query_params.get("tenant_id", "").strip()
-    if qp_tenant_id:
-        tenant = await repo.get_by_id(qp_tenant_id)
-        if tenant and tenant.is_active:
-            logger.debug("Tenant resolved via ?tenant_id=%s", qp_tenant_id)
-            set_request_tenant(tenant.id)        # fresh sessions opened later this request
-            await set_tenant_guc(db, tenant.id)  # the already-begun request session too
-            return await create_store_client_for_tenant(tenant, redis_client=redis)
-        logger.warning("?tenant_id=%s not found or inactive", qp_tenant_id)
-
     # 3. No tenant resolved. In production (or when enforcement is explicitly on) we
     # MUST NOT fall back to a shared global client — two tenants arriving without a
     # shop/tenant would collapse onto the same store and merge their data. Reject.
@@ -159,7 +146,7 @@ async def get_tenant_store_client(
 
 
 async def resolve_tenant_id_from_request(request: Request, db: AsyncSession) -> str | None:
-    """Resolve the calling tenant's id (real tenant only) from ?shop= / X-Tenant-ID / ?tenant_id=.
+    """Resolve the calling tenant's id (real tenant only) from ?shop= / X-Tenant-ID.
 
     Returns None when no real tenant resolves. Callers that need a key-safe value in
     dev use `resolved or DEV_TENANT_ID`; billing/usage paths use the real id or skip.
@@ -175,13 +162,6 @@ async def resolve_tenant_id_from_request(request: Request, db: AsyncSession) -> 
     tenant_id = request.headers.get("X-Tenant-ID", "").strip()
     if tenant_id:
         tenant = await repo.get_by_id(tenant_id)
-        if tenant and tenant.is_active:
-            set_request_tenant(tenant.id)
-            await set_tenant_guc(db, tenant.id)  # scope the already-begun request session
-            return tenant.id
-    qp_tenant_id = request.query_params.get("tenant_id", "").strip()
-    if qp_tenant_id:
-        tenant = await repo.get_by_id(qp_tenant_id)
         if tenant and tenant.is_active:
             set_request_tenant(tenant.id)
             await set_tenant_guc(db, tenant.id)  # scope the already-begun request session

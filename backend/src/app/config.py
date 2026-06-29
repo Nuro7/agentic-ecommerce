@@ -59,15 +59,6 @@ class Settings(BaseSettings):
 
     custom_api_base_url: str = ""
     custom_api_key: str = ""
-    # Per-call HTTP budget for the custom-store adapter. Defaults match the prior
-    # hardcoded values (no behaviour change). Tune CUSTOM_API_TIMEOUT ABOVE your
-    # store's measured p95 (see SCALING.md); worst-case wait ≈ timeout × retries + backoff.
-    custom_api_timeout: float = 8.0          # read timeout (seconds)
-    custom_api_connect_timeout: float = 3.0  # connect timeout (seconds)
-    custom_api_retries: int = 3              # total attempts (1 = no retry)
-    # The cart is non-essential to answering a product query, so cap it TIGHTER than
-    # product calls — a slow/broken store /cart must never dominate chat/greet latency.
-    custom_api_cart_timeout: float = 2.0     # env CUSTOM_API_CART_TIMEOUT (seconds)
 
     openai_api_key: str = ""
     groq_api_key: str = ""

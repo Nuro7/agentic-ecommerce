@@ -25,7 +25,7 @@ from typing import Any
 
 from google.genai import types
 
-from ....agent.guardrails import build_retrieved_context, claims_unavailable, validate_spoken_text
+from ....agent.guardrails import build_retrieved_context, validate_spoken_text
 from ....agent.gemini_client import (
     client,
     _GEMINI_LIVE_MODEL,
@@ -54,20 +54,10 @@ RULE 1 — YOU HAVE ONE JOB: VOICE INTERFACE
 You are the voice layer. Your Brain handles all shopping logic.
 For EVERY customer request — products, cart, orders, checkout, policies — call ask_brain immediately.
 Do NOT try to answer from your own knowledge. ALWAYS call ask_brain first.
-
-RELAY THE BRAIN — DO NOT IMPROVISE A VERDICT.
-The Brain's answer is the source of truth. Speak what the Brain returned; never contradict it.
-- If the Brain/tool returned ANY products, those products ARE available — present them.
-  NEVER say a product, item, or category is "unavailable", "not available", "out of stock",
-  "we don't have", or "no products found" when the Brain returned products. That is forbidden.
-- If the tool response says products_found is greater than zero, you MUST present those products
-  positively. Claiming nothing exists when products_found > 0 is a hard error.
-- Only say something is unavailable if the Brain itself said so AND returned no products.
-- Do not negate, deny, or invent absence on your own.
-
-Product NAMES, brands and numbers are SACRED: say every product name EXACTLY as the Brain gave it
-— never rename, shorten, translate, guess a model number, or invent a product. If you don't have a
-name from the Brain, say "this one" and let the on-screen card show it. Never make up a product.
+Speak the Brain's response, keeping its meaning. But product NAMES, brands and numbers
+are SACRED: say every product name EXACTLY as the Brain gave it — never rename, shorten,
+translate, guess a model number, or invent a product. If you don't have a name from the
+Brain, say "this one" and let the on-screen card show it. Never make up a product.
 
 ═══════════════════════════════════════════════════════
 RULE 2 — SCOPE
@@ -105,8 +95,6 @@ RULE 5 — VOICE RESPONSE FORMAT
 ═══════════════════════════════════════════════════════
 Speak the Brain's response naturally. Short, conversational sentences.
 Repeat the Brain's product names verbatim — do not invent or alter any product name.
-Relay the Brain's verdict faithfully: if it returned products, present them; never tell the
-customer an item is unavailable when products came back. Reply in the customer's language.
 No bullet lists, no markdown, no prices in symbols — say "four ninety-nine rupees" not "₹499".
 Currency: {currency}
 Store info (only when customer asks): Shipping: {shipping} | Returns: {returns} | Payments: {payments}
@@ -292,8 +280,7 @@ class PipelineA:
                 # turn. Set when ask_brain runs; the output_transcription handler checks
                 # Gemini's SPOKEN words against it and substitutes the verified text if
                 # Gemini invents a product. Reset on turn_complete so it can't go stale.
-                spoken_truth: dict = {"names": set(), "full_names": set(), "prices": set(),
-                                      "verified": "", "products_found": 0}
+                spoken_truth: dict = {"names": set(), "full_names": set(), "prices": set(), "verified": ""}
 
                 # ── Task A: Browser → Gemini ──────────────────────────────────
                 async def receive_from_frontend() -> None:
@@ -410,24 +397,6 @@ class PipelineA:
                                                 logger.warning(
                                                     "Spoken transcript diverged from brain — "
                                                     "substituting verified text: session=%s", session_id)
-                                        # Contradiction guard: products WERE found this turn but the
-                                        # spoken transcript claims nothing is available → override the
-                                        # displayed bubble with the brain's verified text. Keys off the
-                                        # STRUCTURED count (language-agnostic); the localized phrase
-                                        # match is only the confirming second condition, so a normal
-                                        # positive answer (no phrase) or a genuine no-results turn
-                                        # (count 0) never triggers it.
-                                        if (
-                                            spoken_truth.get("products_found", 0) > 0
-                                            and spoken_truth.get("verified")
-                                            and claims_unavailable(out_text)
-                                        ):
-                                            logger.warning(
-                                                "Spoken transcript claimed unavailable but %d product(s) "
-                                                "were found — overriding displayed bubble with brain "
-                                                "text: session=%s",
-                                                spoken_truth["products_found"], session_id)
-                                            out_text = spoken_truth["verified"]
                                         try:
                                             await websocket.send_text(json.dumps({
                                                 "type": "transcript",
@@ -455,8 +424,7 @@ class PipelineA:
                                 if getattr(sc, "turn_complete", False):
                                     # Clear the turn's grounding so it can't flag the next turn.
                                     spoken_truth.update(
-                                        names=set(), full_names=set(), prices=set(),
-                                        verified="", products_found=0)
+                                        names=set(), full_names=set(), prices=set(), verified="")
                                     try:
                                         await websocket.send_text(
                                             json.dumps({"type": "turn_complete"})
@@ -496,20 +464,6 @@ class PipelineA:
                                             )
                                             ui_actions = result.get("ui_actions") or result.get("actions") or []
 
-                                            # Structured count of products returned this turn — drives
-                                            # the tool signal AND the display guard below. Local default
-                                            # survives if the grounding try throws.
-                                            products_found = 0
-                                            for _a in ui_actions:
-                                                if not isinstance(_a, dict):
-                                                    continue
-                                                _pl = _a.get("payload", {}) or {}
-                                                _ps = _pl.get("products")
-                                                if isinstance(_ps, list):
-                                                    products_found += len(_ps)
-                                                if isinstance(_pl.get("product"), dict):
-                                                    products_found += 1
-
                                             # P1-11: capture the brain's verified grounding for this
                                             # turn (same build_retrieved_context the brain used → no
                                             # drift) so the spoken-transcript monitor can check Gemini.
@@ -519,7 +473,7 @@ class PipelineA:
                                                      if isinstance(a, dict)])
                                                 spoken_truth.update(
                                                     names=_nm, full_names=_full, prices=_pr,
-                                                    verified=response_text, products_found=products_found)
+                                                    verified=response_text)
                                             except Exception:
                                                 pass
 
@@ -549,22 +503,11 @@ class PipelineA:
                                                 f"Brain response: [{response_text[:80]}] "
                                                 f"actions={len(ui_actions)} session={session_id}"
                                             )
-                                            _relay_note = (
-                                                f"{products_found} product(s) found — present them; "
-                                                "do NOT say unavailable."
-                                                if products_found > 0
-                                                else "Relay this answer faithfully; do not invent absence."
-                                            )
                                             function_responses.append(
                                                 types.FunctionResponse(
                                                     name="ask_brain",
                                                     id=call_id,
-                                                    response={
-                                                        "response": response_text,
-                                                        "say": response_text,
-                                                        "products_found": products_found,
-                                                        "instruction": _relay_note,
-                                                    },
+                                                    response={"response": response_text},
                                                 )
                                             )
 

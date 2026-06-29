@@ -157,10 +157,7 @@ _NEGATION_CONTEXT_RE = re.compile(
     # "we don't stock/sell/offer X", "doesn't currently have X").
     r"(?:don'?t|do not|doesn'?t|does not|couldn'?t|could not|can'?t|cannot|won'?t)"
     r"(?:\s+\w+){0,3}\s+(?:carry|carrying|stock|stocking|sell|selling|offer|offering|have|has)|"
-    r"we don'?t|isn'?t|aren'?t)"
-    # Allow an optional determiner between the negated verb and the product, so
-    # "we don't carry the Rolex GMT2" is recognised as negation, not a fabrication.
-    r"(?:\s+(?:the|a|an|any|that|those|these|some))?\s*$",
+    r"we don'?t|isn'?t|aren'?t)\s*$",
     re.IGNORECASE,
 )
 _LEADING_NEGATION_RE = re.compile(r"^(?:no|not|never|without|any|these|those|our)\b", re.IGNORECASE)
@@ -237,23 +234,14 @@ def check_output(
 
     # ── Check 1b: product NAMES must come from retrieved data ─────────────────
     # Catches fabricated product names ("UltraSound X50") that pass the ID/price
-    # checks. Runs whether or not a search returned rows — including the empty case,
-    # where naming a model-numbered product is itself the hallucination. VERY
+    # checks. Fires ONLY when a search ran (retrieved_names non-empty). VERY
     # conservative to avoid false positives: a mention is flagged only when it
     # contains a model-number token AND is NOT in a negation context. Saying you
     # DON'T have something ("No Casio G-Shock watches are available") is never a
     # hallucination, so negated phrases are skipped entirely.
     names_tok: Set[str] = retrieved_names or set()
     full_names: Set[str] = retrieved_full_names or set()
-    # Run even when grounding is empty: a zero-result retrieval is NOT a license to
-    # name products. With no grounding, a non-negated mention carrying a model-number
-    # token (e.g. "Audemars Piguet X1007") cannot be backed by retrieved data — the
-    # model-number path below flags it (empty names_tok ⇒ no token matches). The
-    # digit-free fuzzy path stays gated on full_names (no anchor to compare against),
-    # and negation/greeting text carries no model-number mention, so plain prose is
-    # not over-flagged.
-    grounding_empty = not names_tok and not full_names
-    if names_tok or full_names or grounding_empty:
+    if names_tok or full_names:
         for m in _PRODUCT_MENTION_RE.finditer(cleaned):
             phrase = m.group(1)
             # Skip negation context: "no/not/don't/can't/couldn't/without …" just
@@ -413,39 +401,6 @@ def validate_spoken_text(
         return True, cleaned
     except OutputValidationError:
         return False, text
-
-
-# Conservative "claims-unavailable" detector across the languages Aria supports. Kept
-# TIGHT — only unambiguous unavailability phrasings — and ALWAYS paired with a structured
-# products_found>0 check at the call site, so a localized match still needs a real product
-# count to trigger an override. Voice-relay safety net only.
-_UNAVAILABLE_PHRASES: tuple[str, ...] = (
-    # English
-    "not available", "unavailable", "out of stock", "no products", "none available",
-    "we don't have", "we do not have", "don't have any", "do not have any",
-    "couldn't find", "could not find", "nothing available", "no items", "not in stock",
-    # Malayalam (ലഭ്യമല്ല = not available; ഇല്ല = none/no)
-    "ലഭ്യമല്ല", "ലഭ്യമല്ലാ", "ഒന്നുമില്ല", "ഉൽപ്പന്നങ്ങളില്ല", "ഇല്ല",
-    # Hindi
-    "उपलब्ध नहीं", "नहीं है", "मौजूद नहीं", "कोई उत्पाद नहीं",
-    # Tamil
-    "கிடைக்கவில்லை", "இல்லை",
-    # Telugu
-    "అందుబాటులో లేదు", "లేదు",
-)
-
-
-def claims_unavailable(text: str) -> bool:
-    """True if the spoken transcript asserts unavailability/absence.
-
-    Deliberately conservative — the CALLER must also confirm products_found > 0 before
-    overriding, so this localized-text match is only ever the second half of a
-    (products_found AND claims-no-products) contradiction test.
-    """
-    if not text or not text.strip():
-        return False
-    low = text.lower()
-    return any(p.lower() in low for p in _UNAVAILABLE_PHRASES)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

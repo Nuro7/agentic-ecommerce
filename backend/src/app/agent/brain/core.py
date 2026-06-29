@@ -68,7 +68,6 @@ from .text_utils import (
     summarize_actions_for_voice,
     has_store_info_intent, has_shipping_intent, has_returns_intent,
     has_payment_intent, has_cart_view_intent, has_remove_intent,
-    has_add_intent,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,28 +153,6 @@ def _is_affirmative_followup(message: str, history: Any) -> bool:
     for turn in reversed(history):
         if isinstance(turn, dict) and str(turn.get("role")) == "assistant":
             return "?" in str(turn.get("content", ""))
-    return False
-
-
-# Words that signal the assistant just asked for a checkout/contact detail.
-_DETAIL_ASK_RE = re.compile(
-    r"\b(name|phone|number|address|city|town|pin\s?code|pincode|postal|zip|email|"
-    r"delivery|deliver to|where should|confirm)\b",
-    re.IGNORECASE,
-)
-
-
-def _is_detail_collection_followup(message: str, history: Any) -> bool:
-    """True when the assistant's last turn asked for a checkout/contact detail (name,
-    phone, address, city, postal, email, confirmation). The user's reply is the ANSWER,
-    not cold-start chitchat — route it to the LLM (which has the full history) so the
-    checkout flow continues instead of resetting to a greeting."""
-    if not message or not isinstance(history, list):
-        return False
-    for turn in reversed(history):
-        if isinstance(turn, dict) and str(turn.get("role")) == "assistant":
-            content = str(turn.get("content", ""))
-            return "?" in content and bool(_DETAIL_ASK_RE.search(content))
     return False
 
 
@@ -281,25 +258,19 @@ async def _fetch_cart(
     store_client: Any,
     session_service: Any,
 ) -> Dict[str, Any]:
-    """Return cart dict: client cart_context → SERVER session cart → live store → empty.
-
-    The server session cart (written by add_to_cart) is authoritative for custom_api —
-    do NOT overwrite it with an empty live-store cart, or items added this session vanish
-    on the next turn.
-    """
+    """Return cart dict: prefer cart_context → live store → Redis cache → empty."""
     if cart_context and isinstance(cart_context, dict) and cart_context.get("items"):
         return cart_context
-    cart = await session_service.get_cart(tenant_id, session_id)
-    if cart and isinstance(cart, dict) and cart.get("items"):
-        return cart
     try:
         cart = await store_client.get_live_cart(session_id=session_id)
-        if cart and isinstance(cart, dict) and cart.get("items"):
-            await session_service.save_cart(tenant_id, session_id, cart)
-            return cart
+        await session_service.save_cart(tenant_id, session_id, cart)
+        return cart
     except Exception as exc:
-        logger.warning("Live cart fetch failed: %s", exc)
-    return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
+        logger.warning("Live cart fetch failed, using cache: %s", exc)
+        cart = await session_service.get_cart(tenant_id, session_id)
+        if cart and not cart.get("is_empty", True):
+            return cart
+        return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -412,16 +383,9 @@ async def ask_brain(
 
     result: Optional[Dict[str, Any]] = None
     lower_msg = cleaned_message.lower()
-    # True when the user is answering the assistant's request for a checkout detail
-    # (name/phone/address/…). Used to bypass all canned/fast/retrieval paths so the
-    # checkout continues via the LLM instead of resetting to a greeting / "no products".
-    detail_followup = _is_detail_collection_followup(cleaned_message, history)
 
     # ── Step 5: Intent routing ────────────────────────────────────────────────
-    if detail_followup:
-        pass  # result stays None → LLM path with conversation history
-
-    elif intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
+    if intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
         result = off_topic_response(lang)
 
     elif intent_result.intent == CHITCHAT and intent_result.confidence >= 0.75:
@@ -442,7 +406,6 @@ async def ask_brain(
         or has_payment_intent(lower_msg)
         or has_cart_view_intent(lower_msg)
         or has_remove_intent(lower_msg)
-        or has_add_intent(lower_msg)
     ):
         try:
             result = await run_fast_intent(
@@ -479,7 +442,7 @@ async def ask_brain(
     # stop — the LLM should still get a chance using session history.
     retrieval_ran = False
     retrieval_found = False
-    if result is None and not detail_followup and intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY):
+    if result is None and intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY):
         try:
             retrieval_results = await _run_retrieval(
                 query=cleaned_message,
@@ -507,13 +470,6 @@ async def ask_brain(
                     "Retrieval: %d products for '%s'",
                     len(last_products), cleaned_message[:40],
                 )
-                # Persist for the deterministic add-to-cart fast-path ("add the first one")
-                # — the pre-fetch path may not call the search tool that normally saves this.
-                try:
-                    await session_service.save_meta(
-                        tenant_id, session_id, {"last_products": last_products[:8]})
-                except Exception:
-                    pass
             else:
                 logger.info(
                     "Retrieval: 0 products for intent=%s query='%s'",

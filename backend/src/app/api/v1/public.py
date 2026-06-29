@@ -262,12 +262,6 @@ async def chat_endpoint(
                 _t = await _repo.get_by_id(_hdr)
                 if _t and _t.is_active:
                     tenant_id = _t.id
-        if not tenant_id:
-            _qp = req.query_params.get("tenant_id", "").strip()
-            if _qp:
-                _t = await _repo.get_by_id(_qp)
-                if _t and _t.is_active:
-                    tenant_id = _t.id
     except Exception:
         pass
 
