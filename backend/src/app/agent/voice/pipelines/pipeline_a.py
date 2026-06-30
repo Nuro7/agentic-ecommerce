@@ -32,8 +32,83 @@ from ....agent.gemini_client import (
     inject_reconnect_context,
 )
 from ....agent.orchestrator import AgentOrchestrator
+from ....config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ── Gemini Live setup builders ───────────────────────────────────────────────
+# Single source of truth for the LiveConnectConfig payload so every Gemini knob
+# lives in one typed place.
+
+def _vad_start_sensitivity(value: str):
+    """Map the config string to the SDK StartSensitivity enum (default HIGH)."""
+    return (
+        types.StartSensitivity.START_SENSITIVITY_LOW
+        if value.upper() == "LOW"
+        else types.StartSensitivity.START_SENSITIVITY_HIGH
+    )
+
+
+def _vad_end_sensitivity(value: str):
+    """Map the config string to the SDK EndSensitivity enum (default LOW)."""
+    return (
+        types.EndSensitivity.END_SENSITIVITY_HIGH
+        if value.upper() == "HIGH"
+        else types.EndSensitivity.END_SENSITIVITY_LOW
+    )
+
+
+def _build_vad_config(cfg) -> types.RealtimeInputConfig:
+    """Server-side voice-activity detection tuned for retail voice.
+
+    HIGH start sensitivity cuts in fast on barge-in; LOW end sensitivity avoids
+    ending a turn on a natural pause (which would force the model to answer a
+    partial utterance and guess/hallucinate). turn_coverage is left at the SDK
+    default — Speako sends audio only, no video.
+    """
+    return types.RealtimeInputConfig(
+        automatic_activity_detection=types.AutomaticActivityDetection(
+            disabled=False,
+            start_of_speech_sensitivity=_vad_start_sensitivity(cfg.vad_start_sensitivity),
+            end_of_speech_sensitivity=_vad_end_sensitivity(cfg.vad_end_sensitivity),
+            silence_duration_ms=cfg.vad_silence_ms,
+            prefix_padding_ms=cfg.vad_prefix_ms,
+        ),
+    )
+
+
+def build_live_config(cfg, *, system_instruction: str, voice_name: str, tools) -> types.LiveConnectConfig:
+    """Single source of truth for the Gemini Live setup payload.
+
+    thinking_config MUST be set in the constructor — post-assignment is silently
+    ignored by the SDK serializer. language_code is intentionally left unset in
+    SpeechConfig so Gemini auto-detects the spoken language (setting it locks the
+    model to one language and breaks multilingual detection).
+    """
+    return types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        system_instruction=types.Content(
+            parts=[types.Part.from_text(text=system_instruction)]
+        ),
+        tools=tools,
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=voice_name
+                )
+            )
+        ),
+        # Transcriptions: get text of both sides for widget display
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        thinking_config=types.ThinkingConfig(thinking_level=cfg.gemini_thinking_level),
+        history_config=types.HistoryConfig(
+            initial_history_in_client_content=True
+        ),
+        # Server-side VAD (tuned) — the one new field vs. the prior inline config.
+        realtime_input_config=_build_vad_config(cfg),
+    )
 
 # ── System prompt for Pipeline A ─────────────────────────────────────────────
 # Slimmer than the multi-tool prompt — Gemini only needs to know WHEN to call
@@ -232,31 +307,12 @@ class PipelineA:
 
         voice_name = os.environ.get("GEMINI_VOICE", "Aoede")
 
-        # ── Session config ────────────────────────────────────────────────────
-        # IMPORTANT: thinking_config MUST be set in the constructor — post-assignment
-        # is silently ignored by the SDK serializer.
-        # Leave language_code unset in SpeechConfig — Gemini auto-detects from speech.
-        # Setting it locks the model to one language and breaks multilingual detection.
-        live_config = types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            system_instruction=types.Content(
-                parts=[types.Part.from_text(text=_build_system_prompt())]
-            ),
+        # ── Session config — single typed builder (see build_live_config) ─────
+        live_config = build_live_config(
+            settings,
+            system_instruction=_build_system_prompt(),
+            voice_name=voice_name,
             tools=_build_brain_tool(),
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name=voice_name
-                    )
-                )
-            ),
-            # Transcriptions: get text of both sides for widget display
-            input_audio_transcription=types.AudioTranscriptionConfig(),
-            output_audio_transcription=types.AudioTranscriptionConfig(),
-            thinking_config=types.ThinkingConfig(thinking_level="minimal"),
-            history_config=types.HistoryConfig(
-                initial_history_in_client_content=True
-            ),
         )
 
         try:

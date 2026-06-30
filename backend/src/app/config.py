@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     tts_provider: str = "google"
 
+    # ── Gemini Live voice (Pipeline A) tuning ────────────────────────────────
+    # thinking_level: "minimal" keeps latency lowest for real-time voice.
+    gemini_thinking_level: str = "minimal"
+    # Server-side VAD (automatic_activity_detection). Defaults tuned for retail
+    # voice: cut in fast on barge-in (HIGH start), don't end a turn on a natural
+    # pause (LOW end). silence/prefix are milliseconds.
+    vad_start_sensitivity: str = "HIGH"   # HIGH | LOW
+    vad_end_sensitivity: str = "LOW"      # HIGH | LOW
+    vad_silence_ms: int = 600
+    vad_prefix_ms: int = 800
+
     store_currency: str = "$"
 
     encryption_key: str = ""
