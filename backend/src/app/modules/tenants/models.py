@@ -42,5 +42,14 @@ class Tenant(Base):
     # only alongside a deterministic lookup-hash column.
     custom_api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Per-tenant store config — business info the platform API may not provide.
+    # All nullable; resolution order everywhere these are read:
+    # tenant column → platform API (e.g. Shopify policies) → env-var fallback.
+    currency_symbol: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    shipping_policy: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    returns_policy: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payment_methods: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    about_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

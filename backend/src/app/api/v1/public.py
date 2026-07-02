@@ -271,9 +271,13 @@ async def chat_endpoint(
     except Exception:
         pass
 
+    # Per-tenant currency (tenant DB column → global env fallback).
+    from ...modules.tenants.service import get_store_config_for_tenant
+    _store_cfg = await get_store_config_for_tenant(tenant_id)
+
     store_context = {
-        "store_name": payload.store_name or "this store",
-        "currency_symbol": settings.store_currency,
+        "store_name": payload.store_name or _store_cfg.get("store_name") or "this store",
+        "currency_symbol": _store_cfg.get("currency_symbol") or settings.store_currency,
         "tenant_id": tenant_id,
         "url": payload.store_url or "",
     }

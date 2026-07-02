@@ -23,6 +23,13 @@ class TenantCreate(BaseModel):
     custom_api_base_url: Optional[str] = None
     custom_api_key: Optional[str] = None
 
+    # Per-tenant store config (optional — env-var fallback applies when unset)
+    currency_symbol: Optional[str] = None
+    shipping_policy: Optional[str] = None
+    returns_policy: Optional[str] = None
+    payment_methods: Optional[str] = None
+    about_text: Optional[str] = None
+
     @field_validator("platform")
     @classmethod
     def validate_platform(cls, v: str) -> str:
@@ -52,6 +59,13 @@ class TenantUpdate(BaseModel):
     # Custom API
     custom_api_base_url: Optional[str] = None
     custom_api_key: Optional[str] = None
+
+    # Per-tenant store config
+    currency_symbol: Optional[str] = None
+    shipping_policy: Optional[str] = None
+    returns_policy: Optional[str] = None
+    payment_methods: Optional[str] = None
+    about_text: Optional[str] = None
 
     @field_validator("platform")
     @classmethod

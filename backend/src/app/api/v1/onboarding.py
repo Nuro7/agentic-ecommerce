@@ -79,6 +79,14 @@ class OnboardRequest(BaseModel):
     custom_api_base_url: Optional[str] = None
     custom_api_key: Optional[str] = None
 
+    # Optional per-tenant store config (currency + policies + about).
+    # When unset the deployment env-var defaults apply (STORE_CURRENCY, ...).
+    currency_symbol: Optional[str] = None
+    shipping_policy: Optional[str] = None
+    returns_policy: Optional[str] = None
+    payment_methods: Optional[str] = None
+    about_text: Optional[str] = None
+
     @field_validator("platform")
     @classmethod
     def validate_platform(cls, v: str) -> str:
@@ -171,6 +179,11 @@ async def onboard_merchant(
         woocommerce_consumer_secret=data.woocommerce_consumer_secret,
         custom_api_base_url=data.custom_api_base_url,
         custom_api_key=data.custom_api_key,
+        currency_symbol=data.currency_symbol,
+        shipping_policy=data.shipping_policy,
+        returns_policy=data.returns_policy,
+        payment_methods=data.payment_methods,
+        about_text=data.about_text,
     )
 
     try:

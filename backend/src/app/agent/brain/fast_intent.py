@@ -78,8 +78,13 @@ async def run_fast_intent(
     lower = text.lower()
     store_name = str((store_context or {}).get("store_name") or "").strip()
 
+    # Per-tenant store config (tenant DB column → env-var fallback). A tenant
+    # with NULL columns behaves exactly as before (env text for all tenants).
+    from ...modules.tenants.service import get_store_config_for_tenant
+    cfg = await get_store_config_for_tenant(tenant_id)
+
     if has_shipping_intent(lower):
-        _shipping = os.getenv("STORE_SHIPPING_POLICY", "")
+        _shipping = cfg.get("shipping_policy") or os.getenv("STORE_SHIPPING_POLICY", "")
         if _shipping:
             return with_actions_alias({
                 "response_text": _shipping,
@@ -87,7 +92,7 @@ async def run_fast_intent(
             })
 
     if has_returns_intent(lower):
-        _returns = os.getenv("STORE_RETURNS_POLICY", "")
+        _returns = cfg.get("returns_policy") or os.getenv("STORE_RETURNS_POLICY", "")
         if _returns:
             return with_actions_alias({
                 "response_text": _returns,
@@ -95,7 +100,7 @@ async def run_fast_intent(
             })
 
     if has_payment_intent(lower):
-        _payments = os.getenv("STORE_PAYMENT_METHODS", "")
+        _payments = cfg.get("payment_methods") or os.getenv("STORE_PAYMENT_METHODS", "")
         if _payments:
             return with_actions_alias({
                 "response_text": f"We accept: {_payments}.",
@@ -103,12 +108,12 @@ async def run_fast_intent(
             })
 
     if has_store_info_intent(lower):
-        _sname = store_name or "this store"
-        _about = os.getenv("STORE_ABOUT", "")
-        _shipping = os.getenv("STORE_SHIPPING_POLICY", "")
-        _returns = os.getenv("STORE_RETURNS_POLICY", "")
-        _payments = os.getenv("STORE_PAYMENT_METHODS", "")
-        _currency = os.getenv("STORE_CURRENCY", "₹")
+        _sname = store_name or cfg.get("store_name") or "this store"
+        _about = cfg.get("about_text") or os.getenv("STORE_ABOUT", "")
+        _shipping = cfg.get("shipping_policy") or os.getenv("STORE_SHIPPING_POLICY", "")
+        _returns = cfg.get("returns_policy") or os.getenv("STORE_RETURNS_POLICY", "")
+        _payments = cfg.get("payment_methods") or os.getenv("STORE_PAYMENT_METHODS", "")
+        _currency = cfg.get("currency_symbol") or os.getenv("STORE_CURRENCY", "₹")
         parts = [f"Welcome to {_sname}!"]
         if _about:
             parts.append(_about)

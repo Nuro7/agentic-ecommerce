@@ -114,12 +114,15 @@ def build_live_config(cfg, *, system_instruction: str, voice_name: str, tools) -
 # Slimmer than the multi-tool prompt — Gemini only needs to know WHEN to call
 # ask_brain, not the details of each operation. Brain handles the details.
 
-def _build_system_prompt() -> str:
-    store_name = "this store"
-    currency   = os.environ.get("STORE_CURRENCY", "₹")
-    shipping   = os.environ.get("STORE_SHIPPING_POLICY", "Standard shipping available.")
-    returns    = os.environ.get("STORE_RETURNS_POLICY", "Returns accepted within 7 days.")
-    payments   = os.environ.get("STORE_PAYMENT_METHODS", "UPI, Card, Cash on Delivery")
+def _build_system_prompt(store_config: dict | None = None) -> str:
+    # Per-tenant store config (tenant DB column → env-var fallback). A tenant
+    # with NULL columns keeps the previous env/default behavior exactly.
+    cfg = store_config or {}
+    store_name = cfg.get("store_name") or "this store"
+    currency   = cfg.get("currency_symbol") or os.environ.get("STORE_CURRENCY", "₹")
+    shipping   = cfg.get("shipping_policy") or os.environ.get("STORE_SHIPPING_POLICY", "Standard shipping available.")
+    returns    = cfg.get("returns_policy") or os.environ.get("STORE_RETURNS_POLICY", "Returns accepted within 7 days.")
+    payments   = cfg.get("payment_methods") or os.environ.get("STORE_PAYMENT_METHODS", "UPI, Card, Cash on Delivery")
 
     return f"""You are Aria, the voice shopping assistant for {store_name}.
 
@@ -310,10 +313,15 @@ class PipelineA:
 
         voice_name = os.environ.get("GEMINI_VOICE", "Aoede")
 
+        # Per-tenant store config for the voice prompt (name/currency/policies).
+        # Never raises — returns all-None on failure → env/default fallback.
+        from ....modules.tenants.service import get_store_config_for_tenant
+        store_config = await get_store_config_for_tenant(tenant_id)
+
         # ── Session config — single typed builder (see build_live_config) ─────
         live_config = build_live_config(
             settings,
-            system_instruction=_build_system_prompt(),
+            system_instruction=_build_system_prompt(store_config),
             voice_name=voice_name,
             tools=_build_brain_tool(),
         )
