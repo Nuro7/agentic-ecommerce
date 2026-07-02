@@ -116,6 +116,9 @@ Rules:
 - A message that mentions a product name AND "add" / "buy" / "cart" → cart_action
 - A message that mentions a product name WITHOUT cart/buy/add → search or product_detail
 - Greetings like "hi", "hello", "namaste", "ayubowan", "vanakkam" → chitchat
+- Shopping for products the store may sell (spices, medicines, cookware, books, …) → search,
+  even when the message mentions cooking/health context ("masala to cook biryani" → search).
+  Only requests for ADVICE itself (diagnosis, dosage, a recipe, a poem) → off_topic.
 
 Respond with ONLY valid JSON (no markdown, no explanation):
 {"intent": "...", "confidence": 0.95, "query": "search term if search intent else empty", "product_ref": "product name if mentioned else empty"}

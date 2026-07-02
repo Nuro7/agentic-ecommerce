@@ -16,15 +16,19 @@ logger = logging.getLogger(__name__)
 
 # ── Off-topic keyword blocklist ───────────────────────────────────────────────
 # If the input is clearly off-topic, we reject before sending to the LLM.
+# IMPORTANT: only UNIVERSALLY off-topic patterns belong here — this regex runs for
+# EVERY tenant before the LLM intent classifier. Category-specific topics (food,
+# medical, books, …) must NOT be listed: a food/cooking pattern blocked a spice or
+# kitchen store's core sales questions ("which masala to cook biryani?"), and a
+# medical pattern broke pharmacy stores. Those are owned by the intent classifier
+# (agent/classifier.py), which sees store context and classifies off_topic per case.
 _OFF_TOPIC_PATTERNS: List[re.Pattern] = [re.compile(p, re.IGNORECASE) for p in [
     r"\b(news|politics|election|vote|president|minister|government)\b",
     r"\b(weather|forecast|temperature|humidity)\b",
-    r"\b(recipe|cook|bake|ingredient|calorie)\b",
     r"\b(coding|debug|programming|python|javascript|html|css|sql)\b",
     r"\b(stock market|crypto|bitcoin|ethereum|trading|invest)\b",
     r"\b(movie|film|series|netflix|spotify|youtube)\b",
     r"\b(translate|translation|grammar|essay|poem|story)\b",
-    r"\b(medical|diagnosis|symptom|medicine|doctor|hospital)\b",
     r"\b(gpt|openai|gemini|claude|llm|artificial intelligence|chatgpt)\b",
 ]]
 
