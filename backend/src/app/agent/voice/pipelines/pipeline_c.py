@@ -6,7 +6,7 @@ are unavailable (circuit breakers open).
 
 Flow:
   Browser sends {"type":"text_input","text":"..."} via WebSocket
-    → Brain: orchestrator.run()  (Gemini 2.5 Flash — same Brain as A and B)
+    → Brain: orchestrator.run()  (GPT-4o-mini → Grok → Gemini — same Brain as A and B)
     → response text  → {"type":"transcript","text":"..."}
     → ui_actions     → {"type":"ui_action","action":{...}}
     → suggestions    → {"type":"suggestions","items":[...]}
@@ -110,7 +110,7 @@ class PipelineC:
                 except Exception:
                     pass
 
-                # Brain (Gemini 2.5 Flash)
+                # Brain (GPT-4o-mini primary)
                 try:
                     result = await orchestrator.run(
                         session_id=session_id,

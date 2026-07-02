@@ -53,7 +53,11 @@ else:
     logger.info("OPENAI_API_KEY not set — GPT paths disabled")
 
 # ── Gemini Brain ──────────────────────────────────────────────────────────────
-# BRAIN_MODEL controls which Gemini model powers the reasoning/decision layer.
+# NOTE: BRAIN_MODEL sets the Gemini FALLBACK model only — it is NOT the overall
+# primary brain. The primary brain is GPT-4o-mini; the routing order is
+# GPT-4o-mini → Grok → Gemini (see llm_router.py). Gemini runs only if the first
+# two are unavailable.
+# BRAIN_MODEL controls which Gemini model powers that fallback reasoning path.
 # Change via .env — no code changes needed.
 #   gemini-2.5-flash   → fast, large context, best for agentic tasks (default)
 #   gemini-2.0-flash   → previous generation, slightly lighter

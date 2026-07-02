@@ -2,11 +2,11 @@
 Pipeline Router — Active Pipeline Selector with Circuit Breaker + Health Monitor
 
 Routing order:
-  Pipeline A  →  Gemini 3.1 Flash Live + Brain (Gemini 2.5 Flash)
+  Pipeline A  →  Gemini 3.1 Flash Live + Brain (GPT-4o-mini → Grok → Gemini)
                  PRIMARY — multilingual, lowest latency, native STT+TTS
                  Circuit breaker: opens after 3 failures, resets after 60s
 
-  Pipeline B  →  xAI Grok STT → Brain (Gemini 2.5 Flash) → Gemini 3.1 Flash TTS
+  Pipeline B  →  xAI Grok STT → Brain (GPT-4o-mini → Grok → Gemini) → Gemini 3.1 Flash TTS
                  FALLBACK — activates when Pipeline A circuit opens
                  Circuit breaker: opens after 3 failures, resets after 120s
 
@@ -177,7 +177,7 @@ class PipelineRouter:
             },
             "pipeline_b": {
                 **self._breaker_b.health(),
-                "description": "xAI Grok STT → Brain (Gemini 2.5 Flash) → Gemini 3.1 Flash TTS",
+                "description": "xAI Grok STT → Brain (GPT-4o-mini → Grok → Gemini) → Gemini 3.1 Flash TTS",
             },
             "pipeline_c": {
                 "state":       "always_available",

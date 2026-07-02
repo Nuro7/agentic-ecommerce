@@ -1,5 +1,5 @@
 """
-Pipeline B — xAI Grok Streaming STT → Brain (Gemini 2.5 Flash) → Gemini TTS  (FALLBACK)
+Pipeline B — xAI Grok Streaming STT → Brain (GPT-4o-mini → Grok → Gemini) → Gemini TTS  (FALLBACK)
 
 Activates when Pipeline A (Gemini Live) circuit breaker opens.
 
