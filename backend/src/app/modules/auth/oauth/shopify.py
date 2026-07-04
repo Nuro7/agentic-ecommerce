@@ -107,18 +107,98 @@ async def _register_script_tag(shop_domain: str, access_token: str, loader_url: 
     return resp.json().get("script_tag", {})
 
 
-async def _verify_admin_token(shop_domain: str, access_token: str) -> bool:
-    """Confirm the Admin token can actually read the store. Returns True on a 200
-    from shop.json — proves the token is valid before we report a successful install."""
+async def _fetch_shop_info(shop_domain: str, access_token: str) -> Optional[dict]:
+    """Fetch shop.json — doubles as the Admin-token validity check AND the source of
+    real shop metadata (name, email, currency). Returns the parsed `shop` object on
+    success, None on failure (token invalid / network error)."""
     api_version = _settings.shopify_api_version
     url = f"https://{shop_domain}/admin/api/{api_version}/shop.json"
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url, headers=_shopify_admin_headers(access_token))
-        return resp.status_code == 200
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("shop") or {}
     except Exception as exc:
-        logger.error("Admin token verification request failed for %s: %s", shop_domain, exc)
-        return False
+        logger.error("shop.json fetch failed for %s: %s", shop_domain, exc)
+        return None
+
+
+# ISO currency code → display symbol for the widget/prompts. Unknown codes fall
+# back to the code itself (still correct, just less pretty than a symbol).
+_CURRENCY_SYMBOLS = {
+    "INR": "₹", "USD": "$", "EUR": "€", "GBP": "£", "AED": "د.إ",
+    "JPY": "¥", "CNY": "¥", "AUD": "A$", "CAD": "C$", "SGD": "S$",
+    "SAR": "﷼", "BDT": "৳", "LKR": "Rs", "PKR": "Rs", "NZD": "NZ$",
+}
+
+
+def _currency_symbol_for(code) -> Optional[str]:
+    if not code:
+        return None
+    normalized = str(code).strip().upper()
+    return _CURRENCY_SYMBOLS.get(normalized, normalized)
+
+
+# Webhook topics Speako subscribes to on install. The receiving endpoints already
+# exist (modules/webhooks): products/* keep product_cache in sync; app/uninstalled
+# lets us deactivate the tenant.
+SHOPIFY_WEBHOOK_TOPICS = (
+    "products/create",
+    "products/update",
+    "products/delete",
+    "app/uninstalled",
+)
+
+
+def _build_webhook_payload(topic: str, address: str) -> dict:
+    """Pure payload builder (kept separate so it can be unit-tested without httpx)."""
+    return {"webhook": {"topic": topic, "address": address, "format": "json"}}
+
+
+async def _register_webhooks(shop_domain: str, access_token: str, address: str) -> int:
+    """Idempotently subscribe the store to SHOPIFY_WEBHOOK_TOPICS pointing at
+    `address`. Skips topics already registered to our address; tolerates Shopify's
+    422 "address for this topic has already been taken". Returns the number of
+    topics confirmed active (existing + newly created). Never raises."""
+    api_version = _settings.shopify_api_version
+    base = f"https://{shop_domain}/admin/api/{api_version}/webhooks.json"
+    headers = _shopify_admin_headers(access_token)
+    confirmed = 0
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        existing: set = set()
+        try:
+            resp = await client.get(base, headers=headers, params={"limit": 250})
+            if resp.status_code == 200:
+                for wh in resp.json().get("webhooks", []):
+                    if str(wh.get("address", "")).rstrip("/") == address.rstrip("/"):
+                        existing.add(str(wh.get("topic", "")))
+        except Exception as exc:
+            logger.warning("Could not list existing webhooks for %s: %s", shop_domain, exc)
+
+        for topic in SHOPIFY_WEBHOOK_TOPICS:
+            if topic in existing:
+                confirmed += 1
+                continue
+            try:
+                resp = await client.post(
+                    base, headers=headers, json=_build_webhook_payload(topic, address)
+                )
+                if resp.status_code in (200, 201):
+                    confirmed += 1
+                    logger.info("Webhook registered for %s: %s", shop_domain, topic)
+                elif resp.status_code == 422 and "taken" in resp.text.lower():
+                    confirmed += 1  # duplicate (topic+address already subscribed)
+                else:
+                    logger.warning(
+                        "Webhook %s registration failed for %s: %s %s",
+                        topic, shop_domain, resp.status_code, resp.text[:200],
+                    )
+            except Exception as exc:
+                logger.warning("Webhook %s registration error for %s: %s", topic, shop_domain, exc)
+
+    return confirmed
 
 
 async def _create_storefront_token(shop_domain: str, admin_token: str) -> str:
@@ -248,7 +328,10 @@ async def shopify_callback(
     # Verify the token actually works against the Admin API BEFORE we declare success.
     # A token that can't read the shop is useless — better to fail loudly here than to
     # show a green "Installed!" page and have the store silently broken at search time.
-    if not await _verify_admin_token(shop, access_token):
+    # The same shop.json response also gives us the REAL shop metadata (name, email,
+    # currency) instead of fabricating it from the domain string.
+    shop_info = await _fetch_shop_info(shop, access_token)
+    if shop_info is None:
         logger.error("Admin token verification FAILED for %s (shop.json not readable)", shop)
         return HTMLResponse(
             content=_error_page(shop, "Couldn't verify the access token with Shopify (shop.json was not readable). Please try installing again."),
@@ -258,6 +341,28 @@ async def shopify_callback(
     # Auto-provision a Storefront token so the merchant never has to create one.
     # On re-install this mints a fresh token (handles revoked/old-app tokens).
     storefront_token = await _create_storefront_token(shop, access_token)
+
+    # Best-effort: fetch the store's real shipping/returns policies + payment methods
+    # via the Storefront API so we can PREFILL the tenant's editable config columns
+    # (import-then-edit). Non-fatal — install proceeds fine without them.
+    imported_policies: dict = {}
+    if storefront_token:
+        try:
+            from ....integrations.shopify.client import ShopifyClient
+            _sc = ShopifyClient(
+                store_domain=shop,
+                storefront_token=storefront_token,
+                admin_token=access_token,
+            )
+            _pol = await _sc.get_store_policies()
+            if _pol.get("success"):
+                imported_policies = {
+                    "shipping_policy": (_pol.get("shipping_policy") or "").strip() or None,
+                    "returns_policy": (_pol.get("returns_policy") or "").strip() or None,
+                    "payment_methods": ", ".join(_pol.get("payment_methods") or []) or None,
+                }
+        except Exception as exc:
+            logger.warning("Policy prefill fetch failed for %s: %s", shop, exc)
 
     # Save tenant to DB. A failure here MUST surface — otherwise the merchant sees
     # "Installed!" while no usable token was persisted (the exact silent bug we hit).
@@ -270,6 +375,11 @@ async def shopify_callback(
             result = await db.execute(select(Tenant).where(Tenant.shopify_domain == shop))
             tenant = result.scalar_one_or_none()
 
+            # Real shop metadata from shop.json (was previously discarded).
+            real_name = str(shop_info.get("name") or "").strip()
+            real_email = str(shop_info.get("email") or "").strip().lower()
+            real_currency = _currency_symbol_for(shop_info.get("currency"))
+
             if tenant:
                 tenant.shopify_access_token = access_token
                 tenant.shopify_scope = scope
@@ -278,23 +388,42 @@ async def shopify_callback(
                 # Only overwrite when we successfully minted a new one.
                 if storefront_token:
                     tenant.shopify_storefront_token = storefront_token
+                # Fill config from Shopify ONLY where unset — never clobber values
+                # the merchant configured (import-then-edit contract).
+                if not tenant.currency_symbol and real_currency:
+                    tenant.currency_symbol = real_currency
+                for _field, _value in imported_policies.items():
+                    if _value and getattr(tenant, _field, None) in (None, ""):
+                        setattr(tenant, _field, _value)
             else:
+                # New tenant: prefer real shop email, but it must not collide with an
+                # existing account (email is UNIQUE) — fall back to the synthetic one.
+                email = real_email or f"owner@{shop}"
+                if real_email:
+                    dup = await db.execute(select(Tenant).where(Tenant.email == real_email))
+                    if dup.scalar_one_or_none() is not None:
+                        email = f"owner@{shop}"
                 tenant = Tenant(
                     id=str(uuid.uuid4()),
-                    name=shop.replace(".myshopify.com", "").title(),
-                    email=f"owner@{shop}",
+                    name=real_name or shop.replace(".myshopify.com", "").title(),
+                    email=email,
                     shopify_domain=shop,
                     shopify_access_token=access_token,
                     shopify_storefront_token=storefront_token or None,
                     shopify_scope=scope,
                     shopify_installed_at=datetime.now(timezone.utc),
+                    currency_symbol=real_currency,
+                    **{k: v for k, v in imported_policies.items() if v},
                 )
                 db.add(tenant)
 
+            tenant_id = tenant.id  # capture before commit (expire_on_commit)
             await db.commit()
             logger.info(
-                "Tenant saved for %s — admin=yes storefront=%s",
+                "Tenant saved for %s — admin=yes storefront=%s name=%r currency=%s policies_prefilled=%s",
                 shop, "yes" if storefront_token else "no",
+                real_name or "(domain-derived)", real_currency or "-",
+                sorted(k for k, v in imported_policies.items() if v) or "none",
             )
     except Exception as exc:
         logger.error("Failed to save tenant for %s: %s", shop, exc, exc_info=True)
@@ -302,6 +431,30 @@ async def shopify_callback(
             content=_error_page(shop, f"The store was authorized, but saving its credentials to the database failed ({type(exc).__name__}). Check the server logs and DATABASE_URL, then re-install."),
             status_code=500,
         )
+
+    # Queue the initial product sync (non-blocking — Celery). Without this the
+    # store's product_cache stays empty until the nightly worker run; searches
+    # would fall back to the slow live API for up to 24h. Mirrors onboarding.py.
+    try:
+        from ....workers.tasks.sync_products import sync_products
+        sync_products.delay(tenant_id=tenant_id)
+        logger.info("Initial product sync queued for tenant=%s (%s)", tenant_id, shop)
+    except Exception as exc:
+        logger.warning(
+            "Could not queue product sync for %s (Celery unavailable): %s", shop, exc,
+        )
+
+    # Register product/uninstall webhooks so Shopify actually SENDS the events our
+    # /webhooks/shopify/{tenant_id} receiver is built to handle. Non-fatal.
+    webhook_address = f"{backend_url}/api/v1/webhooks/shopify/{tenant_id}"
+    try:
+        registered = await _register_webhooks(shop, access_token, webhook_address)
+        logger.info(
+            "Webhooks registered for %s: %d/%d topics",
+            shop, registered, len(SHOPIFY_WEBHOOK_TOPICS),
+        )
+    except Exception as exc:
+        logger.error("Webhook registration failed for %s: %s", shop, exc)
 
     # Register script tag (non-fatal — the install itself already succeeded).
     loader_url = f"{backend_url}/api/v1/shopify/widget-loader.js?shop={shop}"
