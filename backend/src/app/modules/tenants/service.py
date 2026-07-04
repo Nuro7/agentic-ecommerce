@@ -26,6 +26,9 @@ _CREDENTIAL_FIELDS = {
 _STORE_CONFIG_FIELDS = (
     "currency_symbol", "shipping_policy", "returns_policy",
     "payment_methods", "about_text",
+    # AI config (migration 0016)
+    "support_email", "support_phone", "business_hours",
+    "ai_personality", "greeting_message", "logo_url",
 )
 _STORE_CONFIG_TTL = 300.0
 _store_config_cache: dict[str, tuple[float, dict]] = {}

@@ -51,5 +51,14 @@ class Tenant(Base):
     payment_methods: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     about_text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Per-tenant AI configuration — merchant-controlled assistant behavior.
+    # NULL = default behavior (hardcoded greeting map, default Aria persona).
+    support_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    support_phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    business_hours: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    ai_personality: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # friendly|professional|luxury|casual
+    greeting_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    logo_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

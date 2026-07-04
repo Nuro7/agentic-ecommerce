@@ -149,6 +149,16 @@ async def greet_endpoint(
         key = "new_general"
     greeting_text = lang_greetings.get(key, lang_greetings["new_general"])
 
+    # Merchant-customized greeting (tenant column, migration 0016) overrides the
+    # default first-visit greeting only. Returning-customer and product-context
+    # greetings stay dynamic — a static custom message can't mention the cart or
+    # the product being viewed.
+    if key == "new_general":
+        from ...modules.tenants.service import get_store_config_for_tenant
+        _cfg = await get_store_config_for_tenant(tenant_id)
+        if _cfg.get("greeting_message"):
+            greeting_text = _cfg["greeting_message"]
+
     audio_b64 = None
     if tts_service:
         try:

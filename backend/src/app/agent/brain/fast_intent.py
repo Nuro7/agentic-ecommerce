@@ -114,6 +114,9 @@ async def run_fast_intent(
         _returns = cfg.get("returns_policy") or os.getenv("STORE_RETURNS_POLICY", "")
         _payments = cfg.get("payment_methods") or os.getenv("STORE_PAYMENT_METHODS", "")
         _currency = cfg.get("currency_symbol") or os.getenv("STORE_CURRENCY", "₹")
+        _support_email = cfg.get("support_email") or ""
+        _support_phone = cfg.get("support_phone") or ""
+        _hours = cfg.get("business_hours") or ""
         parts = [f"Welcome to {_sname}!"]
         if _about:
             parts.append(_about)
@@ -123,6 +126,11 @@ async def run_fast_intent(
             parts.append(_returns)
         if _payments:
             parts.append(f"We accept: {_payments}.")
+        if _support_email or _support_phone:
+            _contact = " or ".join(c for c in (_support_email, _support_phone) if c)
+            parts.append(f"Contact us: {_contact}.")
+        if _hours:
+            parts.append(f"Hours: {_hours}.")
         store_reply = " ".join(parts)
         store_info_payload = {
             "store_name": _sname,
@@ -131,6 +139,9 @@ async def run_fast_intent(
             "shipping": _shipping,
             "returns": _returns,
             "payment_methods": _payments,
+            "support_email": _support_email,
+            "support_phone": _support_phone,
+            "business_hours": _hours,
         }
         return with_actions_alias({
             "response_text": store_reply,
