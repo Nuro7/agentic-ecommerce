@@ -578,6 +578,8 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
         "greeting_message": greeting,
         "enable_voice": os.getenv("SHOPIFY_ENABLE_VOICE", "true").lower() != "false",
         "enable_text": os.getenv("SHOPIFY_ENABLE_TEXT", "true").lower() != "false",
+        # Live Shopping Navigator: agent drives the storefront (search/product/cart)
+        "live_navigation": os.getenv("SHOPIFY_LIVE_NAV", "true").lower() != "false",
         "language": os.getenv("SHOPIFY_LANGUAGE", "en"),
         "platform": "shopify",
         "shop": shop or "",

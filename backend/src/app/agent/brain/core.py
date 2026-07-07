@@ -68,6 +68,7 @@ from .text_utils import (
     summarize_actions_for_voice,
     has_store_info_intent, has_shipping_intent, has_returns_intent,
     has_payment_intent, has_cart_view_intent, has_remove_intent,
+    append_live_navigation, client_platform,
 )
 
 logger = logging.getLogger(__name__)
@@ -659,6 +660,22 @@ async def ask_brain(
         if isinstance(result.get("ui_actions"), list)
         else result.get("actions", [])
     )
+
+    # ── Live Shopping Navigator ───────────────────────────────────────────────
+    # Drive the real storefront to match the answer (search page / product page /
+    # cart). Additive — inline cards still render; the widget's live_navigation
+    # flag decides whether to actually navigate. Never breaks a turn.
+    try:
+        append_live_navigation(
+            ui_actions,
+            store_context=store_context,
+            query=cleaned_message,
+            platform=client_platform(store_client),
+            current_url=str((page_context or {}).get("url") or ""),
+        )
+    except Exception as _nav_exc:
+        logger.debug("[turn %s] live-nav skipped: %s", turn_id, _nav_exc)
+
     inline_suggestions, response_text = extract_next_suggestions(response_text)
     suggested: List[str] = inline_suggestions or (
         result.get("suggested_replies")

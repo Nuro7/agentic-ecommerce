@@ -11,7 +11,12 @@
     enable_voice: true,
     language: 'en',
     platform: 'woocommerce',
+    live_navigation: true,
   };
+
+  // Live Shopping Navigator: agent-driven page navigation (search/product/cart).
+  // Enabled unless the merchant config explicitly sets live_navigation: false.
+  const LIVE_NAV = CFG.live_navigation !== false;
 
   // Platform flags — widget behaviour adapts based on this, never on hardcoded checks
   const IS_SHOPIFY = String(CFG.platform || '').toLowerCase() === 'shopify';
@@ -2238,15 +2243,32 @@
         break;
 
       case 'redirect_checkout':
-      case 'redirect':
+      case 'redirect': {
+        const p = act.payload || {};
+        // Live Shopping Navigator redirects carry a reason (search|product|cart).
+        const navReason = String(p.reason || '');
+        const isLiveNav = navReason === 'search' || navReason === 'product' || navReason === 'cart';
+        if (isLiveNav && !LIVE_NAV) break; // flag off → cards only, no navigation
+        if (isLiveNav) {
+          // Show the customer what the agent is doing, then persist a resume flag
+          // so the widget re-opens (and voice resumes) after the page loads.
+          const label = navReason === 'search'
+            ? ('🔎 Opening the store search for "' + (p.query || '') + '"…')
+            : (navReason === 'product'
+              ? '🛍️ Taking you to the product page…'
+              : '🛒 Taking you to your cart…');
+          try { addBubble('bot', label); } catch (e) { }
+          try { localStorage.setItem('_wa_reopen', '1'); } catch (e) { }
+        }
         setTimeout(() => {
-          if (IS_SHOPIFY && (!act.payload || !act.payload.url || act.payload.url === '/checkout')) {
+          if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
             goToCheckout();
           } else {
-            window.location.href = (act.payload && act.payload.url) || '/checkout';
+            window.location.href = p.url || '/checkout';
           }
-        }, 800);
+        }, p.delay_ms || 800);
         break;
+      }
 
       case 'show_store_info':
         renderStoreInfo(act.payload || {});
@@ -4829,4 +4851,17 @@
       checkoutObserver.disconnect();
     }, { once: true });
   }
+
+  // ── Live Shopping Navigator: resume after an agent-driven navigation ────────
+  // The redirect handler sets _wa_reopen just before moving the page. On the new
+  // page, re-open the panel via the normal reopen path — openPane() restores the
+  // conversation from localStorage and (voice-first mode) auto-resumes the live
+  // voice session, exactly like a manual re-open. Mic permission persists
+  // per-origin, so getUserMedia succeeds without a fresh gesture in most browsers.
+  try {
+    if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
+      localStorage.removeItem('_wa_reopen');
+      setTimeout(() => { try { if (!S.open) openPane(); } catch (e) { } }, 700);
+    }
+  } catch (e) { }
 })();
