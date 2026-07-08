@@ -317,6 +317,23 @@ def has_cart_view_intent(lower: str) -> bool:
     ]) or lower.strip() == "cart"
 
 
+# "go to cart" / "take me to the cart" / "open the cart page" → NAVIGATE the
+# storefront to the real cart page (not just render it inline). Kept separate
+# from has_cart_view_intent so "show my cart" still renders inline. This must be
+# checked in the brain's fast-intent gate (core.py) too — otherwise a classifier
+# that mislabels "go to the cart" as SEARCH sends it to product retrieval and the
+# LLM hallucinates ("I can't access the cart") instead of navigating.
+_CART_NAV_RE = re.compile(
+    r"\b(go to|take me to|open|navigate to|bring me to|send me to)\b[\w\s]{0,15}\bcart\b"
+    r"|\bcart page\b",
+    re.IGNORECASE,
+)
+
+
+def has_cart_nav_intent(lower: str) -> bool:
+    return bool(_CART_NAV_RE.search(lower))
+
+
 def has_checkout_intent(lower: str) -> bool:
     return any(token in lower for token in [
         "checkout", "proceed to checkout", "buy now", "place order", "order now",

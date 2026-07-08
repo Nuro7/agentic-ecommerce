@@ -67,7 +67,7 @@ from .text_utils import (
     extract_next_suggestions, cap_to_sentences, strip_function_markup,
     summarize_actions_for_voice,
     has_store_info_intent, has_shipping_intent, has_returns_intent,
-    has_payment_intent, has_cart_view_intent, has_remove_intent,
+    has_payment_intent, has_cart_view_intent, has_cart_nav_intent, has_remove_intent,
     append_live_navigation, client_platform,
 )
 
@@ -428,6 +428,7 @@ async def ask_brain(
         or has_returns_intent(lower_msg)
         or has_payment_intent(lower_msg)
         or has_cart_view_intent(lower_msg)
+        or has_cart_nav_intent(lower_msg)
         or has_remove_intent(lower_msg)
     ):
         try:
