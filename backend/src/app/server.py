@@ -144,6 +144,14 @@ async def lifespan(app: FastAPI):
     platform = settings.platform.lower()
     logger.info("Platform: %s", platform)
 
+    # `store_client` here is the LEGACY single-store env client. In multi-tenant
+    # mode it is only a fallback default handed to the orchestrator — real traffic
+    # builds a per-tenant client from the DB (tenants.shopify_access_token etc.).
+    # `store_configured` is True only when this env client's own credentials are
+    # set (a genuine single-store deployment). When False we skip every boot-time
+    # network probe below, because probing an unconfigured env client just emits
+    # noisy failures (e.g. a 401 from the Shopify Admin fallback) that have no
+    # bearing on real per-tenant requests.
     if platform == "shopify":
         from .integrations.shopify.client import ShopifyClient
         store_client = ShopifyClient(
@@ -153,8 +161,12 @@ async def lifespan(app: FastAPI):
             api_version=settings.shopify_api_version,
             redis_client=redis_client,
         )
-        if not settings.shopify_store_domain or not settings.shopify_storefront_token:
-            logger.warning("SHOPIFY_STORE_DOMAIN or SHOPIFY_STOREFRONT_TOKEN not set — product/cart APIs will fail")
+        store_configured = bool(settings.shopify_store_domain and settings.shopify_storefront_token)
+        if not store_configured:
+            logger.info(
+                "Legacy env Shopify credentials not set — multi-tenant mode uses "
+                "per-tenant clients from the DB; skipping single-store connectivity probe"
+            )
         else:
             try:
                 test = await store_client.search_products(query="", limit=1, in_stock_only=False)
@@ -168,8 +180,11 @@ async def lifespan(app: FastAPI):
             base_url=settings.custom_api_base_url,
             api_key=settings.custom_api_key,
         )
-        if not settings.custom_api_base_url:
-            logger.warning("CUSTOM_API_BASE_URL not set — product/cart APIs will fail")
+        store_configured = bool(settings.custom_api_base_url)
+        if not store_configured:
+            logger.info(
+                "CUSTOM_API_BASE_URL not set — per-tenant mode; skipping single-store connectivity probe"
+            )
         else:
             try:
                 test = await store_client.search_products(query="", limit=1, in_stock_only=False)
@@ -187,8 +202,11 @@ async def lifespan(app: FastAPI):
             redis_client=redis_client,
         )
         store_client = CachedWooCommerceClient(wc_client=_raw_woo, redis_client=redis_client)
-        if not settings.woocommerce_store_url:
-            logger.warning("WOOCOMMERCE_STORE_URL not set — product/cart APIs will fail")
+        store_configured = bool(settings.woocommerce_store_url)
+        if not store_configured:
+            logger.info(
+                "WOOCOMMERCE_STORE_URL not set — per-tenant mode; skipping single-store connectivity probe"
+            )
         else:
             try:
                 test = await store_client.search_products(query="", limit=1, in_stock_only=False)
@@ -196,11 +214,14 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 logger.error("WooCommerce connectivity FAILED: %s", exc)
 
-    # Pre-warm Redis cache (background)
-    try:
-        await store_client.pre_warm()
-    except Exception as exc:
-        logger.debug("Store pre-warm skipped: %s", exc)
+    # Pre-warm Redis cache — only for a genuinely-configured single-store env client.
+    # In multi-tenant mode the env client is an unused fallback, so pre-warming it
+    # just fires the same doomed probes (and the 401) we skipped above.
+    if store_configured:
+        try:
+            await store_client.pre_warm()
+        except Exception as exc:
+            logger.debug("Store pre-warm skipped: %s", exc)
 
     # Kick off an initial product sync so product_cache is populated on first boot.
     # Runs asynchronously via Celery — does not block startup.
