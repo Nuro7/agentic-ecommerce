@@ -30,12 +30,17 @@ logger = logging.getLogger(__name__)
 
 # ── GraphQL documents ─────────────────────────────────────────────────────────
 
-# Admin GraphQL query embedded inside the bulk mutation.
-# - featuredImage is a scalar-like field → inlined in the product JSONL line.
-# - options is a non-connection list       → inlined.
-# - priceRange / compareAtPriceRange      → inlined objects.
-# - variants is a Connection              → each variant gets its own JSONL line
-#   with __parentId pointing to the product GID.
+# Admin GraphQL query embedded inside the bulk mutation. NOTE: this runs against
+# the ADMIN API, so it must use Admin field names — NOT the Storefront ones:
+#   • Product has no `availableForSale` / `priceRange` → use `status`/`totalInventory`
+#     and `priceRangeV2`.
+#   • `compareAtPriceRange` exposes `minVariantCompareAtPrice` (not `minVariantPrice`).
+#   • ProductVariant `price` is a Money SCALAR (no `{ amount }`) and stock is
+#     `inventoryQuantity` (not `quantityAvailable`).
+# _parse_bulk_jsonl() remaps these back to the Storefront-shaped dict that
+# ShopifyClient._normalize_product_node() consumes, so the adapter pipeline is unchanged.
+# - featuredImage / priceRangeV2 / compareAtPriceRange / options → inlined objects.
+# - variants is a Connection → each variant gets its own JSONL line with __parentId.
 _BULK_INNER_QUERY = """
 {
   products {
@@ -45,14 +50,14 @@ _BULK_INNER_QUERY = """
         title
         handle
         description
-        availableForSale
+        status
         totalInventory
-        priceRange {
+        priceRangeV2 {
           minVariantPrice { amount currencyCode }
           maxVariantPrice { amount currencyCode }
         }
         compareAtPriceRange {
-          minVariantPrice { amount currencyCode }
+          minVariantCompareAtPrice { amount currencyCode }
         }
         featuredImage { url }
         options { name values }
@@ -61,8 +66,9 @@ _BULK_INNER_QUERY = """
             node {
               id
               availableForSale
-              quantityAvailable
-              price { amount }
+              inventoryQuantity
+              price
+              compareAtPrice
               selectedOptions { name value }
             }
           }
@@ -152,8 +158,11 @@ def _parse_bulk_jsonl(text: str) -> List[Dict[str, Any]]:
                 "node": {
                     "id":               v.get("id", ""),
                     "availableForSale": v.get("availableForSale", False),
-                    "quantityAvailable": v.get("quantityAvailable"),
-                    "price":            v.get("price") or {"amount": "0"},
+                    # Admin `inventoryQuantity` (Int) → Storefront `quantityAvailable`.
+                    "quantityAvailable": v.get("inventoryQuantity"),
+                    # Admin `price` is a Money SCALAR string → wrap as {amount} so the
+                    # normalizer's v["price"]["amount"] lookup keeps working.
+                    "price":            {"amount": str(v.get("price") or "0")},
                     "selectedOptions":  v.get("selectedOptions") or [],
                 }
             }
@@ -165,15 +174,29 @@ def _parse_bulk_jsonl(text: str) -> List[Dict[str, Any]]:
         image_url = featured.get("url", "")
         image_edges = [{"node": {"url": image_url}}] if image_url else []
 
+        # Admin API → Storefront-shaped remap for the normalizer:
+        #  • Admin Product has no `availableForSale` → derive from any purchasable
+        #    variant, else an ACTIVE status.
+        #  • `priceRangeV2` has the same MoneyV2 shape as Storefront `priceRange`.
+        #  • `compareAtPriceRange.minVariantCompareAtPrice` → `minVariantPrice`.
+        prod_available = any(v.get("availableForSale") for v in product_variants) or (
+            str(p.get("status") or "").upper() == "ACTIVE"
+        )
+        price_range = p.get("priceRangeV2") or {}
+        cap_raw = p.get("compareAtPriceRange") or {}
+        compare_at_range: Dict[str, Any] = {}
+        if cap_raw.get("minVariantCompareAtPrice"):
+            compare_at_range = {"minVariantPrice": cap_raw["minVariantCompareAtPrice"]}
+
         node: Dict[str, Any] = {
             "id":                  gid,
             "title":               p.get("title", ""),
             "handle":              p.get("handle", ""),
             "description":         p.get("description", ""),
-            "availableForSale":    p.get("availableForSale", False),
+            "availableForSale":    prod_available,
             "totalInventory":      p.get("totalInventory"),
-            "priceRange":          p.get("priceRange") or {},
-            "compareAtPriceRange": p.get("compareAtPriceRange") or {},
+            "priceRange":          price_range,
+            "compareAtPriceRange": compare_at_range,
             "options":             p.get("options") or [],
             "images":              {"edges": image_edges},
             "variants":            {"edges": variant_edges},
