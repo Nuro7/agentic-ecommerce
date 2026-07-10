@@ -794,18 +794,25 @@ async def _batch_embed(texts: list[str]) -> list[Optional[list[float]]]:
         from ...config import settings
         if not settings.openai_api_key:
             return [None] * len(texts)
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
+        # Bounded timeout + no SDK retries: embeddings are OPTIONAL (they power
+        # vector search; BM25 text search works without them). A slow/blocked
+        # connection to the embeddings API must NEVER hang the whole product
+        # sync — on timeout we upsert with NULL embeddings and move on.
+        client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=20.0, max_retries=1)
         results: list[Optional[list[float]]] = []
         for i in range(0, len(texts), _EMBED_BATCH):
             batch = texts[i: i + _EMBED_BATCH]
             try:
-                resp = await client.embeddings.create(
-                    model="text-embedding-3-small",
-                    input=[t[:512] for t in batch],
+                resp = await asyncio.wait_for(
+                    client.embeddings.create(
+                        model="text-embedding-3-small",
+                        input=[t[:512] for t in batch],
+                    ),
+                    timeout=30.0,
                 )
                 results.extend(d.embedding for d in resp.data)
             except Exception as exc:
-                logger.warning("Embed batch %d failed: %s", i // _EMBED_BATCH, exc)
+                logger.warning("Embed batch %d failed/timed out: %s", i // _EMBED_BATCH, exc)
                 results.extend([None] * len(batch))
         return results
     except ImportError:
