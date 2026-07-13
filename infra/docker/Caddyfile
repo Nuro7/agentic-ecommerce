@@ -1,0 +1,8 @@
+# Speako reverse proxy + automatic HTTPS.
+# Caddy fetches a free Let's Encrypt certificate automatically for this domain,
+# as long as (a) the domain's DNS A record points at this server's public IP and
+# (b) ports 80 and 443 are open. Just replace the domain below with yours.
+
+speako.yourdomain.com {
+    reverse_proxy web:8000
+}

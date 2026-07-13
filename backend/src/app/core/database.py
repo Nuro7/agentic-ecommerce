@@ -43,7 +43,18 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 # loop and dispose it before that loop exits, so nothing ever survives a task.
 @asynccontextmanager
 async def worker_session():
-    eng = create_async_engine(settings.database_url, poolclass=NullPool)
+    # statement_timeout bounds EVERY statement on this connection so a stalled or
+    # blocked query (e.g. a stuck upsert over a slow/long-distance DB link) fails
+    # fast with a clear "canceling statement due to statement timeout" instead of
+    # hanging the whole sync indefinitely. connect timeout guards the handshake.
+    eng = create_async_engine(
+        settings.database_url,
+        poolclass=NullPool,
+        connect_args={
+            "timeout": 15,
+            "server_settings": {"statement_timeout": "30000"},  # 30s per statement
+        },
+    )
     factory = async_sessionmaker(eng, expire_on_commit=False)
     try:
         async with factory() as session:

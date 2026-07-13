@@ -2,6 +2,18 @@ from pydantic import BaseModel, EmailStr, field_validator
 from datetime import datetime
 from typing import Optional
 
+_AI_PERSONALITIES = {"friendly", "professional", "luxury", "casual"}
+
+
+def _validate_ai_personality(v: Optional[str]) -> Optional[str]:
+    """Shared validator: lowercase-normalize; must be a known preset; None allowed."""
+    if v is None:
+        return v
+    v = v.lower().strip()
+    if v not in _AI_PERSONALITIES:
+        raise ValueError(f"ai_personality must be one of: {', '.join(sorted(_AI_PERSONALITIES))}")
+    return v
+
 
 class TenantCreate(BaseModel):
     name: str
@@ -29,6 +41,19 @@ class TenantCreate(BaseModel):
     returns_policy: Optional[str] = None
     payment_methods: Optional[str] = None
     about_text: Optional[str] = None
+
+    # Per-tenant AI config (optional — NULL = default assistant behavior)
+    support_email: Optional[str] = None
+    support_phone: Optional[str] = None
+    business_hours: Optional[str] = None
+    ai_personality: Optional[str] = None
+    greeting_message: Optional[str] = None
+    logo_url: Optional[str] = None
+
+    @field_validator("ai_personality")
+    @classmethod
+    def validate_ai_personality(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_ai_personality(v)
 
     @field_validator("platform")
     @classmethod
@@ -66,6 +91,19 @@ class TenantUpdate(BaseModel):
     returns_policy: Optional[str] = None
     payment_methods: Optional[str] = None
     about_text: Optional[str] = None
+
+    # Per-tenant AI config
+    support_email: Optional[str] = None
+    support_phone: Optional[str] = None
+    business_hours: Optional[str] = None
+    ai_personality: Optional[str] = None
+    greeting_message: Optional[str] = None
+    logo_url: Optional[str] = None
+
+    @field_validator("ai_personality")
+    @classmethod
+    def validate_ai_personality(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_ai_personality(v)
 
     @field_validator("platform")
     @classmethod

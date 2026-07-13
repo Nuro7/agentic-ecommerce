@@ -53,6 +53,15 @@ async def run_llm_agent(
     if not ANY_LLM_AVAILABLE:
         return None
 
+    # Merchant-selected personality (tenant column, migration 0016). Cached 5 min;
+    # never raises — all-None on failure means the default persona.
+    try:
+        from ...modules.tenants.service import get_store_config_for_tenant
+        _cfg = await get_store_config_for_tenant(tenant_id)
+        _personality = _cfg.get("ai_personality")
+    except Exception:
+        _personality = None
+
     system_prompt = build_system_prompt(
         store_context=store_context,
         cart=cart,
@@ -60,6 +69,7 @@ async def run_llm_agent(
         language=language,
         address_state=AddressCollectionState.IDLE,
         store_catalog=store_catalog,
+        personality=_personality,
     )
 
     try:

@@ -6,6 +6,103 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
+# ── Live Shopping Navigator URL helpers (pure, no I/O) ───────────────────────
+# The assistant drives the real storefront: search page / product page / cart.
+# Base URL comes from the widget (store_context["url"]); paths are the
+# platform's universal conventions; product URLs are synced permalinks.
+
+def client_platform(store_client) -> str:
+    """Best-effort platform from the store client's class name."""
+    name = type(store_client).__name__.lower()
+    if "woo" in name:
+        return "woocommerce"
+    if "shopify" in name:
+        return "shopify"
+    return "custom"
+
+
+def storefront_search_url(store_url, platform: str, query) -> Optional[str]:
+    """Universal storefront search URL: Shopify /search?q=, Woo /?s=&post_type=product."""
+    from urllib.parse import quote_plus
+    base = str(store_url or "").strip().rstrip("/")
+    q = str(query or "").strip()
+    if not base or not q:
+        return None
+    if platform == "woocommerce":
+        return f"{base}/?s={quote_plus(q)}&post_type=product"
+    return f"{base}/search?q={quote_plus(q)}"
+
+
+def product_page_url(product) -> Optional[str]:
+    url = str(((product or {}) if isinstance(product, dict) else {}).get("permalink") or "").strip()
+    return url or None
+
+
+def append_live_navigation(
+    ui_actions,
+    *,
+    store_context,
+    query,
+    platform: str,
+    current_url: str = "",
+) -> None:
+    """Append ONE `redirect` ui_action matching this turn's answer (in place).
+
+    Priority: add_to_cart → cart page; a single shown product with a permalink
+    → its product page; any shown products → the storefront search page with the
+    normalized spoken query. Skips when a redirect/checkout action is already
+    present, when the target equals the page the customer is on, or when no
+    target URL can be built. Additive only — inline cards always still render;
+    the widget's live_navigation flag decides whether to actually navigate.
+    """
+    if not isinstance(ui_actions, list):
+        return
+    types_present = {a.get("type") for a in ui_actions if isinstance(a, dict)}
+    if types_present & {"redirect", "redirect_checkout", "redirect_checkout_with_address"}:
+        return  # navigation already decided this turn
+
+    ctx = store_context if isinstance(store_context, dict) else {}
+    base_url = str(ctx.get("url") or "").strip()
+    here = str(current_url or "").strip().rstrip("/")
+
+    def _push(url: str, reason: str, nav_query: str = "") -> None:
+        if not url or url.rstrip("/") == here:
+            return
+        payload: Dict[str, Any] = {"url": url, "reason": reason, "delay_ms": 1500}
+        if nav_query:
+            payload["query"] = nav_query
+        ui_actions.append({"type": "redirect", "payload": payload})
+
+    # 1. Item just added → cart page
+    if "add_to_cart" in types_present:
+        cart_url = str(ctx.get("cart_url") or "").strip()
+        if not cart_url and base_url:
+            cart_url = base_url.rstrip("/") + "/cart"
+        _push(cart_url, "cart")
+        return
+
+    # Collect shown products
+    products = []
+    for a in ui_actions:
+        if isinstance(a, dict) and a.get("type") in ("show_products", "show_product_detail"):
+            payload = a.get("payload") or {}
+            items = payload.get("products") or ([payload["product"]] if payload.get("product") else [])
+            products.extend(p for p in items if isinstance(p, dict))
+    if not products:
+        return
+
+    # 2. Exactly one product with a permalink → its page
+    if len(products) == 1:
+        purl = product_page_url(products[0])
+        if purl:
+            _push(purl, "product")
+            return
+
+    # 3. Multiple results → storefront search reflecting the spoken requirement
+    nav_q = normalize_discovery_query(str(query or "")) or str(query or "").strip()
+    _push(storefront_search_url(base_url, platform, nav_q) or "", "search", nav_q)
+
+
 # ── Query normalisation ───────────────────────────────────────────────────────
 
 def normalize_discovery_query(message: str) -> str:
@@ -218,6 +315,23 @@ def has_cart_view_intent(lower: str) -> bool:
     return any(token in lower for token in [
         "show cart", "my cart", "view cart", "cart total", "open cart",
     ]) or lower.strip() == "cart"
+
+
+# "go to cart" / "take me to the cart" / "open the cart page" → NAVIGATE the
+# storefront to the real cart page (not just render it inline). Kept separate
+# from has_cart_view_intent so "show my cart" still renders inline. This must be
+# checked in the brain's fast-intent gate (core.py) too — otherwise a classifier
+# that mislabels "go to the cart" as SEARCH sends it to product retrieval and the
+# LLM hallucinates ("I can't access the cart") instead of navigating.
+_CART_NAV_RE = re.compile(
+    r"\b(go to|take me to|open|navigate to|bring me to|send me to)\b[\w\s]{0,15}\bcart\b"
+    r"|\bcart page\b",
+    re.IGNORECASE,
+)
+
+
+def has_cart_nav_intent(lower: str) -> bool:
+    return bool(_CART_NAV_RE.search(lower))
 
 
 def has_checkout_intent(lower: str) -> bool:

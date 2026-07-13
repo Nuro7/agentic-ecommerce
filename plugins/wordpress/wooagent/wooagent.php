@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('WOOAGENT_VERSION', '1.4.33');
+define('WOOAGENT_VERSION', '1.5.0');
 define('WOOAGENT_PLUGIN_FILE', __FILE__);
 define('WOOAGENT_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WOOAGENT_PLUGIN_URL', plugin_dir_url(__FILE__));

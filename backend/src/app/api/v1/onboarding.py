@@ -87,6 +87,20 @@ class OnboardRequest(BaseModel):
     payment_methods: Optional[str] = None
     about_text: Optional[str] = None
 
+    # Optional per-tenant AI config (NULL = default assistant behavior)
+    support_email: Optional[str] = None
+    support_phone: Optional[str] = None
+    business_hours: Optional[str] = None
+    ai_personality: Optional[str] = None  # friendly | professional | luxury | casual
+    greeting_message: Optional[str] = None
+    logo_url: Optional[str] = None
+
+    @field_validator("ai_personality")
+    @classmethod
+    def validate_ai_personality(cls, v: Optional[str]) -> Optional[str]:
+        from ...modules.tenants.schemas import _validate_ai_personality
+        return _validate_ai_personality(v)
+
     @field_validator("platform")
     @classmethod
     def validate_platform(cls, v: str) -> str:
@@ -184,6 +198,12 @@ async def onboard_merchant(
         returns_policy=data.returns_policy,
         payment_methods=data.payment_methods,
         about_text=data.about_text,
+        support_email=data.support_email,
+        support_phone=data.support_phone,
+        business_hours=data.business_hours,
+        ai_personality=data.ai_personality,
+        greeting_message=data.greeting_message,
+        logo_url=data.logo_url,
     )
 
     try:

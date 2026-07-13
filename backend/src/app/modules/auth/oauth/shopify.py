@@ -542,9 +542,10 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
     """
     backend_url = _get_backend_url(request)
 
-    # Load per-tenant name from DB; no global fallback (STORE_NAME removed from settings)
+    # Load per-tenant name/config from DB; no global fallback (STORE_NAME removed from settings)
     store_name = ""
     currency = _settings.store_currency
+    tenant_greeting = ""
 
     if shop:
         try:
@@ -556,11 +557,17 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
                 tenant = result.scalar_one_or_none()
                 if tenant:
                     store_name = tenant.name or ""
+                    tenant_greeting = (tenant.greeting_message or "").strip()
+                    if tenant.currency_symbol:
+                        currency = tenant.currency_symbol
         except Exception:
             pass
 
     primary_color = os.getenv("SHOPIFY_WIDGET_COLOR", "#6366f1")
-    greeting = os.getenv("SHOPIFY_GREETING", "Hi! I'm Aria, your AI shopping assistant. Ask me anything!")
+    # Merchant-customized greeting (tenant column) → env → default.
+    greeting = tenant_greeting or os.getenv(
+        "SHOPIFY_GREETING", "Hi! I'm Aria, your AI shopping assistant. Ask me anything!"
+    )
 
     config = {
         "agent_api_url": backend_url,
@@ -571,6 +578,8 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
         "greeting_message": greeting,
         "enable_voice": os.getenv("SHOPIFY_ENABLE_VOICE", "true").lower() != "false",
         "enable_text": os.getenv("SHOPIFY_ENABLE_TEXT", "true").lower() != "false",
+        # Live Shopping Navigator: agent drives the storefront (search/product/cart)
+        "live_navigation": os.getenv("SHOPIFY_LIVE_NAV", "true").lower() != "false",
         "language": os.getenv("SHOPIFY_LANGUAGE", "en"),
         "platform": "shopify",
         "shop": shop or "",

@@ -124,7 +124,14 @@ def _build_system_prompt(store_config: dict | None = None) -> str:
     returns    = cfg.get("returns_policy") or os.environ.get("STORE_RETURNS_POLICY", "Returns accepted within 7 days.")
     payments   = cfg.get("payment_methods") or os.environ.get("STORE_PAYMENT_METHODS", "UPI, Card, Cash on Delivery")
 
+    # Merchant-selected personality overlay (same presets as the brain prompt).
+    from ....agent.prompts.system import _PERSONALITY_LINES
+    personality_line = _PERSONALITY_LINES.get(
+        (cfg.get("ai_personality") or "").lower().strip(), ""
+    )
+
     return f"""You are Aria, the voice shopping assistant for {store_name}.
+{personality_line}
 
 ═══════════════════════════════════════════════════════
 RULE 1 — YOU HAVE ONE JOB: VOICE INTERFACE

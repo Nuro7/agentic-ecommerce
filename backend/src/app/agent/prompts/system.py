@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+# Merchant-selected personality presets (tenants.ai_personality, migration 0016).
+# Appended to the tone instruction; None/unknown = default Aria persona unchanged.
+_PERSONALITY_LINES: dict[str, str] = {
+    "friendly": "PERSONALITY: Extra warm and upbeat — talk like a cheerful close friend who's genuinely excited to help.",
+    "professional": "PERSONALITY: Polished and precise — courteous, efficient, no slang, no filler.",
+    "luxury": "PERSONALITY: Refined concierge — elegant, unhurried, understated; make the customer feel like a VIP.",
+    "casual": "PERSONALITY: Super relaxed and informal — short breezy sentences, everyday words, zero formality.",
+}
+
 
 def build_system_prompt(
     store_context: dict,
@@ -8,6 +17,7 @@ def build_system_prompt(
     language: str = "en",
     address_state: str = "idle",
     store_catalog: str = "",
+    personality: str | None = None,
 ) -> str:
     store_name = store_context.get("store_name", "this store")
     currency_symbol = store_context.get("currency_symbol", "₹")
@@ -40,6 +50,11 @@ def build_system_prompt(
         "bn": "Live call. Bangla-y natural bhabe bolo — ekta bondhur moto phone-e saahajyo koro. Short, warm.",
         "kn": "Live call. Kannada-alli natural agi maatadi — geleya phone-alli sahaya maaduvanta. Short, warm.",
     }.get(language, "You are on a live phone call. Talk like a warm, knowledgeable friend — natural, casual, direct.")
+
+    # Merchant-selected personality overlay (None/unknown = default persona).
+    _p_line = _PERSONALITY_LINES.get((personality or "").lower().strip())
+    if _p_line:
+        lang_instruction += "\n" + _p_line
 
     catalog_section = f"\nSTORE CATALOG:\n{store_catalog}\n" if store_catalog else ""
 

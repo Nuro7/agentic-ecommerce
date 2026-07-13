@@ -26,23 +26,17 @@ from .text_utils import (
     has_payment_intent,
     has_store_info_intent,
     has_cart_view_intent,
+    has_cart_nav_intent,
     has_remove_intent,
 )
 
 logger = logging.getLogger(__name__)
 
-# "go to cart" / "take me to the cart" / "open the cart page" → navigate the
-# storefront to the real cart page (not just render the cart inline). Kept
-# separate from has_cart_view_intent so "show my cart" still renders inline.
-_CART_NAV_RE = re.compile(
-    r"\b(go to|take me to|open|navigate to|bring me to|send me to)\b[\w\s]{0,15}\bcart\b"
-    r"|\bcart page\b",
-    re.IGNORECASE,
-)
 
-
+# Backwards-compatible local alias — the matcher now lives in text_utils so the
+# brain's fast-intent gate (core.py) can share it.
 def _wants_cart_navigation(lower: str) -> bool:
-    return bool(_CART_NAV_RE.search(lower))
+    return has_cart_nav_intent(lower)
 
 
 async def safe_get_cart(
@@ -114,6 +108,9 @@ async def run_fast_intent(
         _returns = cfg.get("returns_policy") or os.getenv("STORE_RETURNS_POLICY", "")
         _payments = cfg.get("payment_methods") or os.getenv("STORE_PAYMENT_METHODS", "")
         _currency = cfg.get("currency_symbol") or os.getenv("STORE_CURRENCY", "₹")
+        _support_email = cfg.get("support_email") or ""
+        _support_phone = cfg.get("support_phone") or ""
+        _hours = cfg.get("business_hours") or ""
         parts = [f"Welcome to {_sname}!"]
         if _about:
             parts.append(_about)
@@ -123,6 +120,11 @@ async def run_fast_intent(
             parts.append(_returns)
         if _payments:
             parts.append(f"We accept: {_payments}.")
+        if _support_email or _support_phone:
+            _contact = " or ".join(c for c in (_support_email, _support_phone) if c)
+            parts.append(f"Contact us: {_contact}.")
+        if _hours:
+            parts.append(f"Hours: {_hours}.")
         store_reply = " ".join(parts)
         store_info_payload = {
             "store_name": _sname,
@@ -131,6 +133,9 @@ async def run_fast_intent(
             "shipping": _shipping,
             "returns": _returns,
             "payment_methods": _payments,
+            "support_email": _support_email,
+            "support_phone": _support_phone,
+            "business_hours": _hours,
         }
         return with_actions_alias({
             "response_text": store_reply,
