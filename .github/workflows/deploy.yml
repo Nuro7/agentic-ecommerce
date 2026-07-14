@@ -25,6 +25,6 @@ jobs:
             cd ~/agentic-ecommerce
             git fetch --all
             git reset --hard origin/feat/live-navigation
-            docker compose -f infra/docker/docker-compose.prod.yml up -d --build
+            docker compose --env-file .env -f infra/docker/docker-compose.prod.yml up -d --build
             docker image prune -f
-            docker compose -f infra/docker/docker-compose.prod.yml ps
+            docker compose --env-file .env -f infra/docker/docker-compose.prod.yml ps
