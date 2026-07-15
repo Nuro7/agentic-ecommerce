@@ -2,6 +2,7 @@ import base64
 import hmac
 import hashlib
 import json
+import logging
 from fastapi import APIRouter, Depends, Request, HTTPException, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from .service import WebhookService
@@ -9,6 +10,7 @@ from ...core.database import get_db
 from ...config import settings
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+logger = logging.getLogger(__name__)
 
 
 def _verify_hex_signature(body: bytes, signature: str | None, *, header: str) -> None:
@@ -103,6 +105,42 @@ async def shopify_webhook(
     except (ValueError, UnicodeDecodeError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON body")
     await WebhookService(db).ingest(tenant_id, x_shopify_topic or "unknown", "shopify", payload)
+    return {"received": True}
+
+
+@router.post("/shopify/compliance")
+async def shopify_compliance_webhook(
+    request: Request,
+    x_shopify_topic: str = Header(None),
+    x_shopify_hmac_sha256: str = Header(None),
+    x_shopify_shop_domain: str = Header(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Shopify mandatory GDPR webhooks (customers/data_request, customers/redact,
+    shop/redact). Configured as a single URL in the Partner Dashboard, so there is
+    no tenant_id in the path — resolve the tenant by shop domain. Always returns
+    200 (a Shopify requirement), even for an unknown/already-removed shop."""
+    body = await request.body()
+    _verify_shopify_signature(body, x_shopify_hmac_sha256)
+    payload = _parse_json_body(body)
+    topic = x_shopify_topic or "unknown"
+
+    shop_domain = (payload.get("shop_domain") or x_shopify_shop_domain or "").strip().lower()
+    from ...modules.tenants.models import Tenant
+    from sqlalchemy import select, func
+    tenant = None
+    if shop_domain:
+        res = await db.execute(
+            select(Tenant).where(func.lower(Tenant.shopify_domain) == shop_domain)
+        )
+        tenant = res.scalar_one_or_none()
+
+    if tenant:
+        # Reuse the durable ingest → 60s-worker pipeline; the registered compliance
+        # handlers do the actual redaction under the tenant's RLS scope.
+        await WebhookService(db).ingest(tenant.id, topic, "shopify", payload)
+    else:
+        logger.info("Compliance webhook for unknown shop: topic=%s shop=%s", topic, shop_domain)
     return {"received": True}
 
 

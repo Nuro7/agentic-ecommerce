@@ -1,0 +1,30 @@
+name: Deploy to Lightsail
+
+# Auto-deploy: on every push to main (the production branch), SSH into the
+# Lightsail box, pull the latest code, and rebuild/restart the stack.
+# Workflow: feature branch -> PR -> merge to main -> this deploys automatically.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}   # lets you trigger a deploy manually from the Actions tab
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.LIGHTSAIL_HOST }}
+          username: ${{ secrets.LIGHTSAIL_USER }}
+          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          command_timeout: 40m       # first build installs deps; later builds are cached
+          script: |
+            set -e
+            cd ~/agentic-ecommerce
+            git fetch --all
+            git reset --hard origin/main
+            docker compose --env-file .env -f infra/docker/docker-compose.prod.yml up -d --build
+            docker image prune -f
+            docker compose --env-file .env -f infra/docker/docker-compose.prod.yml ps

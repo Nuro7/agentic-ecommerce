@@ -147,6 +147,10 @@ SHOPIFY_WEBHOOK_TOPICS = (
     "products/create",
     "products/update",
     "products/delete",
+    "orders/create",
+    "orders/paid",
+    "orders/updated",
+    "orders/cancelled",
     "app/uninstalled",
 )
 

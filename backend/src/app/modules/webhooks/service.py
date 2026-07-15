@@ -89,13 +89,103 @@ def _register(topic: str):
 
 # ── Shopify handlers ──────────────────────────────────────────────────────────
 
+def _map_order_status(payload: dict) -> str:
+    """Map a Shopify order's financial state to our orders.status.
+
+    Analytics counts only status == "completed" toward revenue/purchases, so a
+    paid order must land as "completed". Cancelled/refunded/voided → "cancelled";
+    everything else (authorized, pending, unpaid) stays "pending".
+    """
+    if payload.get("cancelled_at"):
+        return "cancelled"
+    fin = str(payload.get("financial_status") or "").lower()
+    if fin in ("paid", "partially_refunded"):
+        return "completed"
+    if fin in ("refunded", "voided"):
+        return "cancelled"
+    return "pending"
+
+
+def _parse_order_ts(raw) -> datetime:
+    """Parse a Shopify ISO timestamp; fall back to now() so a bad value never
+    blocks capture. Analytics windows revenue on orders.created_at, so we keep
+    the store's real order time when available."""
+    if raw:
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pass
+    return datetime.now(timezone.utc)
+
+
+async def _upsert_order(tenant_id: str, payload: dict, *, status_override: "str | None" = None) -> None:
+    """Idempotently persist a Shopify order into the orders table.
+
+    Keyed on (tenant_id, platform_order_id) so redeliveries and the
+    create/paid/updated topics for the same order upsert one row. Opens its own
+    session and sets the RLS GUC — orders is RLS-forced, so an unscoped INSERT
+    would be rejected by the tenant_isolation WITH CHECK policy.
+    """
+    platform_order_id = str(payload.get("id") or payload.get("order_id") or "").strip()
+    if not platform_order_id:
+        logger.warning("Order webhook with no id: tenant=%s", tenant_id)
+        return
+
+    total = _parse_price(payload.get("total_price") or payload.get("current_total_price")) or 0.0
+    currency = str(payload.get("currency") or payload.get("presentment_currency") or "USD")
+    email = (
+        payload.get("email")
+        or payload.get("contact_email")
+        or (payload.get("customer") or {}).get("email")
+    )
+    status = status_override or _map_order_status(payload)
+    created_at = _parse_order_ts(payload.get("created_at"))
+
+    from ...core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        await set_tenant_guc(db, tenant_id)
+        await db.execute(text("""
+            INSERT INTO orders (
+                id, tenant_id, platform_order_id, status, total, currency,
+                customer_email, created_at, updated_at
+            ) VALUES (
+                :id, :tenant_id, :platform_order_id, :status, :total, :currency,
+                :customer_email, :created_at, now()
+            )
+            ON CONFLICT (tenant_id, platform_order_id) DO UPDATE SET
+                status         = EXCLUDED.status,
+                total          = EXCLUDED.total,
+                currency       = EXCLUDED.currency,
+                customer_email = EXCLUDED.customer_email,
+                updated_at     = now()
+        """), {
+            "id":                str(uuid.uuid4()),
+            "tenant_id":         tenant_id,
+            "platform_order_id": platform_order_id,
+            "status":            status,
+            "total":             total,
+            "currency":          currency,
+            "customer_email":    email,
+            "created_at":        created_at,
+        })
+        await db.commit()
+
+
 @_register("orders/create")
 @_register("orders/updated")
+@_register("orders/paid")
 async def _handle_order(tenant_id: str, payload: dict) -> bool:
-    """Invalidate order cache and log the event."""
+    """Capture/refresh a Shopify order in the orders table (feeds analytics)."""
     order_id = payload.get("id") or payload.get("order_id", "")
     logger.info("Webhook order event: tenant=%s order_id=%s", tenant_id, order_id)
-    # Future: update orders table row, push real-time notification
+    try:
+        await _upsert_order(tenant_id, payload)
+    except Exception as exc:
+        # Match the module convention: log + ack so a bad payload can't jam the
+        # 60s queue. ERROR level so Sentry surfaces it once activated.
+        logger.error(
+            "Order capture failed tenant=%s order=%s: %s", tenant_id, order_id, exc, exc_info=True
+        )
     return True
 
 
@@ -103,6 +193,12 @@ async def _handle_order(tenant_id: str, payload: dict) -> bool:
 async def _handle_order_cancelled(tenant_id: str, payload: dict) -> bool:
     order_id = payload.get("id", "")
     logger.info("Webhook order cancelled: tenant=%s order_id=%s", tenant_id, order_id)
+    try:
+        await _upsert_order(tenant_id, payload, status_override="cancelled")
+    except Exception as exc:
+        logger.error(
+            "Order cancel capture failed tenant=%s order=%s: %s", tenant_id, order_id, exc, exc_info=True
+        )
     return True
 
 
@@ -148,6 +244,75 @@ async def _handle_app_uninstalled(tenant_id: str, payload: dict) -> bool:
     shop = payload.get("domain") or payload.get("myshopify_domain", "")
     logger.warning("App uninstalled: tenant=%s shop=%s", tenant_id, shop)
     # Future: set tenant.is_active = False, cancel subscription
+    return True
+
+
+# ── Shopify mandatory GDPR / compliance webhooks ─────────────────────────────
+# Required for Shopify app-store approval. Speako stores minimal customer PII:
+# only `customer_email` on captured orders (chat sessions are keyed by an opaque
+# session id, not by customer). So "redact a customer" = null that email.
+
+@_register("customers/data_request")
+async def _handle_customers_data_request(tenant_id: str, payload: dict) -> bool:
+    """A customer requested their stored data. Speako keeps only the customer's
+    email on captured orders (no profile/marketing/behavioural store), so there
+    is nothing to export beyond that. Log the request so the merchant can fulfil
+    it; the merchant is the data controller."""
+    customer = payload.get("customer") or {}
+    email = customer.get("email") or payload.get("email")
+    req_id = (payload.get("data_request") or {}).get("id")
+    logger.info(
+        "GDPR customers/data_request: tenant=%s request_id=%s has_email=%s",
+        tenant_id, req_id, bool(email),
+    )
+    return True
+
+
+@_register("customers/redact")
+async def _handle_customers_redact(tenant_id: str, payload: dict) -> bool:
+    """Erase a customer's PII. The only customer PII Speako holds is
+    orders.customer_email, so null it for every order matching that email."""
+    customer = payload.get("customer") or {}
+    email = customer.get("email") or payload.get("email")
+    logger.info("GDPR customers/redact: tenant=%s has_email=%s", tenant_id, bool(email))
+    if not email:
+        return True
+    from ...core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        await set_tenant_guc(db, tenant_id)  # orders is RLS-forced
+        await db.execute(
+            text("UPDATE orders SET customer_email = NULL "
+                 "WHERE tenant_id = :tid AND customer_email = :email"),
+            {"tid": tenant_id, "email": email},
+        )
+        await db.commit()
+    return True
+
+
+@_register("shop/redact")
+async def _handle_shop_redact(tenant_id: str, payload: dict) -> bool:
+    """48h after uninstall: erase all of the shop's data and revoke its token."""
+    logger.warning("GDPR shop/redact: erasing all data for tenant=%s", tenant_id)
+    from ...core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        await set_tenant_guc(db, tenant_id)  # scope the RLS-forced deletes
+        # messages has no tenant_id — scope via its parent conversations first.
+        await db.execute(
+            text("DELETE FROM messages WHERE conversation_id IN "
+                 "(SELECT id FROM conversations WHERE tenant_id = :tid)"),
+            {"tid": tenant_id},
+        )
+        await db.execute(text("DELETE FROM orders WHERE tenant_id = :tid"), {"tid": tenant_id})
+        await db.execute(text("DELETE FROM conversations WHERE tenant_id = :tid"), {"tid": tenant_id})
+        await db.execute(text("DELETE FROM cart_items WHERE tenant_id = :tid"), {"tid": tenant_id})
+        await db.execute(text("DELETE FROM product_cache WHERE tenant_id = :tid"), {"tid": tenant_id})
+        # tenants is RLS-excluded: revoke the stored token + deactivate.
+        await db.execute(
+            text("UPDATE tenants SET shopify_access_token = NULL, is_active = false "
+                 "WHERE id = :tid"),
+            {"tid": tenant_id},
+        )
+        await db.commit()
     return True
 
 
