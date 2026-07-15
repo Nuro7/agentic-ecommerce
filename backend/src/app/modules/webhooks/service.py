@@ -89,13 +89,103 @@ def _register(topic: str):
 
 # ── Shopify handlers ──────────────────────────────────────────────────────────
 
+def _map_order_status(payload: dict) -> str:
+    """Map a Shopify order's financial state to our orders.status.
+
+    Analytics counts only status == "completed" toward revenue/purchases, so a
+    paid order must land as "completed". Cancelled/refunded/voided → "cancelled";
+    everything else (authorized, pending, unpaid) stays "pending".
+    """
+    if payload.get("cancelled_at"):
+        return "cancelled"
+    fin = str(payload.get("financial_status") or "").lower()
+    if fin in ("paid", "partially_refunded"):
+        return "completed"
+    if fin in ("refunded", "voided"):
+        return "cancelled"
+    return "pending"
+
+
+def _parse_order_ts(raw) -> datetime:
+    """Parse a Shopify ISO timestamp; fall back to now() so a bad value never
+    blocks capture. Analytics windows revenue on orders.created_at, so we keep
+    the store's real order time when available."""
+    if raw:
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            pass
+    return datetime.now(timezone.utc)
+
+
+async def _upsert_order(tenant_id: str, payload: dict, *, status_override: "str | None" = None) -> None:
+    """Idempotently persist a Shopify order into the orders table.
+
+    Keyed on (tenant_id, platform_order_id) so redeliveries and the
+    create/paid/updated topics for the same order upsert one row. Opens its own
+    session and sets the RLS GUC — orders is RLS-forced, so an unscoped INSERT
+    would be rejected by the tenant_isolation WITH CHECK policy.
+    """
+    platform_order_id = str(payload.get("id") or payload.get("order_id") or "").strip()
+    if not platform_order_id:
+        logger.warning("Order webhook with no id: tenant=%s", tenant_id)
+        return
+
+    total = _parse_price(payload.get("total_price") or payload.get("current_total_price")) or 0.0
+    currency = str(payload.get("currency") or payload.get("presentment_currency") or "USD")
+    email = (
+        payload.get("email")
+        or payload.get("contact_email")
+        or (payload.get("customer") or {}).get("email")
+    )
+    status = status_override or _map_order_status(payload)
+    created_at = _parse_order_ts(payload.get("created_at"))
+
+    from ...core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        await set_tenant_guc(db, tenant_id)
+        await db.execute(text("""
+            INSERT INTO orders (
+                id, tenant_id, platform_order_id, status, total, currency,
+                customer_email, created_at, updated_at
+            ) VALUES (
+                :id, :tenant_id, :platform_order_id, :status, :total, :currency,
+                :customer_email, :created_at, now()
+            )
+            ON CONFLICT (tenant_id, platform_order_id) DO UPDATE SET
+                status         = EXCLUDED.status,
+                total          = EXCLUDED.total,
+                currency       = EXCLUDED.currency,
+                customer_email = EXCLUDED.customer_email,
+                updated_at     = now()
+        """), {
+            "id":                str(uuid.uuid4()),
+            "tenant_id":         tenant_id,
+            "platform_order_id": platform_order_id,
+            "status":            status,
+            "total":             total,
+            "currency":          currency,
+            "customer_email":    email,
+            "created_at":        created_at,
+        })
+        await db.commit()
+
+
 @_register("orders/create")
 @_register("orders/updated")
+@_register("orders/paid")
 async def _handle_order(tenant_id: str, payload: dict) -> bool:
-    """Invalidate order cache and log the event."""
+    """Capture/refresh a Shopify order in the orders table (feeds analytics)."""
     order_id = payload.get("id") or payload.get("order_id", "")
     logger.info("Webhook order event: tenant=%s order_id=%s", tenant_id, order_id)
-    # Future: update orders table row, push real-time notification
+    try:
+        await _upsert_order(tenant_id, payload)
+    except Exception as exc:
+        # Match the module convention: log + ack so a bad payload can't jam the
+        # 60s queue. ERROR level so Sentry surfaces it once activated.
+        logger.error(
+            "Order capture failed tenant=%s order=%s: %s", tenant_id, order_id, exc, exc_info=True
+        )
     return True
 
 
@@ -103,6 +193,12 @@ async def _handle_order(tenant_id: str, payload: dict) -> bool:
 async def _handle_order_cancelled(tenant_id: str, payload: dict) -> bool:
     order_id = payload.get("id", "")
     logger.info("Webhook order cancelled: tenant=%s order_id=%s", tenant_id, order_id)
+    try:
+        await _upsert_order(tenant_id, payload, status_override="cancelled")
+    except Exception as exc:
+        logger.error(
+            "Order cancel capture failed tenant=%s order=%s: %s", tenant_id, order_id, exc, exc_info=True
+        )
     return True
 
 
