@@ -247,6 +247,75 @@ async def _handle_app_uninstalled(tenant_id: str, payload: dict) -> bool:
     return True
 
 
+# ── Shopify mandatory GDPR / compliance webhooks ─────────────────────────────
+# Required for Shopify app-store approval. Speako stores minimal customer PII:
+# only `customer_email` on captured orders (chat sessions are keyed by an opaque
+# session id, not by customer). So "redact a customer" = null that email.
+
+@_register("customers/data_request")
+async def _handle_customers_data_request(tenant_id: str, payload: dict) -> bool:
+    """A customer requested their stored data. Speako keeps only the customer's
+    email on captured orders (no profile/marketing/behavioural store), so there
+    is nothing to export beyond that. Log the request so the merchant can fulfil
+    it; the merchant is the data controller."""
+    customer = payload.get("customer") or {}
+    email = customer.get("email") or payload.get("email")
+    req_id = (payload.get("data_request") or {}).get("id")
+    logger.info(
+        "GDPR customers/data_request: tenant=%s request_id=%s has_email=%s",
+        tenant_id, req_id, bool(email),
+    )
+    return True
+
+
+@_register("customers/redact")
+async def _handle_customers_redact(tenant_id: str, payload: dict) -> bool:
+    """Erase a customer's PII. The only customer PII Speako holds is
+    orders.customer_email, so null it for every order matching that email."""
+    customer = payload.get("customer") or {}
+    email = customer.get("email") or payload.get("email")
+    logger.info("GDPR customers/redact: tenant=%s has_email=%s", tenant_id, bool(email))
+    if not email:
+        return True
+    from ...core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        await set_tenant_guc(db, tenant_id)  # orders is RLS-forced
+        await db.execute(
+            text("UPDATE orders SET customer_email = NULL "
+                 "WHERE tenant_id = :tid AND customer_email = :email"),
+            {"tid": tenant_id, "email": email},
+        )
+        await db.commit()
+    return True
+
+
+@_register("shop/redact")
+async def _handle_shop_redact(tenant_id: str, payload: dict) -> bool:
+    """48h after uninstall: erase all of the shop's data and revoke its token."""
+    logger.warning("GDPR shop/redact: erasing all data for tenant=%s", tenant_id)
+    from ...core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        await set_tenant_guc(db, tenant_id)  # scope the RLS-forced deletes
+        # messages has no tenant_id — scope via its parent conversations first.
+        await db.execute(
+            text("DELETE FROM messages WHERE conversation_id IN "
+                 "(SELECT id FROM conversations WHERE tenant_id = :tid)"),
+            {"tid": tenant_id},
+        )
+        await db.execute(text("DELETE FROM orders WHERE tenant_id = :tid"), {"tid": tenant_id})
+        await db.execute(text("DELETE FROM conversations WHERE tenant_id = :tid"), {"tid": tenant_id})
+        await db.execute(text("DELETE FROM cart_items WHERE tenant_id = :tid"), {"tid": tenant_id})
+        await db.execute(text("DELETE FROM product_cache WHERE tenant_id = :tid"), {"tid": tenant_id})
+        # tenants is RLS-excluded: revoke the stored token + deactivate.
+        await db.execute(
+            text("UPDATE tenants SET shopify_access_token = NULL, is_active = false "
+                 "WHERE id = :tid"),
+            {"tid": tenant_id},
+        )
+        await db.commit()
+    return True
+
+
 # ── WooCommerce handlers ──────────────────────────────────────────────────────
 
 @_register("woocommerce_new_order")

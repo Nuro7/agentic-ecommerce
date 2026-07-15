@@ -50,3 +50,12 @@ def test_parse_ts_bad_value_falls_back_to_now_utc():
 
 def test_parse_ts_none_falls_back_to_now_utc():
     assert _parse_order_ts(None).tzinfo == timezone.utc
+
+
+def test_order_and_compliance_topics_are_registered():
+    from src.app.modules.webhooks.service import _HANDLERS
+    for topic in (
+        "orders/create", "orders/paid", "orders/updated", "orders/cancelled",
+        "customers/data_request", "customers/redact", "shop/redact",
+    ):
+        assert topic in _HANDLERS, f"no handler registered for {topic}"
