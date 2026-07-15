@@ -1,12 +1,12 @@
 name: Deploy to Lightsail
 
-# Auto-deploy: on every push to the deploy branch, SSH into the Lightsail box,
-# pull the latest code, and rebuild/restart the stack. Change the branch below
-# to `main` once you merge and want main to be the deploy branch.
+# Auto-deploy: on every push to main (the production branch), SSH into the
+# Lightsail box, pull the latest code, and rebuild/restart the stack.
+# Workflow: feature branch -> PR -> merge to main -> this deploys automatically.
 on:
   push:
     branches:
-      - feat/live-navigation
+      - main
   workflow_dispatch: {}   # lets you trigger a deploy manually from the Actions tab
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
             set -e
             cd ~/agentic-ecommerce
             git fetch --all
-            git reset --hard origin/feat/live-navigation
+            git reset --hard origin/main
             docker compose --env-file .env -f infra/docker/docker-compose.prod.yml up -d --build
             docker image prune -f
             docker compose --env-file .env -f infra/docker/docker-compose.prod.yml ps
