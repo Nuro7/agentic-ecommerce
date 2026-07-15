@@ -38,7 +38,7 @@ services:
     restart: always
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentic:${POSTGRES_PASSWORD}@postgres:5432/agentic_commerce
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in the root .env}
       REDIS_URL: redis://redis:6379/0
       PORT: "8000"
     depends_on:
@@ -53,7 +53,7 @@ services:
     restart: always
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentic:${POSTGRES_PASSWORD}@postgres:5432/agentic_commerce
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in the root .env}
       REDIS_URL: redis://redis:6379/0
     depends_on:
       - postgres
@@ -67,7 +67,7 @@ services:
     restart: always
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentic:${POSTGRES_PASSWORD}@postgres:5432/agentic_commerce
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in the root .env}
       REDIS_URL: redis://redis:6379/0
     depends_on:
       - redis
