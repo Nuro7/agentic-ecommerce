@@ -3452,6 +3452,7 @@
   let a2aReconnectCount   = 0;      // [2] Reconnect attempt counter
   let a2aWsToken          = '';     // [4] Short-lived HMAC token for WS auth
   let a2aTokenFetchedAt   = 0;      // [4] Epoch ms when token was last fetched
+  let a2aTokenSessionId   = '';     // [4] session_id the cached token was minted for
   // Streaming transcript accumulator — chunks from Gemini arrive word-by-word;
   // we append into one bubble and only finalise it on turn_complete / barge-in.
   let _a2aStreamBubble    = null;   // current live DOM element being updated
@@ -3470,7 +3471,11 @@
   // Returns a promise that resolves to the token string (empty string on failure).
   function _fetchWsToken() {
     const tokenAge = Date.now() - a2aTokenFetchedAt;
-    if (a2aWsToken && tokenAge < 90000) {
+    // Reuse the cached token ONLY if it's still fresh AND was minted for the
+    // CURRENT session_id. A new/cleared session_id (clear-chat, reopen) makes the
+    // cached token stale — the server binds each token to its session, so sending
+    // a token from a previous session yields a 403 "bad token" and a retry storm.
+    if (a2aWsToken && tokenAge < 90000 && a2aTokenSessionId === S.sessionId) {
       return Promise.resolve(a2aWsToken);  // reuse cached token
     }
     const base = (CFG.agent_api_url || 'http://localhost:8000').replace(/\/$/, '');
@@ -3483,8 +3488,9 @@
     })
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(data => {
-        a2aWsToken      = data.token || '';
+        a2aWsToken        = data.token || '';
         a2aTokenFetchedAt = Date.now();
+        a2aTokenSessionId = S.sessionId;   // bind the cached token to this session
         return a2aWsToken;
       })
       .catch(err => {
@@ -3626,6 +3632,12 @@
       // regardless of whether live/mic mode is active (text also needs WS).
       if (!intentional && S.open && a2aReconnectCount < A2A_MAX_RECONNECTS) {
         a2aReconnectCount++;
+        // Force a fresh token on reconnect: the close may have been a token/auth
+        // rejection (403 bad token). Reusing the cached token would just fail again
+        // and hammer the endpoint into a rate limit — clearing it makes reconnects
+        // self-healing (_fetchWsToken re-mints for the current session).
+        a2aWsToken        = '';
+        a2aTokenFetchedAt = 0;
         const delayMs = Math.min(1000 * Math.pow(2, a2aReconnectCount - 1), 16000); // 1s,2s,4s,8s,16s
         orbHint.innerHTML = `<span class="wa-live-badge">Live</span> Reconnecting… (${a2aReconnectCount}/${A2A_MAX_RECONNECTS})`;
         console.warn(`[WooAgent A2A] Closed (${ev.code}). Reconnecting in ${delayMs}ms (attempt ${a2aReconnectCount})`);
