@@ -5,11 +5,12 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...agent.prompts.filtering import detect_language
+from ...agent.voice.transcription import STTService
 from ...config import settings
 from ...core.database import get_db
 from ...core.ratelimit import rate_limit
@@ -54,6 +55,47 @@ def _cart_summary(cart: Dict[str, Any]) -> Dict[str, Any]:
     count = int(cart.get("item_count") or cart.get("count") or 0)
     total = str(cart.get("total") or cart.get("cart_total") or f"{settings.store_currency}0")
     return {"item_count": count, "total": total, "is_empty": count <= 0}
+
+
+# ── Speech-to-text (tap-to-speak voice input) ────────────────────────────────
+# The browser records audio and POSTs it here; we transcribe it and return the
+# text, which the widget then sends through the normal chat flow. This is the
+# plan-agnostic voice-INPUT path (distinct from the Pro-gated Gemini Live voice).
+_stt_service: STTService | None = None
+
+
+def _get_stt() -> STTService:
+    global _stt_service
+    if _stt_service is None:
+        _stt_service = STTService()
+    return _stt_service
+
+
+@router.post("/transcribe")
+async def transcribe_endpoint(
+    audio: UploadFile = File(...),
+    session_id: str = Form(""),   # widget sends it; kept for API contract
+    language: str = Form(""),
+    _rl=Depends(rate_limit(limit=30, window=60, scope="transcribe")),
+):
+    audio_bytes = await audio.read()
+    if not audio_bytes:
+        return {"transcript": "", "confidence": 0.0, "language": "en"}
+    mime = audio.content_type or "audio/webm"
+    lang = str(language or "").strip().lower()
+    lang_hint = _normalize_language(language) if lang and lang != "auto" else ""
+    try:
+        transcript, confidence, detected = await _get_stt().transcribe(
+            audio_bytes, mime, language_hint=lang_hint
+        )
+    except Exception as exc:
+        logger.warning("Transcription failed: %s", exc)
+        return {"transcript": "", "confidence": 0.0, "language": lang_hint or "en"}
+    return {
+        "transcript": transcript or "",
+        "confidence": float(confidence or 0.0),
+        "language": detected or lang_hint or "en",
+    }
 
 
 @router.post("/greet")
