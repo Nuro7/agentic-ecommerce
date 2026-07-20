@@ -241,40 +241,62 @@ class _RegexClassifier:
 class IntentClassifier:
     """
     Two-tier intent classifier:
-      Tier 1 — xAI Grok grok-3-mini-fast  (~50ms, structured JSON output)
-      Tier 2 — Regex patterns              (~0ms, fallback)
+      Tier 1 — OpenAI gpt-4o-mini  (fast, reliable, structured JSON output)
+      Tier 2 — Regex patterns       (~0ms, fallback)
 
     Thread-safe singleton — call get_classifier() instead of instantiating directly.
     """
 
     def __init__(self) -> None:
         import os
-        self._model = os.environ.get("GROK_CLASSIFIER_MODEL", "grok-3-mini-fast")
-        self._timeout = float(os.environ.get("CLASSIFIER_TIMEOUT_S", "8.0"))
+        # Intent model. Defaults to OpenAI gpt-4o-mini (fast + reliable). xAI Grok
+        # was timing out constantly, forcing the regex fallback on every message.
+        self._model = os.environ.get("CLASSIFIER_MODEL", "gpt-4o-mini")
+        self._timeout = float(os.environ.get("CLASSIFIER_TIMEOUT_S", "6.0"))
         self._regex = _RegexClassifier()
         self._groq = None   # variable name kept for internal compat
         self._init_grok()
 
     def _init_grok(self) -> None:
+        """Init the intent-classification LLM client.
+
+        Prefers OpenAI (GPT-4o-mini) — fast and reliable. Falls back to xAI Grok
+        only if OPENAI_API_KEY is absent but GROK_API_KEY is set. If neither is
+        set, the regex tier handles everything.
+        """
         import os
-        key = os.environ.get("GROK_API_KEY", "").strip()
-        if not key:
-            logger.info("IntentClassifier: GROK_API_KEY not set — regex fallback only")
-            return
+        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        grok_key = os.environ.get("GROK_API_KEY", "").strip()
         try:
             from openai import AsyncOpenAI
-            self._groq = AsyncOpenAI(
-                api_key=key,
-                base_url="https://api.x.ai/v1",
-                max_retries=0,
-                timeout=self._timeout,
-            )
-            logger.info(
-                "IntentClassifier: xAI Grok (%s) ready — timeout=%.1fs",
-                self._model, self._timeout,
-            )
+            if openai_key:
+                self._groq = AsyncOpenAI(
+                    api_key=openai_key,
+                    max_retries=0,
+                    timeout=self._timeout,
+                )
+                logger.info(
+                    "IntentClassifier: OpenAI (%s) ready — timeout=%.1fs",
+                    self._model, self._timeout,
+                )
+            elif grok_key:
+                # Legacy path — only if OpenAI isn't configured.
+                self._groq = AsyncOpenAI(
+                    api_key=grok_key,
+                    base_url="https://api.x.ai/v1",
+                    max_retries=0,
+                    timeout=self._timeout,
+                )
+                logger.info(
+                    "IntentClassifier: xAI Grok (%s) ready — timeout=%.1fs",
+                    self._model, self._timeout,
+                )
+            else:
+                logger.info(
+                    "IntentClassifier: no OPENAI_API_KEY / GROK_API_KEY — regex fallback only"
+                )
         except Exception as exc:
-            logger.warning("IntentClassifier: xAI Grok init failed: %s", exc)
+            logger.warning("IntentClassifier: LLM client init failed: %s", exc)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
