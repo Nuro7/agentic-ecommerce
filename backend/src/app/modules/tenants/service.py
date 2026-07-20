@@ -42,6 +42,27 @@ def resolve_store_config(tenant: Optional[Tenant]) -> dict:
         cfg[field] = str(val).strip() if val and str(val).strip() else None
     name = getattr(tenant, "name", None) if tenant is not None else None
     cfg["store_name"] = str(name).strip() if name and str(name).strip() else None
+
+    # ── store_url: base URL used for live navigation redirects ────────────────
+    # Priority: woocommerce_store_url → shopify_domain (prefixed with https://) →
+    # custom_api_base_url → None. Voice navigation needs this to build search URLs.
+    store_url: Optional[str] = None
+    if tenant is not None:
+        platform = str(getattr(tenant, "platform", "") or "").lower()
+        if platform == "woocommerce":
+            woo_url = getattr(tenant, "woocommerce_store_url", None)
+            if woo_url:
+                store_url = str(woo_url).rstrip("/")
+        elif platform == "shopify":
+            domain = getattr(tenant, "shopify_domain", None)
+            if domain:
+                d = str(domain).strip().rstrip("/")
+                store_url = d if d.startswith("http") else f"https://{d}"
+        else:
+            base = getattr(tenant, "custom_api_base_url", None)
+            if base:
+                store_url = str(base).rstrip("/")
+    cfg["store_url"] = store_url
     return cfg
 
 

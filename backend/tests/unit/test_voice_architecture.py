@@ -30,14 +30,12 @@ class MockWebSocket:
         self.close_code = None
 
     async def receive(self) -> dict:
-        if self._msg_index < len(self.client_messages):
-            msg = self.client_messages[self._msg_index]
-            self._msg_index += 1
-            # Add a small delay to simulate time between client inputs
-            await asyncio.sleep(0.01)
-            return msg
-        # Hang after messages are depleted to keep connection open during tests
         while not self.closed:
+            if self._msg_index < len(self.client_messages):
+                msg = self.client_messages[self._msg_index]
+                self._msg_index += 1
+                await asyncio.sleep(0.01)
+                return msg
             await asyncio.sleep(0.01)
         return {"type": "websocket.disconnect"}
 
@@ -122,6 +120,12 @@ async def test_coordinator_flow(monkeypatch):
         "src.app.agent.voice.coordinator.AgentOrchestrator",
         lambda *args, **kwargs: MockOrchestrator()
     )
+    async def mock_get_store_config(tenant_id):
+        return {"store_name": "Test Store", "currency_symbol": "$", "store_url": "https://example.com"}
+    monkeypatch.setattr(
+        "src.app.modules.tenants.service.get_store_config_for_tenant",
+        mock_get_store_config
+    )
 
     ws_messages = [
         {"type": "websocket.receive", "bytes": b"\x01\x02\x03"},  # Mic frame
@@ -139,7 +143,7 @@ async def test_coordinator_flow(monkeypatch):
     run_task = asyncio.create_task(coordinator.run("test_session", None, "_dev"))
 
     # Let the coordinator connect and start receiving client messages
-    await asyncio.sleep(0.05)
+    await asyncio.sleep(0.1)
 
     # Verify connection was established
     assert provider.connected
@@ -184,6 +188,12 @@ async def test_coordinator_mic_gating(monkeypatch):
         "src.app.agent.voice.coordinator.AgentOrchestrator",
         lambda *args, **kwargs: MockOrchestrator()
     )
+    async def mock_get_store_config(tenant_id):
+        return {"store_name": "Test Store", "currency_symbol": "$", "store_url": "https://example.com"}
+    monkeypatch.setattr(
+        "src.app.modules.tenants.service.get_store_config_for_tenant",
+        mock_get_store_config
+    )
 
     ws_messages = [
         {"type": "websocket.receive", "bytes": b"\x01"},
@@ -201,16 +211,8 @@ async def test_coordinator_mic_gating(monkeypatch):
     # Disable mic (simulates bot speaking/synthesis)
     coordinator._mic_enabled = False
 
-    # Receive next chunk from client
-    await ws.receive() # Let ws simulate next input if any
-    
-    # Manual send to coordinator's frontend receive loop
-    # We can inject data frame directly using receive_from_frontend mock logic:
-    await coordinator.provider.send_audio_chunk(b"\x02") # Wait, this bypasses mic gate
-    
-    # We can simulate sending directly to websocket and checking forwarding:
+    # Simulate sending another audio chunk directly via WebSocket while mic disabled
     ws.client_messages.append({"type": "websocket.receive", "bytes": b"\x99"})
-    ws._msg_index = 1
     await asyncio.sleep(0.05)
 
     # The new \x99 chunk should be IGNORED and not forwarded to provider
@@ -232,6 +234,12 @@ async def test_coordinator_barge_in_cancel(monkeypatch):
     monkeypatch.setattr(
         "src.app.agent.voice.coordinator.AgentOrchestrator",
         lambda *args, **kwargs: DelayedOrchestrator()
+    )
+    async def mock_get_store_config(tenant_id):
+        return {"store_name": "Test Store", "currency_symbol": "$", "store_url": "https://example.com"}
+    monkeypatch.setattr(
+        "src.app.modules.tenants.service.get_store_config_for_tenant",
+        mock_get_store_config
     )
 
     ws = MockWebSocket([])

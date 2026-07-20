@@ -2415,6 +2415,20 @@
           try {
             if (S.mode === 'voice_nav') {
               localStorage.setItem('_wa_voice_nav_resume', '1');
+              // ── Edge case: Checkout→Search interrupt ──────────────────────────
+              // If the user is leaving from a /checkout URL during voice navigation,
+              // persist the halted checkout context so the AI knows to guide back
+              // after they add the new product.
+              const isCheckoutHalt = /\/checkout|\/cart/.test(location.pathname);
+              if (isCheckoutHalt && navReason === 'search') {
+                try {
+                  localStorage.setItem('_wa_checkout_halted', JSON.stringify({
+                    from_url: location.href,
+                    query: p.query || '',
+                    halted_at: Date.now()
+                  }));
+                } catch (e) { }
+              }
             } else {
               localStorage.setItem('_wa_reopen', '1');
             }
@@ -3699,18 +3713,38 @@
       _a2aStreamBubble  = null;
       _a2aStreamText    = '';
 
-      // Send initial page_update control frame so the backend Turn Coordinator knows the context (URL, cart)
+      // Send initial page_update control frame so the backend Turn Coordinator
+      // knows the current URL, cart, and any interrupted flow context.
       try {
-        ws.send(JSON.stringify({
-          type: 'page_update',
-          page_context: {
-            url: location.href,
-            title: document.title,
-            product_id: typeof detectProductId === 'function' ? detectProductId() : null,
-            product_name: typeof detectProductName === 'function' ? detectProductName() : null
-          },
-          cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
-        }));
+        if (ws.readyState === WebSocket.OPEN) {
+          // Check if this is a post-checkout-interrupt resume
+          let interruptedFlow = null;
+          try {
+            const haltedRaw = localStorage.getItem('_wa_checkout_halted');
+            if (haltedRaw) {
+              const halted = JSON.parse(haltedRaw);
+              // Only use the state if it was set within the last 30 minutes
+              if (halted.halted_at && (Date.now() - halted.halted_at) < 1800000) {
+                interruptedFlow = { from: 'checkout', from_url: halted.from_url, query: halted.query };
+                localStorage.removeItem('_wa_checkout_halted');
+              } else {
+                localStorage.removeItem('_wa_checkout_halted'); // stale, discard
+              }
+            }
+          } catch (e) { }
+
+          ws.send(JSON.stringify({
+            type: 'page_update',
+            page_context: {
+              url: location.href,
+              title: document.title,
+              product_id: typeof detectProductId === 'function' ? detectProductId() : null,
+              product_name: typeof detectProductName === 'function' ? detectProductName() : null,
+              interrupted_flow: interruptedFlow
+            },
+            cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
+          }));
+        }
       } catch (e) {
         console.warn('[WooAgent A2A] Failed to send page_update frame:', e);
       }

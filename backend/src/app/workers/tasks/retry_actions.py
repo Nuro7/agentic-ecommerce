@@ -21,9 +21,10 @@ on their next cart view or message.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Dict
+
+from ..utils import run_async
 
 from ..celery_app import celery_app
 
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 def retry_failed_actions(self) -> dict:
     """Drain items due in speako:retry_queue and re-execute them."""
     try:
-        result = asyncio.run(_retry_async())
+        result = run_async(_retry_async())
         logger.info(
             "retry_failed_actions: processed=%d succeeded=%d requeued=%d dead=%d",
             result["processed"], result["succeeded"], result["requeued"], result["dead"],

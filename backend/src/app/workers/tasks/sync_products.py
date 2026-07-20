@@ -28,7 +28,6 @@ Schedule (set in schedules.py):
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import uuid
@@ -39,6 +38,7 @@ import httpx
 from sqlalchemy import text
 
 from ..celery_app import celery_app
+from ..utils import run_async
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def sync_products(self, tenant_id: Optional[str] = None) -> dict:
         return {"skipped_duplicate": True, "tenants": 0, "upserted": 0, "skipped": 0}
 
     try:
-        result = asyncio.run(_sync_async(tenant_id_filter=tenant_id))
+        result = run_async(_sync_async(tenant_id_filter=tenant_id))
         logger.info(
             "Product sync complete: tenants=%d upserted=%d skipped=%d",
             result["tenants"], result["upserted"], result["skipped"],
@@ -130,7 +130,7 @@ def sync_products(self, tenant_id: Optional[str] = None) -> dict:
 def sync_products_diff(self, tenant_id: Optional[str] = None) -> dict:
     """Incremental reconciliation — runs every 4 h between nightly full syncs."""
     try:
-        result = asyncio.run(_diff_sync_async(tenant_id_filter=tenant_id))
+        result = run_async(_diff_sync_async(tenant_id_filter=tenant_id))
         logger.info(
             "Diff sync complete: tenants=%d upserted=%d full_syncs=%d",
             result["tenants"], result["upserted"], result["full_syncs"],

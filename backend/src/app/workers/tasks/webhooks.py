@@ -1,8 +1,9 @@
 """Celery task — process queued webhook events (idempotent, retryable)."""
 from __future__ import annotations
 
-import asyncio
 import logging
+
+from ..utils import run_async
 
 from ..celery_app import celery_app
 
@@ -23,7 +24,7 @@ def process_pending(self) -> dict:
     by the repository query (status != 'processed').
     """
     try:
-        processed = asyncio.run(_process_pending_async())
+        processed = run_async(_process_pending_async())
         logger.info("Webhook task: processed %d events", processed)
         return {"processed": processed}
     except Exception as exc:

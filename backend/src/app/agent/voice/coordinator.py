@@ -130,7 +130,8 @@ class VoiceTurnCoordinator:
 
         # Resolve store config for tenant context and page context
         store_context = None
-        page_context = {}
+        # page_context is set from client page_update messages (see _receive_from_frontend)
+        page_context = self.page_context or {}
         try:
             from ...modules.tenants.service import get_store_config_for_tenant
             store_config = await get_store_config_for_tenant(self.tenant_id)
@@ -144,12 +145,12 @@ class VoiceTurnCoordinator:
         except Exception as e:
             logger.warning("Failed to resolve store config for session=%s: %s", self.session_id, e)
 
-        try:
-            state = await self.session_service.get_state(self.session_id)
-            if state and isinstance(state, dict):
-                page_context = state.get("page_context") or {}
-        except Exception:
-            pass
+        logger.debug(
+            "Brain turn: session=%s store_url=%s page_url=%s",
+            self.session_id,
+            (store_context or {}).get("url") or "<none>",
+            page_context.get("url") or "<none>",
+        )
 
         try:
             # Enforce execution timeout (15s)
@@ -326,10 +327,18 @@ class VoiceTurnCoordinator:
                                 ctrl.get("cart_context"),
                             )
                         elif ctrl.get("type") == "page_update":
-                            self.page_context = ctrl.get("page_context") or {}
+                            incoming = ctrl.get("page_context") or {}
+                            self.page_context = incoming
                             if ctrl.get("cart_context") is not None:
                                 self.session_cart["value"] = ctrl.get("cart_context")
-                            logger.info("Session %s page_context updated: %s", self.session_id, self.page_context)
+                            interrupted_flow = incoming.get("interrupted_flow")
+                            if interrupted_flow:
+                                logger.info(
+                                    "Session %s interrupted_flow detected: %s",
+                                    self.session_id, interrupted_flow
+                                )
+                            else:
+                                logger.info("Session %s page_context updated: %s", self.session_id, self.page_context)
                     except Exception as parse_exc:
                         logger.debug("Failed to parse client control frame session=%s: %s", self.session_id, parse_exc)
         except Exception as e:
