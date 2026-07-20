@@ -80,9 +80,23 @@ async def run_llm_agent(
     except Exception as _fe:
         logger.debug("SessionFacts get failed (non-critical): %s", _fe)
 
+    # ── Interrupted checkout context injection ────────────────────────────────
+    # When the user leaves the checkout page mid-session to browse/add products,
+    # the frontend sets interrupted_flow in page_context. Tell the LLM about
+    # this so it knows to guide the user back to checkout after they add items.
+    interrupted_flow = (page_context or {}).get("interrupted_flow") or {}
+    _interrupted_checkout_note = ""
+    if isinstance(interrupted_flow, dict) and interrupted_flow.get("from") == "checkout":
+        _interrupted_checkout_note = (
+            "\n\n[CONTEXT: The customer was in the middle of checkout and interrupted to browse more products. "
+            "They searched for: \"" + str(interrupted_flow.get("query") or "") + "\". "
+            "Once they have added what they need, proactively offer to guide them back to checkout. "
+            "Do NOT restart the checkout form — their previous info is saved.]"
+        )
+
     tools = tool_schema()
     messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": system_prompt + _interrupted_checkout_note},
         {"role": "system", "content": (
             "VOICE CALL RULES — FOLLOW EXACTLY:\n"
             "1. After tool results: pick ONE product, speak 2-3 sentences about it, ask one question. Done.\n"
@@ -93,6 +107,7 @@ async def run_llm_agent(
             "6. Sound like a person, not a search engine. Talk about the product like you know it."
         )},
     ]
+
 
     if last_products:
         # Product text is merchant/feed-controlled. sanitize_text() collapses

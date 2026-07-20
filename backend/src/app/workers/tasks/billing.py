@@ -1,9 +1,10 @@
 """Celery task — monthly subscription invoicing (runs 1st of month, 02:00 UTC)."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timezone
+
+from ..utils import run_async
 
 from ..celery_app import celery_app
 
@@ -24,7 +25,7 @@ def run_monthly_invoicing(self) -> dict:
     monthly spend. Actual payment gateway charging is a future step.
     """
     try:
-        result = asyncio.run(_invoice_async())
+        result = run_async(_invoice_async())
         logger.info("Billing task: invoiced %d tenants", result["invoiced"])
         return result
     except Exception as exc:

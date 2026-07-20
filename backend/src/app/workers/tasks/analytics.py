@@ -1,9 +1,10 @@
 """Celery task — daily analytics aggregation (runs at 00:05 UTC via beat)."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+
+from ..utils import run_async
 
 from ..celery_app import celery_app
 
@@ -23,7 +24,7 @@ def aggregate_daily(self) -> dict:
     Safe to re-run — upserts on (tenant_id, date).
     """
     try:
-        result = asyncio.run(_aggregate_async())
+        result = run_async(_aggregate_async())
         logger.info("Analytics task: aggregated %d tenants", result["tenants"])
         return result
     except Exception as exc:
