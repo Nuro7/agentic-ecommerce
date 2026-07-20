@@ -3698,6 +3698,23 @@
       a2aReconnectCount = 0;  // [2] reset counter on successful connection
       _a2aStreamBubble  = null;
       _a2aStreamText    = '';
+
+      // Send initial page_update control frame so the backend Turn Coordinator knows the context (URL, cart)
+      try {
+        ws.send(JSON.stringify({
+          type: 'page_update',
+          page_context: {
+            url: location.href,
+            title: document.title,
+            product_id: typeof detectProductId === 'function' ? detectProductId() : null,
+            product_name: typeof detectProductName === 'function' ? detectProductName() : null
+          },
+          cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
+        }));
+      } catch (e) {
+        console.warn('[WooAgent A2A] Failed to send page_update frame:', e);
+      }
+
       if (startMic) {
         isLiveMode = true;
         orb.classList.add('live');

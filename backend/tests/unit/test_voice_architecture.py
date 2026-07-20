@@ -94,7 +94,16 @@ class MockSessionService:
 
 
 class MockOrchestrator:
-    async def run(self, session_id: str, user_message: str, language: str, cart_context: Any, tenant_id: str):
+    async def run(
+        self,
+        session_id: str,
+        user_message: str,
+        language: str,
+        cart_context: Any,
+        tenant_id: str,
+        store_context: Any = None,
+        page_context: Any = None,
+    ):
         # Simulate brain latency
         await asyncio.sleep(0.05)
         return {
