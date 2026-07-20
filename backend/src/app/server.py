@@ -322,6 +322,17 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Error tracking. No-op when SENTRY_DSN is unset, so behavior is unchanged
+    # until a DSN is provided. Init here (at import time) so it also wraps the
+    # lifespan startup — including the RLS boot guard's RuntimeError.
+    if settings.sentry_dsn:
+        import sentry_sdk
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.sentry_environment or settings.environment,
+            traces_sample_rate=settings.sentry_traces_sample_rate,
+        )
+
     # Translate domain AppError subclasses (UnauthorizedError→401, ForbiddenError→403,
     # NotFoundError→404, …) into proper HTTP responses. Without this, every raised
     # AppError bubbles up as a 500 — e.g. a wrong-password login would 500 instead of 401.

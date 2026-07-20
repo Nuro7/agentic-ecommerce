@@ -52,6 +52,7 @@ class VoiceTurnCoordinator:
         self.tenant_id = ""
         self.store_client = None
         self.session_cart = {"value": None}
+        self.page_context = {}
 
     def transition_state(self, new_state: str) -> None:
         """Transitions current state and emits structured logging."""
@@ -127,12 +128,37 @@ class VoiceTurnCoordinator:
         orchestrator = self._get_orchestrator()
         start_time = time.perf_counter()
 
+        # Resolve store config for tenant context and page context
+        store_context = None
+        page_context = {}
+        try:
+            from ...modules.tenants.service import get_store_config_for_tenant
+            store_config = await get_store_config_for_tenant(self.tenant_id)
+            if store_config:
+                store_context = {
+                    "store_name": store_config.get("store_name") or "this store",
+                    "currency_symbol": store_config.get("currency_symbol") or "₹",
+                    "tenant_id": self.tenant_id,
+                    "url": store_config.get("store_url") or "",
+                }
+        except Exception as e:
+            logger.warning("Failed to resolve store config for session=%s: %s", self.session_id, e)
+
+        try:
+            state = await self.session_service.get_state(self.session_id)
+            if state and isinstance(state, dict):
+                page_context = state.get("page_context") or {}
+        except Exception:
+            pass
+
         try:
             # Enforce execution timeout (15s)
             result = await asyncio.wait_for(
                 orchestrator.run(
                     session_id=self.session_id,
                     user_message=query,
+                    store_context=store_context,
+                    page_context=page_context,
                     language=language,
                     cart_context=self.session_cart["value"],
                     tenant_id=self.tenant_id,
@@ -299,6 +325,11 @@ class VoiceTurnCoordinator:
                                 ctrl.get("language", "en"),
                                 ctrl.get("cart_context"),
                             )
+                        elif ctrl.get("type") == "page_update":
+                            self.page_context = ctrl.get("page_context") or {}
+                            if ctrl.get("cart_context") is not None:
+                                self.session_cart["value"] = ctrl.get("cart_context")
+                            logger.info("Session %s page_context updated: %s", self.session_id, self.page_context)
                     except Exception as parse_exc:
                         logger.debug("Failed to parse client control frame session=%s: %s", self.session_id, parse_exc)
         except Exception as e:

@@ -40,6 +40,8 @@ dependencies = [
     # Logging
     "structlog>=24.4.0",
     "python-json-logger>=2.0.7",
+    # Error tracking (disabled unless SENTRY_DSN is set)
+    "sentry-sdk[fastapi]>=2.0.0",
     # Rate limiting
     "slowapi>=0.1.9",
     # Env / config

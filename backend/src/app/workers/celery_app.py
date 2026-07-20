@@ -39,6 +39,16 @@ celery_app.conf.update(
     result_expires=3600,
 )
 
+# Error tracking for the worker + beat processes (separate from the web process).
+# No-op unless SENTRY_DSN is set; sentry-sdk auto-instruments Celery on init.
+if settings.sentry_dsn:
+    import sentry_sdk
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.sentry_environment or settings.environment,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+    )
+
 # Register the periodic beat schedule. Importing the module attaches
 # beat_schedule to celery_app.conf; without this, `celery beat` runs nothing.
 # Imported last (celery_app already defined) to avoid a circular import.
