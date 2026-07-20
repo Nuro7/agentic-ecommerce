@@ -1102,6 +1102,63 @@
     .wa-bubble.wa-live-transcript { display: none; }
     .wa-bubble.wa-live-transcript .wa-interim { display: none; }
 
+    /* ── DUAL-MODE MENU ───────────────────────────────────── */
+    .wa-menu {
+      position: fixed;
+      ${CFG.widget_position === 'bottom-left' ? 'left:29px' : 'right:29px'};
+      bottom: 94px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 2147483646;
+      opacity: 0;
+      transform: translateY(16px) scale(0.85);
+      pointer-events: none;
+      transition: opacity .22s cubic-bezier(.34,1.56,.64,1), transform .22s cubic-bezier(.34,1.56,.64,1);
+    }
+    .wa-menu.open {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      pointer-events: auto;
+    }
+    .wa-menu-btn {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      border: 1px solid var(--line2, rgba(255,255,255,0.13));
+      background: var(--bg2, #141426);
+      color: var(--text, #f0f0f8);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+      transition: background .2s, color .2s, transform .2s cubic-bezier(.34,1.56,.64,1), border-color .2s;
+    }
+    .wa-menu-btn:hover {
+      background: var(--p);
+      color: #fff;
+      border-color: var(--p);
+      transform: scale(1.1);
+    }
+    .wa-menu-btn:active {
+      transform: scale(0.93);
+    }
+    .wa-menu-btn.active {
+      background: var(--p);
+      color: #fff;
+      border-color: var(--p);
+    }
+    /* Pulse glow for Voice Nav Active state on main FAB */
+    .wa-fab.voice-nav-active {
+      animation: wa-pulse-glow 1.5s ease-in-out infinite alternate;
+      background: linear-gradient(140deg, var(--ok) 0%, var(--p2) 100%) !important;
+    }
+    @keyframes wa-pulse-glow {
+      0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.6), 0 8px 28px rgba(0,0,0,0.5); }
+      100% { box-shadow: 0 0 0 12px rgba(52,211,153,0), 0 8px 28px rgba(0,0,0,0.5); }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration:0.01ms !important;
@@ -1115,6 +1172,20 @@
   root.className = 'wa';
   root.setAttribute('data-theme', localStorage.getItem('_wa_theme') || 'dark');
   root.innerHTML = `
+    <!-- Dual-Mode Sub-Buttons Menu -->
+    <div class="wa-menu" id="wa-menu">
+      <button class="wa-menu-btn chat" id="wa-menu-chat" title="Chat Mode" aria-label="Open Chat Mode">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="pointer-events: none;">
+          <path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/>
+        </svg>
+      </button>
+      <button class="wa-menu-btn mic" id="wa-menu-mic" title="Voice Navigation Mode" aria-label="Open Voice Navigation Mode">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="pointer-events: none;">
+          <path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/>
+        </svg>
+      </button>
+    </div>
+
     <button class="wa-fab" id="wa-fab" aria-label="Open AI Shopping Assistant" aria-expanded="false">
       <svg class="wa-fab-icon" width="26" height="26" viewBox="0 0 24 24" fill="none">
         <path d="M12 3L14.2 9.8L21 12L14.2 14.2L12 21L9.8 14.2L3 12L9.8 9.8L12 3Z" fill="white" opacity="0.95"/>
@@ -1218,6 +1289,9 @@
   shadow.appendChild(root);
 
   const $ = id => shadow.getElementById(id);
+  const menu = $('wa-menu');
+  const menuChat = $('wa-menu-chat');
+  const menuMic = $('wa-menu-mic');
   const fab = $('wa-fab');
   const pane = $('wa-pane');
   const msgs = $('wa-msgs');
@@ -1395,7 +1469,68 @@
     } catch (e) {}
   }
 
-  fab.addEventListener('click', () => (S.open ? closePane() : openPane()));
+  // Initialize state machine properties in S
+  S.menuOpen = false;
+  S.mode = 'idle'; // 'idle', 'chat', 'voice_nav'
+
+  function toggleMenu() {
+    S.menuOpen = !S.menuOpen;
+    if (S.menuOpen) {
+      menu.classList.add('open');
+      fab.classList.add('open');
+      fab.setAttribute('aria-expanded', 'true');
+    } else {
+      menu.classList.remove('open');
+      fab.classList.remove('open');
+      fab.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function closeMenu() {
+    S.menuOpen = false;
+    menu.classList.remove('open');
+    fab.classList.remove('open');
+    fab.setAttribute('aria-expanded', 'false');
+  }
+
+  function startChatMode() {
+    primeAudioEngines();
+    closeMenu();
+    S.mode = 'chat';
+    openPane();
+  }
+
+  function startVoiceNavMode() {
+    primeAudioEngines();
+    closeMenu();
+    S.mode = 'voice_nav';
+    fab.classList.add('voice-nav-active');
+    startLiveMode();
+    showToast('🎙️ Voice Navigation Mode Active');
+  }
+
+  function stopVoiceNavMode() {
+    S.mode = 'idle';
+    fab.classList.remove('voice-nav-active');
+    stopLiveMode();
+    showToast('🎙️ Voice Navigation Mode Stopped');
+  }
+
+  fab.addEventListener('click', () => {
+    if (S.open) {
+      closePane();
+      return;
+    }
+    if (S.mode === 'voice_nav') {
+      stopVoiceNavMode();
+      return;
+    }
+    toggleMenu();
+  });
+
+  menuChat.addEventListener('click', startChatMode);
+  menuMic.addEventListener('click', startVoiceNavMode);
+
   closeBtn.addEventListener('click', closePane);
 
   // ── Theme toggle ─────────────────────────────────────────────────────
@@ -1510,6 +1645,7 @@
 
   function closePane() {
     S.open = false;
+    S.mode = 'idle';
     S._requestingMic = false; // cancel any pending getUserMedia guard
     pane.classList.remove('open');
     fab.classList.remove('open');
@@ -2234,14 +2370,28 @@
         } else if (IS_SHOPIFY) {
           // Shopify: can't script the checkout page — prefill via URL params.
           const addr = act.payload.billing || act.payload.shipping || act.payload || {};
+          try {
+            if (S.mode === 'voice_nav') {
+              localStorage.setItem('_wa_voice_nav_resume', '1');
+            } else {
+              localStorage.setItem('_wa_reopen', '1');
+            }
+          } catch (e) {}
           setTimeout(() => { window.location.href = _shopifyCheckoutUrl(addr); }, 1000);
         } else {
+          try {
+            if (S.mode === 'voice_nav') {
+              localStorage.setItem('_wa_voice_nav_resume', '1');
+            } else {
+              localStorage.setItem('_wa_reopen', '1');
+            }
+          } catch (e) {}
           setTimeout(() => {
             window.location.href = act.payload.url || '/checkout';
           }, 1200);
         }
         break;
-
+ 
       case 'redirect_checkout':
       case 'redirect': {
         const p = act.payload || {};
@@ -2257,8 +2407,18 @@
             : (navReason === 'product'
               ? '🛍️ Taking you to the product page…'
               : '🛒 Taking you to your cart…');
-          try { addBubble('bot', label); } catch (e) { }
-          try { localStorage.setItem('_wa_reopen', '1'); } catch (e) { }
+          if (S.open) {
+            try { addBubble('bot', label); } catch (e) { }
+          } else {
+            showToast(label);
+          }
+          try {
+            if (S.mode === 'voice_nav') {
+              localStorage.setItem('_wa_voice_nav_resume', '1');
+            } else {
+              localStorage.setItem('_wa_reopen', '1');
+            }
+          } catch (e) { }
         }
         setTimeout(() => {
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
@@ -4871,7 +5031,14 @@
   // voice session, exactly like a manual re-open. Mic permission persists
   // per-origin, so getUserMedia succeeds without a fresh gesture in most browsers.
   try {
-    if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
+    if (localStorage.getItem('_wa_voice_nav_resume') === '1') {
+      localStorage.removeItem('_wa_voice_nav_resume');
+      setTimeout(() => {
+        try {
+          startVoiceNavMode();
+        } catch (e) { }
+      }, 700);
+    } else if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
       localStorage.removeItem('_wa_reopen');
       setTimeout(() => { try { if (!S.open) openPane(); } catch (e) { } }, 700);
     }
