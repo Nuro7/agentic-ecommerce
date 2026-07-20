@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     grok_api_key: str = ""       # xAI Grok STT (Pipeline B streaming STT)
     stt_provider: str = "grok"   # grok | groq | deepgram
 
+    # Voice Provider (gemini_live, split, openai)
+    voice_provider: str = "gemini_live"
+    openai_realtime_model: str = "gpt-realtime-2.1-mini"
+    openai_realtime_voice: str = "alloy"
+
     google_tts_api_key: str = ""
     elevenlabs_api_key: str = ""
     tts_provider: str = "google"
@@ -105,6 +110,11 @@ class Settings(BaseSettings):
     aws_secret_access_key: str = ""
     # Set to "true" to persist raw voice I/O audio to object storage
     audio_logging_enabled: bool = False
+
+    # ── Sentry (error tracking) — empty DSN disables it entirely ──
+    sentry_dsn: str = ""
+    sentry_environment: str = ""              # falls back to `environment` when empty
+    sentry_traces_sample_rate: float = 0.0
 
     @property
     def is_shopify(self) -> bool:
