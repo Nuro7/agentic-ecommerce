@@ -1512,6 +1512,26 @@
     showToast('🎙️ Voice Navigation Mode Active');
   }
 
+  function resumeVoiceNavMode() {
+    closeMenu();
+    if (S.open) {
+      closePane();
+    }
+    S.mode = 'voice_nav';
+    fab.classList.add('voice-nav-active');
+    showToast('🎙️ Voice Navigation active. Tap anywhere to talk.');
+
+    const resumeGesture = () => {
+      primeAudioEngines();
+      startLiveMode();
+      document.body.removeEventListener('click', resumeGesture);
+      document.body.removeEventListener('touchend', resumeGesture);
+    };
+
+    document.body.addEventListener('click', resumeGesture);
+    document.body.addEventListener('touchend', resumeGesture, { passive: true });
+  }
+
   function stopVoiceNavMode() {
     S.mode = 'idle';
     fab.classList.remove('voice-nav-active');
@@ -5132,7 +5152,7 @@
       localStorage.removeItem('_wa_voice_nav_resume');
       setTimeout(() => {
         try {
-          startVoiceNavMode();
+          resumeVoiceNavMode();
         } catch (e) { }
       }, 700);
     } else if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
