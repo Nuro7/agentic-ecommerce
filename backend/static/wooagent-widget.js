@@ -2389,8 +2389,15 @@
               localStorage.setItem('_wa_reopen', '1');
             }
           } catch (e) {}
+          let targetUrl = act.payload.url || '/checkout';
+          try {
+            if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
+              const parsed = new URL(targetUrl);
+              targetUrl = parsed.pathname + parsed.search + parsed.hash;
+            }
+          } catch (e) {}
           setTimeout(() => {
-            window.location.href = act.payload.url || '/checkout';
+            window.location.href = targetUrl;
           }, 1200);
         }
         break;
@@ -2437,11 +2444,18 @@
             }
           } catch (e) { }
         }
+        let targetUrl = p.url || '/checkout';
+        try {
+          if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
+            const parsed = new URL(targetUrl);
+            targetUrl = parsed.pathname + parsed.search + parsed.hash;
+          }
+        } catch (e) {}
         setTimeout(() => {
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
             goToCheckout();
           } else {
-            window.location.href = p.url || '/checkout';
+            window.location.href = targetUrl;
           }
         }, p.delay_ms || 800);
         break;
