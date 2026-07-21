@@ -99,7 +99,16 @@ def append_live_navigation(
             return
 
     # 3. Multiple results → storefront search reflecting the spoken requirement
-    nav_q = normalize_discovery_query(str(query or "")) or str(query or "").strip()
+    # Prefer the clean LLM-extracted query if available, otherwise fall back to raw message
+    action_query = ""
+    for a in ui_actions:
+        if isinstance(a, dict) and a.get("type") == "show_products":
+            payload = a.get("payload") or {}
+            if payload.get("query"):
+                action_query = str(payload["query"]).strip()
+                break
+
+    nav_q = action_query or normalize_discovery_query(str(query or "")) or str(query or "").strip()
     _push(storefront_search_url(base_url, platform, nav_q) or "", "search", nav_q)
 
 
