@@ -1808,6 +1808,7 @@
 
         // Voice activity detection — auto-stop on sustained silence
         const maxVal = Math.max.apply(null, data);
+        const MAX_RECORD_MS = 15000; // 15 seconds hard cap to prevent getting stuck
         if (maxVal > SILENCE_THRESHOLD) {
           lastSoundTime = Date.now();
         } else if (
@@ -1816,6 +1817,13 @@
           (Date.now() - recordingStartTime) > MIN_RECORD_MS &&
           (Date.now() - lastSoundTime) > SILENCE_DURATION
         ) {
+          stopRecording();
+          return;
+        }
+
+        // Hard cap watchdog fallback
+        if (S.recording && (Date.now() - recordingStartTime) > MAX_RECORD_MS) {
+          console.warn('[WooAgent] Max recording duration reached');
           stopRecording();
           return;
         }
@@ -3905,9 +3913,9 @@
       }
 
       // ── [2] Auto-reconnect with exponential backoff ───────────────────
-      // Reconnect if widget is open and the close was unintentional,
+      // Reconnect if widget is open or voice_nav mode is active and the close was unintentional,
       // regardless of whether live/mic mode is active (text also needs WS).
-      if (!intentional && S.open && a2aReconnectCount < A2A_MAX_RECONNECTS) {
+      if (!intentional && (S.open || S.mode === 'voice_nav') && a2aReconnectCount < A2A_MAX_RECONNECTS) {
         a2aReconnectCount++;
         // Force a fresh token on reconnect: the close may have been a token/auth
         // rejection (403 bad token). Reusing the cached token would just fail again
@@ -3919,7 +3927,7 @@
         orbHint.innerHTML = `<span class="wa-live-badge">Live</span> Reconnecting… (${a2aReconnectCount}/${A2A_MAX_RECONNECTS})`;
         console.warn(`[WooAgent A2A] Closed (${ev.code}). Reconnecting in ${delayMs}ms (attempt ${a2aReconnectCount})`);
         setTimeout(() => {
-          if (S.open && !isA2AConnected) {
+          if ((S.open || S.mode === 'voice_nav') && !isA2AConnected) {
             // Re-open with mic if live mode was active, text-only otherwise
             if (isLiveMode) startA2AMode(); else _startA2AForText();
           }
