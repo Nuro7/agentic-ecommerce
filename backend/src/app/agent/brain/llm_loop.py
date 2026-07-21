@@ -341,6 +341,7 @@ async def retry_with_stricter_prompt(
             retrieved_full_names=retrieved_full_names or None,
             detected_language=lang,
             allow_retry=False,
+            user_query=user_message,
         )
         logger.info("Retry with stricter prompt succeeded (lang=%s)", lang)
         return retry_text

@@ -740,6 +740,7 @@ async def ask_brain(
             retrieved_full_names=retrieved_full_names or None,
             detected_language=lang,
             allow_retry=True,
+            user_query=cleaned_message,
         )
     except OutputValidationError as ove:
         logger.warning("Output guardrail triggered (%s) — retrying", ove.reason)
