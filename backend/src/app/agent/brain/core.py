@@ -377,6 +377,19 @@ async def ask_brain(
         state.get("last_products", []) if isinstance(state, dict) else []
     )
 
+    current_pid = page_context.get("product_id") if isinstance(page_context, dict) else None
+    if current_pid:
+        try:
+            current_pid_str = str(current_pid)
+            last_products = [p for p in last_products if (p.get("id") if isinstance(p, dict) else p) != current_pid_str]
+            last_products.insert(0, {
+                "id": current_pid_str,
+                "name": (page_context.get("product_name") or "Current Product").strip(),
+                "permalink": page_context.get("url") or "",
+            })
+        except Exception as e:
+            logger.warning("Failed to prepend current product to last_products: %s", e)
+
     # ── Step 3: Language resolution (with English-decay so a stray non-English
     # transcript can't lock the session forever) ──────────────────────────────
     prev_lang = session_meta.get("language", "en") if isinstance(session_meta, dict) else "en"
