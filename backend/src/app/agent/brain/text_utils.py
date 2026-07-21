@@ -45,6 +45,7 @@ def append_live_navigation(
     query,
     platform: str,
     current_url: str = "",
+    last_products: Optional[List[Any]] = None,
 ) -> None:
     """Append ONE `redirect` ui_action matching this turn's answer (in place).
 
@@ -57,9 +58,6 @@ def append_live_navigation(
     """
     if not isinstance(ui_actions, list):
         return
-    types_present = {a.get("type") for a in ui_actions if isinstance(a, dict)}
-    if types_present & {"redirect", "redirect_checkout", "redirect_checkout_with_address"}:
-        return  # navigation already decided this turn
 
     ctx = store_context if isinstance(store_context, dict) else {}
     base_url = str(ctx.get("url") or "").strip()
@@ -72,6 +70,52 @@ def append_live_navigation(
         if nav_query:
             payload["query"] = nav_query
         ui_actions.append({"type": "redirect", "payload": payload})
+
+    # 0. Check explicit conversational page navigation intent
+    lower_query = str(query or "").strip().lower()
+
+    # Home Page Navigation
+    if re.search(r"\b(home|homepage|home page|go to home|take me to home|go to the homepage|go to homepage)\b", lower_query):
+        _push(base_url or "/", "home")
+        return
+
+    # Cart Page Navigation
+    if re.search(r"\b(go to cart|show my cart|view cart|open cart|show cart|my cart|take me to my cart|go to my cart)\b", lower_query):
+        cart_url = str(ctx.get("cart_url") or "").strip()
+        if not cart_url and base_url:
+            cart_url = base_url.rstrip("/") + "/cart"
+        _push(cart_url or "/cart", "cart")
+        return
+
+    # Checkout Page Navigation
+    if re.search(r"\b(checkout|go to checkout|proceed to checkout|take me to checkout|pay|buy now)\b", lower_query):
+        checkout_url = str(ctx.get("checkout_url") or "").strip()
+        if not checkout_url and base_url:
+            checkout_url = base_url.rstrip("/") + "/checkout"
+        _push(checkout_url or "/checkout", "checkout")
+        return
+
+    # Product list navigation from history (e.g. "go to the first product")
+    if last_products and isinstance(last_products, list):
+        target_index = None
+        if re.search(r"\b(first|1st|number one|no 1|no\. 1)\b", lower_query):
+            target_index = 0
+        elif re.search(r"\b(second|2nd|number two|no 2|no\. 2)\b", lower_query):
+            target_index = 1
+        elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower_query):
+            target_index = 2
+
+        if target_index is not None and len(last_products) > target_index:
+            prod = last_products[target_index]
+            if isinstance(prod, dict):
+                purl = product_page_url(prod)
+                if purl:
+                    _push(purl, "product")
+                    return
+
+    types_present = {a.get("type") for a in ui_actions if isinstance(a, dict)}
+    if types_present & {"redirect", "redirect_checkout", "redirect_checkout_with_address"}:
+        return  # navigation already decided this turn
 
     # 1. Item just added → cart page
     if "add_to_cart" in types_present:

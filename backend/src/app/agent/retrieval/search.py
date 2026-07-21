@@ -180,6 +180,7 @@ def _dicts_to_results(data: list[dict]) -> list[SearchResult]:
             tags=d.get("tags"),
             score=float(d.get("score", 0)),
             source=str(d.get("source", "cache")),
+            permalink=str(d.get("permalink") or ""),
         ))
     return results
 
@@ -207,5 +208,6 @@ def _raw_to_results(raw: list[dict], *, platform: str = "woocommerce") -> list[S
             tags=p.tags,
             score=0.0,
             source="live",
+            permalink=p.permalink,
         ))
     return results

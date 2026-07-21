@@ -167,7 +167,7 @@ class WooAgent_Plugin
             WOOAGENT_PLUGIN_URL . 'widget/wooagent-widget.js',
             array(),
             WOOAGENT_VERSION,
-            true
+            false
         );
 
         wp_localize_script(
