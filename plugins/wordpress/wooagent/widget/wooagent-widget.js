@@ -1102,6 +1102,63 @@
     .wa-bubble.wa-live-transcript { display: none; }
     .wa-bubble.wa-live-transcript .wa-interim { display: none; }
 
+    /* ── DUAL-MODE MENU ───────────────────────────────────── */
+    .wa-menu {
+      position: fixed;
+      ${CFG.widget_position === 'bottom-left' ? 'left:29px' : 'right:29px'};
+      bottom: 94px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 2147483646;
+      opacity: 0;
+      transform: translateY(16px) scale(0.85);
+      pointer-events: none;
+      transition: opacity .22s cubic-bezier(.34,1.56,.64,1), transform .22s cubic-bezier(.34,1.56,.64,1);
+    }
+    .wa-menu.open {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      pointer-events: auto;
+    }
+    .wa-menu-btn {
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      border: 1px solid var(--line2, rgba(255,255,255,0.13));
+      background: var(--bg2, #141426);
+      color: var(--text, #f0f0f8);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+      transition: background .2s, color .2s, transform .2s cubic-bezier(.34,1.56,.64,1), border-color .2s;
+    }
+    .wa-menu-btn:hover {
+      background: var(--p);
+      color: #fff;
+      border-color: var(--p);
+      transform: scale(1.1);
+    }
+    .wa-menu-btn:active {
+      transform: scale(0.93);
+    }
+    .wa-menu-btn.active {
+      background: var(--p);
+      color: #fff;
+      border-color: var(--p);
+    }
+    /* Pulse glow for Voice Nav Active state on main FAB */
+    .wa-fab.voice-nav-active {
+      animation: wa-pulse-glow 1.5s ease-in-out infinite alternate;
+      background: linear-gradient(140deg, var(--ok) 0%, var(--p2) 100%) !important;
+    }
+    @keyframes wa-pulse-glow {
+      0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.6), 0 8px 28px rgba(0,0,0,0.5); }
+      100% { box-shadow: 0 0 0 12px rgba(52,211,153,0), 0 8px 28px rgba(0,0,0,0.5); }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration:0.01ms !important;
@@ -1115,6 +1172,20 @@
   root.className = 'wa';
   root.setAttribute('data-theme', localStorage.getItem('_wa_theme') || 'dark');
   root.innerHTML = `
+    <!-- Dual-Mode Sub-Buttons Menu -->
+    <div class="wa-menu" id="wa-menu">
+      <button class="wa-menu-btn chat" id="wa-menu-chat" title="Chat Mode" aria-label="Open Chat Mode">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="pointer-events: none;">
+          <path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 9h12v2H6V9zm8 5H6v-2h8v2zm4-6H6V6h12v2z"/>
+        </svg>
+      </button>
+      <button class="wa-menu-btn mic" id="wa-menu-mic" title="Voice Navigation Mode" aria-label="Open Voice Navigation Mode">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="pointer-events: none;">
+          <path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/>
+        </svg>
+      </button>
+    </div>
+
     <button class="wa-fab" id="wa-fab" aria-label="Open AI Shopping Assistant" aria-expanded="false">
       <svg class="wa-fab-icon" width="26" height="26" viewBox="0 0 24 24" fill="none">
         <path d="M12 3L14.2 9.8L21 12L14.2 14.2L12 21L9.8 14.2L3 12L9.8 9.8L12 3Z" fill="white" opacity="0.95"/>
@@ -1218,6 +1289,9 @@
   shadow.appendChild(root);
 
   const $ = id => shadow.getElementById(id);
+  const menu = $('wa-menu');
+  const menuChat = $('wa-menu-chat');
+  const menuMic = $('wa-menu-mic');
   const fab = $('wa-fab');
   const pane = $('wa-pane');
   const msgs = $('wa-msgs');
@@ -1395,7 +1469,91 @@
     } catch (e) {}
   }
 
-  fab.addEventListener('click', () => (S.open ? closePane() : openPane()));
+  // Initialize state machine properties in S
+  S.menuOpen = false;
+  S.mode = 'idle'; // 'idle', 'chat', 'voice_nav'
+
+  function toggleMenu() {
+    S.menuOpen = !S.menuOpen;
+    if (S.menuOpen) {
+      menu.classList.add('open');
+      fab.classList.add('open');
+      fab.setAttribute('aria-expanded', 'true');
+    } else {
+      menu.classList.remove('open');
+      fab.classList.remove('open');
+      fab.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function closeMenu() {
+    S.menuOpen = false;
+    menu.classList.remove('open');
+    fab.classList.remove('open');
+    fab.setAttribute('aria-expanded', 'false');
+  }
+
+  function startChatMode() {
+    primeAudioEngines();
+    closeMenu();
+    S.mode = 'chat';
+    openPane();
+  }
+
+  function startVoiceNavMode() {
+    primeAudioEngines();
+    closeMenu();
+    if (S.open) {
+      closePane();
+    }
+    S.mode = 'voice_nav';
+    fab.classList.add('voice-nav-active');
+    startLiveMode();
+    showToast('🎙️ Voice Navigation Mode Active');
+  }
+
+  function resumeVoiceNavMode() {
+    closeMenu();
+    if (S.open) {
+      closePane();
+    }
+    S.mode = 'voice_nav';
+    fab.classList.add('voice-nav-active');
+    showToast('🎙️ Voice Navigation active. Tap anywhere to talk.');
+
+    const resumeGesture = () => {
+      primeAudioEngines();
+      startLiveMode();
+      document.body.removeEventListener('click', resumeGesture);
+      document.body.removeEventListener('touchend', resumeGesture);
+    };
+
+    document.body.addEventListener('click', resumeGesture);
+    document.body.addEventListener('touchend', resumeGesture, { passive: true });
+  }
+
+  function stopVoiceNavMode() {
+    S.mode = 'idle';
+    fab.classList.remove('voice-nav-active');
+    stopLiveMode();
+    showToast('🎙️ Voice Navigation Mode Stopped');
+  }
+
+  fab.addEventListener('click', () => {
+    if (S.open) {
+      closePane();
+      return;
+    }
+    if (S.mode === 'voice_nav') {
+      stopVoiceNavMode();
+      return;
+    }
+    toggleMenu();
+  });
+
+  menuChat.addEventListener('click', startChatMode);
+  menuMic.addEventListener('click', startVoiceNavMode);
+
   closeBtn.addEventListener('click', closePane);
 
   // ── Theme toggle ─────────────────────────────────────────────────────
@@ -1510,6 +1668,7 @@
 
   function closePane() {
     S.open = false;
+    S.mode = 'idle';
     S._requestingMic = false; // cancel any pending getUserMedia guard
     pane.classList.remove('open');
     fab.classList.remove('open');
@@ -1649,6 +1808,7 @@
 
         // Voice activity detection — auto-stop on sustained silence
         const maxVal = Math.max.apply(null, data);
+        const MAX_RECORD_MS = 15000; // 15 seconds hard cap to prevent getting stuck
         if (maxVal > SILENCE_THRESHOLD) {
           lastSoundTime = Date.now();
         } else if (
@@ -1657,6 +1817,13 @@
           (Date.now() - recordingStartTime) > MIN_RECORD_MS &&
           (Date.now() - lastSoundTime) > SILENCE_DURATION
         ) {
+          stopRecording();
+          return;
+        }
+
+        // Hard cap watchdog fallback
+        if (S.recording && (Date.now() - recordingStartTime) > MAX_RECORD_MS) {
+          console.warn('[WooAgent] Max recording duration reached');
           stopRecording();
           return;
         }
@@ -1716,7 +1883,7 @@
         audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 }
       });
       // After await: check guards again — user may have closed pane or muted while prompt was showing
-      if (!CFG.enable_voice || S.muted || !S.open) {
+      if (!CFG.enable_voice || S.muted || (!S.open && S.mode !== 'voice_nav')) {
         stream.getTracks().forEach(t => t.stop());
         S._requestingMic = false;
         return;
@@ -1746,16 +1913,22 @@
       orb.classList.remove('recording');
       orbHint.innerHTML = isLiveMode ? '<strong>Tap to speak</strong> · tap again to stop' : '<strong>Tap to speak</strong> · or type below';
       console.warn('[WooAgent] Mic error:', err && err.name, err);
+      let errMsg = '';
       if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
-        addBubble('bot', 'Mic access was denied. Please allow microphone access in your browser settings, then try again.');
+        errMsg = 'Mic access was denied. Please allow microphone access in your browser settings, then try again.';
       } else if (err && err.name === 'NotFoundError') {
-        addBubble('bot', 'No microphone found. Please connect a mic or type below.');
+        errMsg = 'No microphone found. Please connect a mic or type below.';
       } else if (err && err.name === 'NotReadableError') {
-        addBubble('bot', 'Microphone is in use by another app. Please close it and try again.');
+        errMsg = 'Microphone is in use by another app. Please close it and try again.';
       } else if (err && err.name === 'SecurityError') {
-        addBubble('bot', 'Voice requires a secure (HTTPS) connection. You can type below instead.');
+        errMsg = 'Voice requires a secure (HTTPS) connection. You can type below instead.';
       } else {
-        addBubble('bot', 'Could not start recording (' + (err && err.name ? err.name : 'unknown') + '). Please try again or type below.');
+        errMsg = 'Could not start recording (' + (err && err.name ? err.name : 'unknown') + '). Please try again or type below.';
+      }
+      if (S.open) {
+        addBubble('bot', errMsg);
+      } else {
+        showToast('❌ ' + errMsg);
       }
     } finally {
       S._requestingMic = false;
@@ -1831,14 +2004,14 @@
   async function processVoice() {
     if (!S.audioChunks.length) return;
     // Widget may have been closed while recording was still in-flight
-    if (!S.open) { S.audioChunks = []; return; }
+    if (!S.open && S.mode !== 'voice_nav') { S.audioChunks = []; return; }
     const mimeType = S._recordingMimeType || 'audio/webm';
     const blob = new Blob(S.audioChunks, { type: mimeType });
     S.audioChunks = []; // clear immediately so re-entrant calls don't reprocess same data
     if (blob.size < 1000) {
       if (isLiveMode) {
         orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-        setTimeout(() => { if (isLiveMode && S.open && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1000);
+        setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1000);
       }
       return;
     }
@@ -1886,10 +2059,15 @@
         S.loading = false;
         sendBtn.disabled = !input.value.trim();
         orb.classList.remove('thinking');
-        addBubble('bot', "Couldn't catch that clearly. Could you try again?");
-        if (isLiveMode && S.open) {
+        const errMsg = "Couldn't catch that clearly. Could you try again?";
+        if (S.open) {
+          addBubble('bot', errMsg);
+        } else {
+          showToast('❌ ' + errMsg);
+        }
+        if (isLiveMode && (S.open || S.mode === 'voice_nav')) {
           orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-          setTimeout(() => { if (isLiveMode && S.open && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1200);
+          setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1200);
         }
         return;
       }
@@ -1911,12 +2089,15 @@
       sendBtn.disabled = !input.value.trim();
       orb.classList.remove('thinking');
       removeTyping();
+      const errMsg = 'Voice processing failed. Please try again.';
       if (S.open) {
-        addBubble('bot', 'Voice processing failed. Please try again.');
-        if (isLiveMode) {
-          orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-          setTimeout(() => { if (isLiveMode && S.open && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1500);
-        }
+        addBubble('bot', errMsg);
+      } else {
+        showToast('❌ ' + errMsg);
+      }
+      if (isLiveMode) {
+        orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
+        setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1500);
       }
     }
   }
@@ -2234,14 +2415,35 @@
         } else if (IS_SHOPIFY) {
           // Shopify: can't script the checkout page — prefill via URL params.
           const addr = act.payload.billing || act.payload.shipping || act.payload || {};
+          try {
+            if (S.mode === 'voice_nav') {
+              localStorage.setItem('_wa_voice_nav_resume', '1');
+            } else {
+              localStorage.setItem('_wa_reopen', '1');
+            }
+          } catch (e) {}
           setTimeout(() => { window.location.href = _shopifyCheckoutUrl(addr); }, 1000);
         } else {
+          try {
+            if (S.mode === 'voice_nav') {
+              localStorage.setItem('_wa_voice_nav_resume', '1');
+            } else {
+              localStorage.setItem('_wa_reopen', '1');
+            }
+          } catch (e) {}
+          let targetUrl = act.payload.url || '/checkout';
+          try {
+            if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
+              const parsed = new URL(targetUrl);
+              targetUrl = parsed.pathname + parsed.search + parsed.hash;
+            }
+          } catch (e) {}
           setTimeout(() => {
-            window.location.href = act.payload.url || '/checkout';
+            window.location.href = targetUrl;
           }, 1200);
         }
         break;
-
+ 
       case 'redirect_checkout':
       case 'redirect': {
         const p = act.payload || {};
@@ -2257,14 +2459,45 @@
             : (navReason === 'product'
               ? '🛍️ Taking you to the product page…'
               : '🛒 Taking you to your cart…');
-          try { addBubble('bot', label); } catch (e) { }
-          try { localStorage.setItem('_wa_reopen', '1'); } catch (e) { }
+          if (S.open) {
+            try { addBubble('bot', label); } catch (e) { }
+          } else {
+            showToast(label);
+          }
+          try {
+            if (S.mode === 'voice_nav') {
+              localStorage.setItem('_wa_voice_nav_resume', '1');
+              // ── Edge case: Checkout→Search interrupt ──────────────────────────
+              // If the user is leaving from a /checkout URL during voice navigation,
+              // persist the halted checkout context so the AI knows to guide back
+              // after they add the new product.
+              const isCheckoutHalt = /\/checkout|\/cart/.test(location.pathname);
+              if (isCheckoutHalt && navReason === 'search') {
+                try {
+                  localStorage.setItem('_wa_checkout_halted', JSON.stringify({
+                    from_url: location.href,
+                    query: p.query || '',
+                    halted_at: Date.now()
+                  }));
+                } catch (e) { }
+              }
+            } else {
+              localStorage.setItem('_wa_reopen', '1');
+            }
+          } catch (e) { }
         }
+        let targetUrl = p.url || '/checkout';
+        try {
+          if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
+            const parsed = new URL(targetUrl);
+            targetUrl = parsed.pathname + parsed.search + parsed.hash;
+          }
+        } catch (e) {}
         setTimeout(() => {
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
             goToCheckout();
           } else {
-            window.location.href = p.url || '/checkout';
+            window.location.href = targetUrl;
           }
         }, p.delay_ms || 800);
         break;
@@ -2641,6 +2874,19 @@
   }
 
   function addBubble(who, text) {
+    if (who === 'user' || who === 'bot') {
+      // Save to conversation history so it remains accessible if user opens chatbox later
+      S.conversation.push({ role: who === 'user' ? 'user' : 'assistant', content: text });
+      S.conversation = S.conversation.slice(-20);
+      try { localStorage.setItem('_wa_conv', JSON.stringify(S.conversation)); } catch (e) {}
+    }
+
+    // In Voice Navigation mode when chatbox is closed, do not append text bubbles into the chatbox panel.
+    // Responses are spoken via audio, and actions move the storefront page directly.
+    if (S.mode === 'voice_nav' && !S.open) {
+      return null;
+    }
+
     if (who === 'system') {
       const el = document.createElement('div');
       el.className = 'wa-bubble system';
@@ -3538,6 +3784,43 @@
       a2aReconnectCount = 0;  // [2] reset counter on successful connection
       _a2aStreamBubble  = null;
       _a2aStreamText    = '';
+
+      // Send initial page_update control frame so the backend Turn Coordinator
+      // knows the current URL, cart, and any interrupted flow context.
+      try {
+        if (ws.readyState === WebSocket.OPEN) {
+          // Check if this is a post-checkout-interrupt resume
+          let interruptedFlow = null;
+          try {
+            const haltedRaw = localStorage.getItem('_wa_checkout_halted');
+            if (haltedRaw) {
+              const halted = JSON.parse(haltedRaw);
+              // Only use the state if it was set within the last 30 minutes
+              if (halted.halted_at && (Date.now() - halted.halted_at) < 1800000) {
+                interruptedFlow = { from: 'checkout', from_url: halted.from_url, query: halted.query };
+                localStorage.removeItem('_wa_checkout_halted');
+              } else {
+                localStorage.removeItem('_wa_checkout_halted'); // stale, discard
+              }
+            }
+          } catch (e) { }
+
+          ws.send(JSON.stringify({
+            type: 'page_update',
+            page_context: {
+              url: location.href,
+              title: document.title,
+              product_id: typeof detectProductId === 'function' ? detectProductId() : null,
+              product_name: typeof detectProductName === 'function' ? detectProductName() : null,
+              interrupted_flow: interruptedFlow
+            },
+            cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
+          }));
+        }
+      } catch (e) {
+        console.warn('[WooAgent A2A] Failed to send page_update frame:', e);
+      }
+
       if (startMic) {
         isLiveMode = true;
         orb.classList.add('live');
@@ -3579,28 +3862,30 @@
           }
 
           // ── Gemini 3.1: transcript — chunks arrive word-by-word ──────────
-          // Accumulate into one streaming bubble; finalise on turn_complete.
+          // Accumulate text; render DOM bubble inside chatbox only when chatbox panel is open (S.open)
           if (msg.type === 'transcript' && msg.text) {
             _a2aStreamText += msg.text;
-            if (!_a2aStreamBubble) {
-              // Create the bubble once; subsequent chunks update it in-place
-              const row = document.createElement('div');
-              row.className = 'wa-bubble-row bot';
-              const av = document.createElement('div');
-              av.className = 'wa-bot-avatar';
-              row.appendChild(av);
-              const el = document.createElement('div');
-              el.className = 'wa-bubble bot';
-              row.appendChild(el);
-              msgs.appendChild(row);
-              _a2aStreamBubble = el;
+            if (S.open) {
+              if (!_a2aStreamBubble) {
+                // Create the bubble once; subsequent chunks update it in-place
+                const row = document.createElement('div');
+                row.className = 'wa-bubble-row bot';
+                const av = document.createElement('div');
+                av.className = 'wa-bot-avatar';
+                row.appendChild(av);
+                const el = document.createElement('div');
+                el.className = 'wa-bubble bot';
+                row.appendChild(el);
+                msgs.appendChild(row);
+                _a2aStreamBubble = el;
+              }
+              _a2aStreamBubble.innerHTML = renderBotMarkdown(_a2aStreamText);
+              scrollBottom();
             }
-            _a2aStreamBubble.innerHTML = renderBotMarkdown(_a2aStreamText);
-            scrollBottom();
           }
 
-          // ── Turn complete: finalise the streaming bubble ──────────────────
-          if (msg.type === 'turn_complete' && _a2aStreamBubble) {
+          // ── Turn complete: finalise streaming text into history ──────────
+          if (msg.type === 'turn_complete') {
             const finalText = _a2aStreamText.trim();
             if (finalText) {
               S.conversation.push({ role: 'assistant', content: finalText });
@@ -3628,9 +3913,9 @@
       }
 
       // ── [2] Auto-reconnect with exponential backoff ───────────────────
-      // Reconnect if widget is open and the close was unintentional,
+      // Reconnect if widget is open or voice_nav mode is active and the close was unintentional,
       // regardless of whether live/mic mode is active (text also needs WS).
-      if (!intentional && S.open && a2aReconnectCount < A2A_MAX_RECONNECTS) {
+      if (!intentional && (S.open || S.mode === 'voice_nav') && a2aReconnectCount < A2A_MAX_RECONNECTS) {
         a2aReconnectCount++;
         // Force a fresh token on reconnect: the close may have been a token/auth
         // rejection (403 bad token). Reusing the cached token would just fail again
@@ -3642,7 +3927,7 @@
         orbHint.innerHTML = `<span class="wa-live-badge">Live</span> Reconnecting… (${a2aReconnectCount}/${A2A_MAX_RECONNECTS})`;
         console.warn(`[WooAgent A2A] Closed (${ev.code}). Reconnecting in ${delayMs}ms (attempt ${a2aReconnectCount})`);
         setTimeout(() => {
-          if (S.open && !isA2AConnected) {
+          if ((S.open || S.mode === 'voice_nav') && !isA2AConnected) {
             // Re-open with mic if live mode was active, text-only otherwise
             if (isLiveMode) startA2AMode(); else _startA2AForText();
           }
@@ -4871,7 +5156,14 @@
   // voice session, exactly like a manual re-open. Mic permission persists
   // per-origin, so getUserMedia succeeds without a fresh gesture in most browsers.
   try {
-    if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
+    if (localStorage.getItem('_wa_voice_nav_resume') === '1') {
+      localStorage.removeItem('_wa_voice_nav_resume');
+      setTimeout(() => {
+        try {
+          resumeVoiceNavMode();
+        } catch (e) { }
+      }, 700);
+    } else if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
       localStorage.removeItem('_wa_reopen');
       setTimeout(() => { try { if (!S.open) openPane(); } catch (e) { } }, 700);
     }

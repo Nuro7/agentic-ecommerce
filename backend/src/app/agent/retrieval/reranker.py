@@ -40,6 +40,7 @@ class SearchResult:
     tags: Optional[str]
     score: float = 0.0       # final RRF + boost score
     source: str = "hybrid"   # "bm25", "vector", or "hybrid"
+    permalink: str = ""      # canonical product url
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -55,6 +56,7 @@ class SearchResult:
             "tags":          self.tags,
             "score":         round(self.score, 4),
             "source":        self.source,
+            "permalink":     self.permalink,
         }
 
 
@@ -164,6 +166,7 @@ def rerank(
             tags=c.tags,
             score=score,
             source=source,
+            permalink=c.permalink,
         ))
 
     logger.debug(

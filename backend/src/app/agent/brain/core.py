@@ -487,6 +487,7 @@ async def ask_brain(
                         "in_stock": r.in_stock,
                         "image_url": r.image_url,
                         "description": r.description[:200] if r.description else "",
+                        "permalink": r.permalink,
                     }
                     for r in retrieval_results
                 ]

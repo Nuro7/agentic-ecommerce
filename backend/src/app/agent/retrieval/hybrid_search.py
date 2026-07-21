@@ -46,6 +46,7 @@ class RawCandidate:
     vec_sim: float = 0.0      # cosine similarity (0–1)
     bm25_pos: int = 0         # position in BM25 list (1-based)
     vec_pos: int = 0          # position in vector list (1-based)
+    permalink: str = ""       # product permalink
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -61,6 +62,7 @@ class RawCandidate:
             "tags": self.tags,
             "bm25_rank": self.bm25_rank,
             "vec_sim": self.vec_sim,
+            "permalink": self.permalink,
         }
 
 
@@ -96,6 +98,7 @@ async def bm25_search(
                 in_stock,
                 category_slug,
                 tags,
+                permalink,
                 ts_rank(search_vector, plainto_tsquery('english', :query)) AS rank
             FROM product_cache
             WHERE
@@ -132,6 +135,7 @@ async def bm25_search(
                     category_slug=r.get("category_slug"),
                     tags=r.get("tags"),
                     bm25_rank=float(r["rank"]),
+                    permalink=r.get("permalink") or "",
                 )
                 for r in rows
             ]
@@ -165,7 +169,7 @@ async def _ilike_search(
                 platform_id, tenant_id, name,
                 COALESCE(description, '') AS description,
                 CAST(price AS FLOAT) AS price,
-                currency, image_url, in_stock, category_slug, tags
+                currency, image_url, in_stock, category_slug, tags, permalink
             FROM product_cache
             WHERE
                 tenant_id = :tenant_id
@@ -198,6 +202,7 @@ async def _ilike_search(
                 category_slug=r.get("category_slug"),
                 tags=r.get("tags"),
                 bm25_rank=0.5,
+                permalink=r.get("permalink") or "",
             )
             for r in rows
         ]
@@ -221,7 +226,7 @@ async def _browse_all(
                 platform_id, tenant_id, name,
                 COALESCE(description, '') AS description,
                 CAST(price AS FLOAT) AS price,
-                currency, image_url, in_stock, category_slug, tags
+                currency, image_url, in_stock, category_slug, tags, permalink
             FROM product_cache
             WHERE
                 tenant_id = :tenant_id
@@ -252,6 +257,7 @@ async def _browse_all(
                 category_slug=r.get("category_slug"),
                 tags=r.get("tags"),
                 bm25_rank=1.0,
+                permalink=r.get("permalink") or "",
             )
             for r in rows
         ]
@@ -295,7 +301,7 @@ async def vector_search(
                 platform_id, tenant_id, name,
                 COALESCE(description, '') AS description,
                 CAST(price AS FLOAT) AS price,
-                currency, image_url, in_stock, category_slug, tags,
+                currency, image_url, in_stock, category_slug, tags, permalink,
                 1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
             FROM product_cache
             WHERE
@@ -332,6 +338,7 @@ async def vector_search(
                 category_slug=r.get("category_slug"),
                 tags=r.get("tags"),
                 vec_sim=float(r["similarity"]),
+                permalink=r.get("permalink") or "",
             )
             for r in rows
         ]
