@@ -228,8 +228,6 @@ class VoiceTurnCoordinator:
                         logger.error("TTS failed for text input in Split provider: %s", e)
 
                 await self.safe_send_text(json.dumps({"type": "turn_complete"}))
-                self.transition_state("IDLE")
-                self._mic_enabled = True
 
         except asyncio.TimeoutError:
             logger.error(
@@ -243,8 +241,6 @@ class VoiceTurnCoordinator:
             else:
                 await self.safe_send_text(json.dumps({"type": "transcript", "text": error_msg}))
                 await self.safe_send_text(json.dumps({"type": "turn_complete"}))
-                self.transition_state("IDLE")
-                self._mic_enabled = True
 
         except Exception as e:
             logger.error("Brain execution error session=%s: %s", self.session_id, e, exc_info=True)
@@ -254,8 +250,10 @@ class VoiceTurnCoordinator:
             else:
                 await self.safe_send_text(json.dumps({"type": "transcript", "text": error_msg}))
                 await self.safe_send_text(json.dumps({"type": "turn_complete"}))
-                self.transition_state("IDLE")
-                self._mic_enabled = True
+
+        finally:
+            self.transition_state("IDLE")
+            self._mic_enabled = True
 
     async def handle_text_input(self, text: str, language: str, cart_context: Any) -> None:
         """Handles explicit client-side text input queries by routing straight to the Brain."""

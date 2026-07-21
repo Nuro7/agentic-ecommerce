@@ -1503,6 +1503,9 @@
   function startVoiceNavMode() {
     primeAudioEngines();
     closeMenu();
+    if (S.open) {
+      closePane();
+    }
     S.mode = 'voice_nav';
     fab.classList.add('voice-nav-active');
     startLiveMode();
@@ -2815,6 +2818,19 @@
   }
 
   function addBubble(who, text) {
+    if (who === 'user' || who === 'bot') {
+      // Save to conversation history so it remains accessible if user opens chatbox later
+      S.conversation.push({ role: who === 'user' ? 'user' : 'assistant', content: text });
+      S.conversation = S.conversation.slice(-20);
+      try { localStorage.setItem('_wa_conv', JSON.stringify(S.conversation)); } catch (e) {}
+    }
+
+    // In Voice Navigation mode when chatbox is closed, do not append text bubbles into the chatbox panel.
+    // Responses are spoken via audio, and actions move the storefront page directly.
+    if (S.mode === 'voice_nav' && !S.open) {
+      return null;
+    }
+
     if (who === 'system') {
       const el = document.createElement('div');
       el.className = 'wa-bubble system';
@@ -3790,28 +3806,30 @@
           }
 
           // ── Gemini 3.1: transcript — chunks arrive word-by-word ──────────
-          // Accumulate into one streaming bubble; finalise on turn_complete.
+          // Accumulate text; render DOM bubble inside chatbox only when chatbox panel is open (S.open)
           if (msg.type === 'transcript' && msg.text) {
             _a2aStreamText += msg.text;
-            if (!_a2aStreamBubble) {
-              // Create the bubble once; subsequent chunks update it in-place
-              const row = document.createElement('div');
-              row.className = 'wa-bubble-row bot';
-              const av = document.createElement('div');
-              av.className = 'wa-bot-avatar';
-              row.appendChild(av);
-              const el = document.createElement('div');
-              el.className = 'wa-bubble bot';
-              row.appendChild(el);
-              msgs.appendChild(row);
-              _a2aStreamBubble = el;
+            if (S.open) {
+              if (!_a2aStreamBubble) {
+                // Create the bubble once; subsequent chunks update it in-place
+                const row = document.createElement('div');
+                row.className = 'wa-bubble-row bot';
+                const av = document.createElement('div');
+                av.className = 'wa-bot-avatar';
+                row.appendChild(av);
+                const el = document.createElement('div');
+                el.className = 'wa-bubble bot';
+                row.appendChild(el);
+                msgs.appendChild(row);
+                _a2aStreamBubble = el;
+              }
+              _a2aStreamBubble.innerHTML = renderBotMarkdown(_a2aStreamText);
+              scrollBottom();
             }
-            _a2aStreamBubble.innerHTML = renderBotMarkdown(_a2aStreamText);
-            scrollBottom();
           }
 
-          // ── Turn complete: finalise the streaming bubble ──────────────────
-          if (msg.type === 'turn_complete' && _a2aStreamBubble) {
+          // ── Turn complete: finalise streaming text into history ──────────
+          if (msg.type === 'turn_complete') {
             const finalText = _a2aStreamText.trim();
             if (finalText) {
               S.conversation.push({ role: 'assistant', content: finalText });
