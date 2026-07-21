@@ -33,7 +33,7 @@ services:
       - "8000:8000"
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce}
       REDIS_URL: redis://redis:6379/0
       SPEAKO_ALLOW_RLS_BYPASS: "true"
     depends_on:
@@ -51,7 +51,7 @@ services:
     command: celery -A src.app.workers.celery_app worker -l info
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce}
       REDIS_URL: redis://redis:6379/0
     depends_on:
       postgres:
@@ -68,7 +68,7 @@ services:
     command: celery -A src.app.workers.celery_app beat -l info
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce}
       REDIS_URL: redis://redis:6379/0
     depends_on:
       redis:
@@ -81,7 +81,7 @@ services:
     command: alembic upgrade head
     env_file: ../../backend/.env
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://agentic:agentic@postgres:5432/agentic_commerce}
     depends_on:
       postgres:
         condition: service_healthy
