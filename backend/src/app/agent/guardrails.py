@@ -184,6 +184,10 @@ _GENERIC_NAME_TOKENS = frozenset({
     "edition", "pro", "max", "plus", "series", "new", "set", "pack", "kit",
     "mini", "lite", "ultra", "premium", "the", "and", "for", "with", "size",
     "color", "colour", "version", "model", "type", "style", "classic", "special",
+    # colors
+    "black", "white", "red", "blue", "green", "grey", "gray", "yellow", "pink", "purple", "orange", "brown", "navy", "beige", "cream", "olive", "tan", "gold", "silver",
+    # generic product terms / apparel
+    "shoes", "shoe", "sneaker", "sneakers", "clothing", "apparel", "shirt", "shirts", "pants", "jeans", "jacket", "jackets", "coat", "coats", "boots", "sandals", "slippers", "footwear", "item", "items", "product", "products", "selection", "collection", "brand", "brands", "running", "walking", "gym", "sports", "fashion", "men", "mens", "women", "womens", "boy", "boys", "girl", "girls", "kid", "kids", "child", "children", "size", "sizes",
     # common commerce / policy / English words that appear Title-Cased but are NOT
     # products (e.g. "Cash On Delivery", "Free Shipping", "Best Seller") — excluded
     # so they never look like a fabricated product name.
@@ -194,6 +198,11 @@ _GENERIC_NAME_TOKENS = frozenset({
     "now", "week", "day", "available", "option", "options", "best", "seller",
     "you", "your", "our", "this", "that", "here", "want", "add", "cart",
 })
+
+_GREETING_CONTEXT_RE = re.compile(
+    r"\b(hey|hi|hello|dear|welcome|good\s+morning|good\s+afternoon|good\s+evening|thanks?|thank\s+you)\b",
+    re.IGNORECASE,
+)
 
 
 def check_output(
@@ -206,6 +215,7 @@ def check_output(
     retrieved_full_names: Optional[Set[str]] = None,
     detected_language: str = "en",
     allow_retry: bool = True,
+    user_query: Optional[str] = None,
 ) -> str:
     """Validate LLM output against retrieved data. Return cleaned text or raise.
 
@@ -247,7 +257,14 @@ def check_output(
     # contains a model-number token AND is NOT in a negation context. Saying you
     # DON'T have something ("No Casio G-Shock watches are available") is never a
     # hallucination, so negated phrases are skipped entirely.
-    names_tok: Set[str] = retrieved_names or set()
+    names_tok: Set[str] = (retrieved_names or set()).copy()
+    if user_query:
+        user_toks = [
+            t for t in re.findall(r"[a-z0-9]+", user_query.lower())
+            if len(t) > 2 and t not in _GENERIC_NAME_TOKENS
+        ]
+        names_tok.update(user_toks)
+
     full_names: Set[str] = retrieved_full_names or set()
     # Run even when grounding is empty: a zero-result retrieval is NOT a license to
     # name products. With no grounding, a non-negated mention carrying a model-number
@@ -260,10 +277,15 @@ def check_output(
     if names_tok or full_names or grounding_empty:
         for m in _PRODUCT_MENTION_RE.finditer(cleaned):
             phrase = m.group(1)
-            # Skip negation context: "no/not/don't/can't/couldn't/without …" just
-            # before the phrase, or the phrase itself leading with a negation word.
+            # Skip negation or greeting context: "no/not/don't/can't/couldn't/without/hey/hi/hello/thanks …"
+            # just before the phrase, or the phrase itself leading with a negation or greeting word.
             prefix = cleaned[max(0, m.start(1) - 28):m.start(1)].lower()
-            if _NEGATION_CONTEXT_RE.search(prefix) or _LEADING_NEGATION_RE.match(phrase):
+            if (
+                _NEGATION_CONTEXT_RE.search(prefix)
+                or _LEADING_NEGATION_RE.match(phrase)
+                or _GREETING_CONTEXT_RE.search(prefix)
+                or _GREETING_CONTEXT_RE.match(phrase)
+            ):
                 continue
             toks = [
                 t for t in re.findall(r"[a-z0-9]+", phrase.lower())
@@ -348,11 +370,21 @@ def check_output(
             re.IGNORECASE,
         ))
         normalized_retrieved = {_normalize_attr(a) for a in retrieved_attributes}
-        # Ignore single-letter matches (S/M/L): they fire on ordinary words and
-        # contractions ("it's", "I'm") far more often than real size mentions.
+        # Ground attributes against words in retrieved product names to prevent false-positives
+        # for attributes that exist in product titles but aren't formally stored in taxonomies.
+        name_words = set()
+        for fn in (retrieved_full_names or set()):
+            name_words.update(re.findall(r"[a-z0-9]+", fn.lower()))
+
+        # Lowercase and deduplicate mentions to prevent capitalization differences
+        # (e.g. {'black', 'Black'}) from being counted as multiple invented attributes.
         invented = {
-            v for v in attr_mentions
-            if len(str(v).strip()) >= 2 and _normalize_attr(v) not in normalized_retrieved
+            _normalize_attr(v) for v in attr_mentions
+            if len(str(v).strip()) >= 2
+        }
+        invented = {
+            inv for inv in invented
+            if inv not in normalized_retrieved and inv not in name_words
         }
         if len(invented) >= 2:
             msg = f"potentially invented attribute values: {invented}"

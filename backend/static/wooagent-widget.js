@@ -2336,6 +2336,15 @@
         const cnt = c.cart_count || c.item_count || (c.cart && (c.cart.item_count || c.cart.count)) || 0;
         updateBadge(cnt);
         if (c.message) showToast('🛒 ' + c.message);
+        if (window.jQuery) {
+          window.jQuery(document.body).trigger('wc_fragment_refresh');
+          window.jQuery(document.body).trigger('update_checkout');
+        }
+        if (window.location.pathname.includes('/cart') || window.location.pathname.includes('/checkout')) {
+          setTimeout(() => {
+            window.location.reload();
+          }, 1500);
+        }
         break;
       }
 
@@ -2493,13 +2502,23 @@
             targetUrl = parsed.pathname + parsed.search + parsed.hash;
           }
         } catch (e) {}
-        setTimeout(() => {
+        const performRedirect = () => {
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
             goToCheckout();
           } else {
             window.location.href = targetUrl;
           }
-        }, p.delay_ms || 800);
+        };
+
+        const checkAndRedirect = () => {
+          if (S.speaking) {
+            setTimeout(checkAndRedirect, 100);
+          } else {
+            performRedirect();
+          }
+        };
+
+        setTimeout(checkAndRedirect, p.delay_ms || 800);
         break;
       }
 
@@ -4531,12 +4550,18 @@
   }
 
   function detectProductId() {
+    if (window.Shopify && window.Shopify.analytics && window.Shopify.analytics.meta && window.Shopify.analytics.meta.product) {
+      return window.Shopify.analytics.meta.product.id;
+    }
+    if (window.meta && window.meta.product) {
+      return window.meta.product.id;
+    }
     const match = document.body.className.match(/postid-(\d+)/);
     return match ? parseInt(match[1], 10) : null;
   }
 
   function detectProductName() {
-    const h1 = document.querySelector('h1.product_title, .product_title, h1.entry-title');
+    const h1 = document.querySelector('h1.product_title, .product_title, h1.entry-title, h1.product-title, .product-single__title, h1.product__title, h1');
     return h1 ? h1.textContent.trim() : null;
   }
 
