@@ -1855,7 +1855,7 @@
         audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 }
       });
       // After await: check guards again — user may have closed pane or muted while prompt was showing
-      if (!CFG.enable_voice || S.muted || !S.open) {
+      if (!CFG.enable_voice || S.muted || (!S.open && S.mode !== 'voice_nav')) {
         stream.getTracks().forEach(t => t.stop());
         S._requestingMic = false;
         return;
@@ -1970,14 +1970,14 @@
   async function processVoice() {
     if (!S.audioChunks.length) return;
     // Widget may have been closed while recording was still in-flight
-    if (!S.open) { S.audioChunks = []; return; }
+    if (!S.open && S.mode !== 'voice_nav') { S.audioChunks = []; return; }
     const mimeType = S._recordingMimeType || 'audio/webm';
     const blob = new Blob(S.audioChunks, { type: mimeType });
     S.audioChunks = []; // clear immediately so re-entrant calls don't reprocess same data
     if (blob.size < 1000) {
       if (isLiveMode) {
         orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-        setTimeout(() => { if (isLiveMode && S.open && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1000);
+        setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1000);
       }
       return;
     }
@@ -2026,9 +2026,9 @@
         sendBtn.disabled = !input.value.trim();
         orb.classList.remove('thinking');
         addBubble('bot', "Couldn't catch that clearly. Could you try again?");
-        if (isLiveMode && S.open) {
+        if (isLiveMode && (S.open || S.mode === 'voice_nav')) {
           orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-          setTimeout(() => { if (isLiveMode && S.open && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1200);
+          setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1200);
         }
         return;
       }
@@ -2050,11 +2050,11 @@
       sendBtn.disabled = !input.value.trim();
       orb.classList.remove('thinking');
       removeTyping();
-      if (S.open) {
+      if (S.open || S.mode === 'voice_nav') {
         addBubble('bot', 'Voice processing failed. Please try again.');
         if (isLiveMode) {
           orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-          setTimeout(() => { if (isLiveMode && S.open && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1500);
+          setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1500);
         }
       }
     }
@@ -2389,8 +2389,15 @@
               localStorage.setItem('_wa_reopen', '1');
             }
           } catch (e) {}
+          let targetUrl = act.payload.url || '/checkout';
+          try {
+            if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
+              const parsed = new URL(targetUrl);
+              targetUrl = parsed.pathname + parsed.search + parsed.hash;
+            }
+          } catch (e) {}
           setTimeout(() => {
-            window.location.href = act.payload.url || '/checkout';
+            window.location.href = targetUrl;
           }, 1200);
         }
         break;
@@ -2437,11 +2444,18 @@
             }
           } catch (e) { }
         }
+        let targetUrl = p.url || '/checkout';
+        try {
+          if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {
+            const parsed = new URL(targetUrl);
+            targetUrl = parsed.pathname + parsed.search + parsed.hash;
+          }
+        } catch (e) {}
         setTimeout(() => {
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
             goToCheckout();
           } else {
-            window.location.href = p.url || '/checkout';
+            window.location.href = targetUrl;
           }
         }, p.delay_ms || 800);
         break;
