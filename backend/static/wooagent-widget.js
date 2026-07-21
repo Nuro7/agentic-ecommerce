@@ -1885,16 +1885,22 @@
       orb.classList.remove('recording');
       orbHint.innerHTML = isLiveMode ? '<strong>Tap to speak</strong> · tap again to stop' : '<strong>Tap to speak</strong> · or type below';
       console.warn('[WooAgent] Mic error:', err && err.name, err);
+      let errMsg = '';
       if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
-        addBubble('bot', 'Mic access was denied. Please allow microphone access in your browser settings, then try again.');
+        errMsg = 'Mic access was denied. Please allow microphone access in your browser settings, then try again.';
       } else if (err && err.name === 'NotFoundError') {
-        addBubble('bot', 'No microphone found. Please connect a mic or type below.');
+        errMsg = 'No microphone found. Please connect a mic or type below.';
       } else if (err && err.name === 'NotReadableError') {
-        addBubble('bot', 'Microphone is in use by another app. Please close it and try again.');
+        errMsg = 'Microphone is in use by another app. Please close it and try again.';
       } else if (err && err.name === 'SecurityError') {
-        addBubble('bot', 'Voice requires a secure (HTTPS) connection. You can type below instead.');
+        errMsg = 'Voice requires a secure (HTTPS) connection. You can type below instead.';
       } else {
-        addBubble('bot', 'Could not start recording (' + (err && err.name ? err.name : 'unknown') + '). Please try again or type below.');
+        errMsg = 'Could not start recording (' + (err && err.name ? err.name : 'unknown') + '). Please try again or type below.';
+      }
+      if (S.open) {
+        addBubble('bot', errMsg);
+      } else {
+        showToast('❌ ' + errMsg);
       }
     } finally {
       S._requestingMic = false;
@@ -2025,7 +2031,12 @@
         S.loading = false;
         sendBtn.disabled = !input.value.trim();
         orb.classList.remove('thinking');
-        addBubble('bot', "Couldn't catch that clearly. Could you try again?");
+        const errMsg = "Couldn't catch that clearly. Could you try again?";
+        if (S.open) {
+          addBubble('bot', errMsg);
+        } else {
+          showToast('❌ ' + errMsg);
+        }
         if (isLiveMode && (S.open || S.mode === 'voice_nav')) {
           orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
           setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1200);
@@ -2050,12 +2061,15 @@
       sendBtn.disabled = !input.value.trim();
       orb.classList.remove('thinking');
       removeTyping();
-      if (S.open || S.mode === 'voice_nav') {
-        addBubble('bot', 'Voice processing failed. Please try again.');
-        if (isLiveMode) {
-          orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-          setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1500);
-        }
+      const errMsg = 'Voice processing failed. Please try again.';
+      if (S.open) {
+        addBubble('bot', errMsg);
+      } else {
+        showToast('❌ ' + errMsg);
+      }
+      if (isLiveMode) {
+        orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
+        setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1500);
       }
     }
   }
