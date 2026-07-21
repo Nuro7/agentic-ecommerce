@@ -41,6 +41,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in the root .env}
       REDIS_URL: redis://redis:6379/0
       PORT: "8000"
+      SPEAKO_ALLOW_RLS_BYPASS: "true"
     depends_on:
       - postgres
       - redis
