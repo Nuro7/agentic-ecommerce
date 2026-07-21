@@ -263,6 +263,7 @@ class PipelineA:
         cart_context: Any,
         store_client: Any,
         tenant_id: str = "_dev",
+        page_context: Optional[dict] = None,
     ) -> None:
         """Typed text → Brain DIRECTLY (deterministic), bypassing Gemini Live.
 
@@ -279,6 +280,7 @@ class PipelineA:
                 language=language,
                 cart_context=cart_context,
                 tenant_id=tenant_id,
+                page_context=page_context,
             )
             response_text = result.get("response_text") or result.get("text") or ""
             ui_actions = result.get("ui_actions") or result.get("actions") or []
@@ -349,6 +351,7 @@ class PipelineA:
                 # so ask_brain reasons about the customer's REAL cart. Mutable holder
                 # shared between Task A (writes) and Task B (reads).
                 session_cart: dict = {"value": None}
+                session_page_context: dict = {"value": {}}
 
                 # P1-11 voice MONITOR: the brain's verified grounding for the current
                 # turn. Set when ask_brain runs; the output_transcription handler checks
@@ -406,7 +409,13 @@ class PipelineA:
                                             ctrl.get("language", "en"),
                                             session_cart["value"], store_client,
                                             tenant_id,
+                                            page_context=session_page_context["value"],
                                         )
+                                    elif ctrl.get("type") == "page_update":
+                                        session_page_context["value"] = ctrl.get("page_context") or {}
+                                        if ctrl.get("cart_context") is not None:
+                                            session_cart["value"] = ctrl.get("cart_context")
+                                        logger.info("Pipeline A page_context updated: %s", session_page_context["value"])
                                 except (json.JSONDecodeError, KeyError):
                                     pass
 
@@ -527,6 +536,7 @@ class PipelineA:
                                                 language=language,
                                                 cart_context=session_cart["value"],
                                                 tenant_id=tenant_id,
+                                                page_context=session_page_context["value"],
                                             )
                                             # Orchestrator returns a dict with:
                                             # text, response_text, ui_actions, actions, suggested_replies
