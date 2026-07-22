@@ -141,7 +141,10 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 "instructions": system_instruction,
                 "audio": {
                     "input": {
-                        "format": "pcm16",
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000
+                        },
                         "turn_detection": {
                             "type": "server_vad",
                             "threshold": 0.5,
@@ -153,7 +156,10 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                         }
                     },
                     "output": {
-                        "format": "pcm16",
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000
+                        },
                         "voice": settings.openai_realtime_voice or "alloy"
                     }
                 },
