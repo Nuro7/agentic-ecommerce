@@ -22,7 +22,7 @@ def test_resample_pcm16_16k_to_24k():
 
 @pytest.mark.asyncio
 async def test_openai_voice_provider(monkeypatch):
-    from src.app.agent.voice.providers.openai_realtime import OpenAIVoiceProvider
+    from src.app.agent.voice.providers.openai_realtime import OpenAIVoiceProvider, ResponseState
 
     sent_payloads = []
     class MockOpenAISocket:
@@ -76,7 +76,7 @@ async def test_openai_voice_provider(monkeypatch):
     assert isinstance(sent_payloads[1]["audio"], str)
 
     # Test receive_events
-    provider._response_state = "GENERATING"
+    provider._response_state = ResponseState.GENERATING
     events_received = []
     async for event in provider.receive_events():
         events_received.append(event)
