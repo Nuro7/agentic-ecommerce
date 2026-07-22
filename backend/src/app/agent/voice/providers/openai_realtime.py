@@ -273,6 +273,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         await self._send_safe(json.dumps({
             "type": "session.update",
             "session": {
+                "type": "realtime",
                 "modalities": ["text", "audio"],
                 "instructions": system_instruction,
                 "voice": settings.openai_realtime_voice or "alloy",
