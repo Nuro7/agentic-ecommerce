@@ -344,12 +344,12 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     self._inbound_history,
                     self._outbound_history
                 )
-                if self._response_state == ResponseState.GENERATING:
+                if self._response_state == ResponseState.GENERATING and self._audio_delta_received:
                     logger.info("Speech started during active response -> sending response.cancel")
                     self._response_state = ResponseState.CANCELLING  # Set CANCELLING immediately to prevent duplicate cancel requests
                     await self._send_safe(json.dumps({"type": "response.cancel"}))
                 else:
-                    logger.debug("Speech started but no active response to cancel (state=%s)", self._response_state)
+                    logger.debug("Speech started but no active response to cancel (state=%s, delta_received=%s)", self._response_state, self._audio_delta_received)
                 yield {"type": "flush_audio"}
 
             elif evt_type == "conversation.item.input_audio_transcription.completed":

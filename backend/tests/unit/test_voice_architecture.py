@@ -86,6 +86,7 @@ async def test_openai_voice_provider(monkeypatch):
 
     # Test receive_events
     provider._response_state = ResponseState.GENERATING
+    provider._audio_delta_received = True
     events_received = []
     events_iter = provider.receive_events()
     for _ in range(6):
