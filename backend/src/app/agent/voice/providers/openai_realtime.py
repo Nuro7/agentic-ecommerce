@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import struct
+import time
 from typing import Any, AsyncIterator
 
 import websockets
@@ -42,12 +43,26 @@ def resample_pcm16_16k_to_24k(data: bytes) -> bytes:
 class OpenAIVoiceProvider(BaseVoiceProvider):
     """
     Voice provider wrapping the OpenAI Realtime API using GPT Realtime 2.1 Mini.
+    Complying with the GA (General Availability) API specification.
     """
 
     def __init__(self, session_service: Any) -> None:
         self.session_service = session_service
         self.ws: websockets.WebSocketClientProtocol | None = None
         self._connected = False
+        self.write_lock = asyncio.Lock()
+
+    async def _send_safe(self, data: str) -> None:
+        """
+        Thread-safe websocket send operation guarded by an asyncio Lock.
+        """
+        if self.ws and self._connected:
+            try:
+                async with self.write_lock:
+                    await self.ws.send(data)
+            except Exception as e:
+                logger.error("Error during thread-safe ws.send: %s", e)
+                raise
 
     async def connect(self, session_id: str, store_client: Any, tenant_id: str) -> None:
         api_key = settings.openai_api_key or os.environ.get("OPENAI_API_KEY", "").strip()
@@ -60,15 +75,24 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             "Authorization": f"Bearer {api_key}",
         }
 
+        # Handle modern websockets connection settings (heartbeats and custom headers)
         import inspect
-        connect_kwargs = {}
+        connect_kwargs = {
+            "ping_interval": 20,
+            "ping_timeout": 20,
+        }
         sig = inspect.signature(websockets.connect)
         if "additional_headers" in sig.parameters:
             connect_kwargs["additional_headers"] = headers
         else:
             connect_kwargs["extra_headers"] = headers
 
-        self.ws = await websockets.connect(url, **connect_kwargs)
+        logger.info("Opening OpenAI Realtime WebSocket connection for session=%s", session_id)
+        # Establish connection with timeout guard
+        self.ws = await asyncio.wait_for(
+            websockets.connect(url, **connect_kwargs),
+            timeout=10.0
+        )
         self._connected = True
         logger.info("OpenAIVoiceProvider connected to model=%s", model_name)
 
@@ -107,9 +131,12 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             }
         ]
 
-        await self.ws.send(json.dumps({
+        logger.info("Sending GA session.update config for session=%s", session_id)
+        # Send GA configuration payload
+        await self._send_safe(json.dumps({
             "type": "session.update",
             "session": {
+                "type": "realtime",
                 "modalities": ["text", "audio"],
                 "instructions": system_instruction,
                 "voice": settings.openai_realtime_voice or "alloy",
@@ -130,12 +157,25 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             }
         }))
 
+        # Wait until session.updated is received to guarantee session state is ready before streaming
+        logger.info("Waiting for session.updated confirmation from OpenAI...")
+        async for raw in self.ws:
+            event = json.loads(raw)
+            evt_type = event.get("type")
+            if evt_type == "session.updated":
+                logger.info("OpenAI Realtime session initialized successfully for session=%s", session_id)
+                break
+            elif evt_type == "error":
+                err = event.get("error", {})
+                logger.error("OpenAI Realtime session update failed: %s", err.get("message"))
+                raise RuntimeError(f"OpenAI session update failed: {err.get('message')}")
+
     async def send_audio_chunk(self, chunk: bytes) -> None:
         if self.ws and self._connected:
             # Resample mono PCM from 16kHz to 24kHz
             resampled = resample_pcm16_16k_to_24k(chunk)
             payload = base64.b64encode(resampled).decode("utf-8")
-            await self.ws.send(json.dumps({
+            await self._send_safe(json.dumps({
                 "type": "input_audio_buffer.append",
                 "audio": payload
             }))
@@ -158,10 +198,14 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
 
             evt_type = event.get("type")
 
+            # Safe structured logging for events
+            if evt_type in ("error", "response.done", "response.function_call_arguments.done"):
+                logger.info("Received OpenAI event: %s", evt_type)
+
             if evt_type == "input_audio_buffer.speech_started":
                 # Speech detected by server VAD -> barge-in!
                 # Send cancel command to OpenAI Realtime and yield flush_audio
-                await self.ws.send(json.dumps({"type": "response.cancel"}))
+                await self._send_safe(json.dumps({"type": "response.cancel"}))
                 yield {"type": "flush_audio"}
 
             elif evt_type == "conversation.item.input_audio_transcription.completed":
@@ -206,7 +250,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
     async def send_tool_response(self, call_id: str, name: str, response: str) -> None:
         if self.ws and self._connected:
             # Send function execution output
-            await self.ws.send(json.dumps({
+            await self._send_safe(json.dumps({
                 "type": "conversation.item.create",
                 "item": {
                     "type": "function_call_output",
@@ -215,7 +259,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 }
             }))
             # Trigger response generation
-            await self.ws.send(json.dumps({
+            await self._send_safe(json.dumps({
                 "type": "response.create"
             }))
 
@@ -224,6 +268,6 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         if self.ws:
             try:
                 await self.ws.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Error during websocket close: %s", e)
             self.ws = None
