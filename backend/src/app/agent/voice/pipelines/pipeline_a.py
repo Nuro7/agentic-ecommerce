@@ -114,7 +114,10 @@ def build_live_config(cfg, *, system_instruction: str, voice_name: str, tools) -
 # Slimmer than the multi-tool prompt — Gemini only needs to know WHEN to call
 # ask_brain, not the details of each operation. Brain handles the details.
 
-def _build_system_prompt(store_config: dict | None = None) -> str:
+def _build_system_prompt(
+    store_config: dict | None = None,
+    promoted_products: list[dict] | None = None,
+) -> str:
     # Per-tenant store config (tenant DB column → env-var fallback). A tenant
     # with NULL columns keeps the previous env/default behavior exactly.
     cfg = store_config or {}
@@ -129,6 +132,21 @@ def _build_system_prompt(store_config: dict | None = None) -> str:
     personality_line = _PERSONALITY_LINES.get(
         (cfg.get("ai_personality") or "").lower().strip(), ""
     )
+
+    # Active promotions injected into the voice prompt
+    promoted_section = ""
+    if promoted_products:
+        items = []
+        for p in promoted_products:
+            discount = ""
+            if p.get("discount_percent"):
+                discount = f" ({p['discount_percent']:.0f}% off)"
+            elif p.get("discount_amount"):
+                discount = f" (₹{p['discount_amount']:.0f} off)"
+            label = p.get("offer_type", "").replace("_", " ").title()
+            items.append(f"• {p['name']} — {label}{discount}")
+        if items:
+            promoted_section = "\nPROMOTED PRODUCTS:\n" + "\n".join(items) + "\n\n"
 
     return f"""You are Aria, the voice shopping assistant for {store_name}.
 {personality_line}
@@ -186,7 +204,7 @@ Repeat the Brain's product names verbatim — do not invent or alter any product
 No bullet lists, no markdown, no prices in symbols — say "four ninety-nine rupees" not "₹499".
 Currency: {currency}
 Store info (only when customer asks): Shipping: {shipping} | Returns: {returns} | Payments: {payments}
-"""
+{promoted_section}"""
 
 
 # ── ask_brain tool declaration ────────────────────────────────────────────────
@@ -327,10 +345,24 @@ class PipelineA:
         from ....modules.tenants.service import get_store_config_for_tenant
         store_config = await get_store_config_for_tenant(tenant_id)
 
+        # Active promotions for the voice prompt (non-fatal on failure)
+        promoted_products = None
+        try:
+            from ....modules.offers.recommendations import get_promoted_products_for_prompt
+            from ....core.database import AsyncSessionLocal
+            promoted_products = await get_promoted_products_for_prompt(
+                tenant_id=tenant_id,
+                store_client=store_client,
+                db_session_factory=lambda: AsyncSessionLocal(),
+                limit=5,
+            )
+        except Exception:
+            pass
+
         # ── Session config — single typed builder (see build_live_config) ─────
         live_config = build_live_config(
             settings,
-            system_instruction=_build_system_prompt(store_config),
+            system_instruction=_build_system_prompt(store_config, promoted_products),
             voice_name=voice_name,
             tools=_build_brain_tool(),
         )

@@ -239,7 +239,22 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         from ..pipelines.pipeline_a import _build_system_prompt
 
         store_config = await get_store_config_for_tenant(tenant_id)
-        system_instruction = _build_system_prompt(store_config)
+
+        # Active promotions for the voice prompt (non-fatal on failure)
+        promoted_products = None
+        try:
+            from ....modules.offers.recommendations import get_promoted_products_for_prompt
+            from ....core.database import AsyncSessionLocal
+            promoted_products = await get_promoted_products_for_prompt(
+                tenant_id=tenant_id,
+                store_client=store_client,
+                db_session_factory=lambda: AsyncSessionLocal(),
+                limit=5,
+            )
+        except Exception:
+            pass
+
+        system_instruction = _build_system_prompt(store_config, promoted_products)
 
         openai_tools = [
             {

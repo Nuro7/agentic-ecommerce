@@ -38,6 +38,7 @@ class GreetRequest(BaseModel):
     store_name: Optional[str] = None
     language: Optional[str] = "auto"
     current_page: Optional[GreetCurrentPage] = None
+    customer_name: Optional[str] = Field(None, max_length=100)
 
 
 def _normalize_language(value: Optional[str]) -> str:
@@ -155,30 +156,37 @@ async def greet_endpoint(
         except Exception as exc:
             logger.info("Greet product context fetch failed: %s", exc)
 
+    # Check if we know the customer's name from session
+    customer_name = session_meta.get("customer_name", "")
+    # If the widget sends a name, save it to session meta
+    if payload.customer_name and not customer_name:
+        customer_name = payload.customer_name.strip()
+        session_meta["customer_name"] = customer_name
+
     greetings = {
         "en": {
-            "new_general": f"Hey, welcome to {store_name}! I'm Aria, your shopping assistant. What are you looking for today?",
-            "new_product": f"Hey! I see you're looking at {product_context}. Want me to tell you more about it, or check if it's available in your size?",
-            "returning_no_cart": "Hey, welcome back! Good to see you again. What can I help you find today?",
-            "returning_with_cart": f"Hey, welcome back! You've got {cart_summary['item_count']} items in your cart totalling {cart_summary['total']}. Want to pick up where you left off, or are you looking for something new?",
+            "new_general": f"Hey there! Welcome to {store_name}! I'm Aria, your personal sales associate. What's your name so I can help you better?",
+            "new_product": f"Hey! Great choice — you're checking out {product_context}. I'm Aria. What's your name, and I'll tell you everything about it?",
+            "returning_no_cart": f"Hey{' ' + customer_name if customer_name else ''}, welcome back! Good to see you again. What are you looking for today?",
+            "returning_with_cart": f"Hey{' ' + customer_name if customer_name else ''}, welcome back! You've got {cart_summary['item_count']} items in your cart — {cart_summary['total']}. Want to continue where you left off, or explore something new?",
         },
         "hi": {
-            "new_general": f"Namaste! {store_name} mein aapka swagat hai. Main Aria hoon, aapka shopping assistant. Aaj kya dhundhne mein help karoon?",
-            "new_product": f"Namaste! Aap {product_context} dekh rahe hain. Kya main iske baare mein aur bataaon, ya size availability check karoon?",
-            "returning_no_cart": "Hey, welcome back! Aaj kya dekhna hai?",
-            "returning_with_cart": f"Welcome back! Aapke cart mein {cart_summary['item_count']} items hain, total {cart_summary['total']}. Checkout karein ya kuch aur dekhein?",
+            "new_general": f"Namaste! {store_name} mein aapka swagat hai! Main Aria hoon, aapki personal sales associate. Aapka naam kya hai, taaki main aapki aur acchi madad kar sakoon?",
+            "new_product": f"Namaste! Aap {product_context} dekh rahe hain. Main Aria hoon. Aapka naam kya hai, aur main aapko iske baare mein sab bata doon?",
+            "returning_no_cart": f"Namaste{' ' + customer_name if customer_name else ''}! Aapka swagat hai! Aaj kya dhundh rahe hain?",
+            "returning_with_cart": f"Namaste{' ' + customer_name if customer_name else ''}! Aapke cart mein {cart_summary['item_count']} items hain, total {cart_summary['total']}. Checkout karein ya kuch aur dekhein?",
         },
         "ml": {
-            "new_general": f"Namaskaram! {store_name} il swagatham. Njaan Aria, ningalude shopping assistant. Innu enthu thedi varunu?",
-            "new_product": f"Namaskaram! Ningal {product_context} nokkunund. Ine patri koodi ariyano, allenkil size undо ennu nokatte?",
-            "returning_no_cart": "Swagatham! Innu enthu venam?",
-            "returning_with_cart": f"Swagatham! Ningalude cart-il {cart_summary['item_count']} items undu, total {cart_summary['total']}. Checkout cheyyano, allenkil shopping continue cheyyano?",
+            "new_general": f"Namaskaram! {store_name} il swagatham! Njaan Aria, ningalude personal sales associate. Ningalude peru enthaan, njaan nannayi sahaayikkaanno?",
+            "new_product": f"Namaskaram! Ningal {product_context} nokkunund. Njaan Aria. Ningalude peru enthaan?",
+            "returning_no_cart": f"Swagatham{' ' + customer_name if customer_name else ''}! Innu enthu venam?",
+            "returning_with_cart": f"Swagatham{' ' + customer_name if customer_name else ''}! Ningalude cart-il {cart_summary['item_count']} items undu, total {cart_summary['total']}. Checkout cheyyano, allenkil shopping continue cheyyano?",
         },
         "ta": {
-            "new_general": f"Vanakkam! {store_name} ku varaverkirom. Naan Aria, ungal shopping assistant. Inru enna thedugirirkal?",
-            "new_product": f"Vanakkam! Neenga {product_context} paarkkirirkal. Ine pattri kodumai sollaattuma, illai size irukkaa endra paarkkaattuma?",
-            "returning_no_cart": "Vanakkam! Inru enna thedugirirkal?",
-            "returning_with_cart": f"Vanakkam! Ungal cart-il {cart_summary['item_count']} items ullathu, total {cart_summary['total']}. Checkout seyyungala, illai shopping continue seyyungala?",
+            "new_general": f"Vanakkam! {store_name} ku varaverkirom! Naan Aria, ungal personal sales associate. Ungal peyar enna, nan nallaa sahaikkattum?",
+            "new_product": f"Vanakkam! Neenga {product_context} paarkkirirkal. Naan Aria. Ungal peyar enna?",
+            "returning_no_cart": f"Vanakkam{' ' + customer_name if customer_name else ''}! Inru enna thedugirirkal?",
+            "returning_with_cart": f"Vanakkam{' ' + customer_name if customer_name else ''}! Ungal cart-il {cart_summary['item_count']} items ullathu, total {cart_summary['total']}. Checkout seyyungala, illai shopping continue seyyungala?",
         },
     }
 
@@ -204,8 +212,11 @@ async def greet_endpoint(
     audio_b64 = None
     if tts_service:
         try:
+            meta_to_save = {**session_meta, "greeted": True, "language": language}
+            if payload.customer_name:
+                meta_to_save["customer_name"] = payload.customer_name.strip()
             save_meta_coro = (
-                session_service.save_meta(tenant_id, session_id, {**session_meta, "greeted": True, "language": language})
+                session_service.save_meta(tenant_id, session_id, meta_to_save)
                 if session_service else asyncio.sleep(0)
             )
             audio_b64, _ = await asyncio.gather(
@@ -215,7 +226,10 @@ async def greet_endpoint(
         except Exception as exc:
             logger.warning("TTS synthesis failed: %s", exc)
     elif session_service:
-        await session_service.save_meta(tenant_id, session_id, {**session_meta, "greeted": True, "language": language})
+        meta_to_save = {**session_meta, "greeted": True, "language": language}
+        if payload.customer_name:
+            meta_to_save["customer_name"] = payload.customer_name.strip()
+        await session_service.save_meta(tenant_id, session_id, meta_to_save)
 
     suggested_replies_map = {
         "en": (

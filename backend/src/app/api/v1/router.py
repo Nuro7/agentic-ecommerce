@@ -12,6 +12,7 @@ from ...modules.orders.router import router as orders_router
 from ...modules.webhooks.router import router as webhooks_router
 from ...modules.analytics.router import router as analytics_router
 from ...modules.admin.router import router as admin_router
+from ...modules.offers.router import router as offers_router
 from .health import router as health_router
 from .public import router as public_router
 from .onboarding import router as onboarding_router
@@ -38,3 +39,4 @@ api_router.include_router(admin_router)
 api_router.include_router(public_router)
 api_router.include_router(onboarding_router)
 api_router.include_router(ingest_router)
+api_router.include_router(offers_router)
