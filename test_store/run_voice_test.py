@@ -111,7 +111,11 @@ async def main():
         ("checkout",      "I want to checkout",              "en-US", "FSM starts (asks name)"),
         ("offtopic",      "what is the weather today",        "en-US", "refuses off-topic"),
     ]
-    async with websockets.connect(f"{WS}?session_id={sid}&tenant_id={tid}", open_timeout=20, max_size=16_000_000) as ws:
+    from src.app.agent.gemini_client import generate_ws_token
+    token = generate_ws_token(tid, sid)
+    url = f"{WS}?session_id={sid}&tenant_id={tid}&token={token}"
+
+    async with websockets.connect(url, open_timeout=20, max_size=16_000_000) as ws:
         for label, utt, lang, expect in journey:
             try:
                 pcm = await tts_pcm(utt, lang)
