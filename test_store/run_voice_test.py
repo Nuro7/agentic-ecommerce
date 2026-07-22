@@ -93,11 +93,13 @@ async def main():
     # voice-enabled merchant
     async with AsyncSessionLocal() as db:
         tid = (await db.execute(text("SELECT id FROM tenants WHERE email LIKE 'jrn-%' ORDER BY created_at DESC LIMIT 1"))).scalar()
+        if not tid:
+            tid = (await db.execute(text("SELECT id FROM tenants ORDER BY created_at DESC LIMIT 1"))).scalar()
         if tid:
             await db.execute(text("UPDATE subscriptions SET plan_id=:p WHERE tenant_id=:t"), {"p": GROWTH, "t": str(tid)})
             await db.commit()
     if not tid:
-        print("no merchant found — run the journey harness first"); return
+        print("no merchant found — please onboard a merchant or run seed_tenant.py first"); return
     tid = str(tid)
     print(f"merchant={tid}", flush=True)
 
