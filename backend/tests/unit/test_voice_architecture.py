@@ -111,6 +111,8 @@ async def test_openai_voice_provider(monkeypatch):
     assert sent_payloads[2]["type"] == "conversation.item.create"
     assert sent_payloads[2]["item"]["call_id"] == "call_1"
     assert sent_payloads[3]["type"] == "response.create"
+    # Regression check: response.create must never contain response.modalities
+    assert "response" not in sent_payloads[3] or "modalities" not in sent_payloads[3]["response"]
 
     # Test manual cancel
     provider._response_state = ResponseState.STREAMING_AUDIO
