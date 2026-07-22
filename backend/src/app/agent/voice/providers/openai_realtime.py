@@ -51,6 +51,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         self.ws: websockets.WebSocketClientProtocol | None = None
         self._connected = False
         self.write_lock = asyncio.Lock()
+        self._active_response = False
 
     async def _send_safe(self, data: str) -> None:
         """
@@ -210,13 +211,20 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             evt_type = event.get("type")
 
             # Safe structured logging for events
-            if evt_type in ("error", "response.done", "response.function_call_arguments.done"):
+            if evt_type in ("error", "response.created", "response.done", "response.function_call_arguments.done"):
                 logger.info("Received OpenAI event: %s", evt_type)
 
-            if evt_type == "input_audio_buffer.speech_started":
+            if evt_type == "response.created":
+                self._active_response = True
+
+            elif evt_type == "input_audio_buffer.speech_started":
                 # Speech detected by server VAD -> barge-in!
-                # Send cancel command to OpenAI Realtime and yield flush_audio
-                await self._send_safe(json.dumps({"type": "response.cancel"}))
+                # Only cancel if there is an active response in progress
+                if self._active_response:
+                    logger.info("Speech started during active response -> sending response.cancel")
+                    await self._send_safe(json.dumps({"type": "response.cancel"}))
+                else:
+                    logger.info("Speech started but no active response to cancel")
                 yield {"type": "flush_audio"}
 
             elif evt_type == "conversation.item.input_audio_transcription.completed":
@@ -251,12 +259,19 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 }
 
             elif evt_type == "response.done":
+                self._active_response = False
                 yield {"type": "turn_complete"}
 
             elif evt_type == "error":
-                err_msg = event.get("error", {}).get("message", "Unknown OpenAI Realtime error")
-                logger.error("OpenAI Realtime error: %s", err_msg)
-                yield {"type": "error", "message": err_msg}
+                err = event.get("error", {})
+                err_msg = err.get("message", "Unknown OpenAI Realtime error")
+                err_code = err.get("code")
+                # Ignore non-fatal cancellation failure errors
+                if err_code == "cancellation_failed" or "cancellation failed" in err_msg.lower():
+                    logger.warning("Ignored non-fatal OpenAI Realtime error: %s", err_msg)
+                else:
+                    logger.error("OpenAI Realtime error: %s", err_msg)
+                    yield {"type": "error", "message": err_msg}
 
     async def send_tool_response(self, call_id: str, name: str, response: str) -> None:
         if self.ws and self._connected:
