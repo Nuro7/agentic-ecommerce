@@ -134,19 +134,19 @@ def _build_system_prompt(
     )
 
     # Active promotions injected into the voice prompt
+    # ANTI-HALLUCINATION: only counts per offer type, never product names or prices.
     promoted_section = ""
     if promoted_products:
-        items = []
+        counts: dict[str, int] = {}
         for p in promoted_products:
-            discount = ""
-            if p.get("discount_percent"):
-                discount = f" ({p['discount_percent']:.0f}% off)"
-            elif p.get("discount_amount"):
-                discount = f" (₹{p['discount_amount']:.0f} off)"
-            label = p.get("offer_type", "").replace("_", " ").title()
-            items.append(f"• {p['name']} — {label}{discount}")
-        if items:
-            promoted_section = "\nPROMOTED PRODUCTS:\n" + "\n".join(items) + "\n\n"
+            ot = p.get("offer_type", "promotion")
+            counts[ot] = counts.get(ot, 0) + 1
+        if counts:
+            parts = []
+            for ot, cnt in sorted(counts.items()):
+                label = ot.replace("_", " ").title()
+                parts.append(f"{cnt} {label}")
+            promoted_section = "\nActive promotions: " + " • ".join(parts) + ". Call ask_brain with \"on sale\" or \"offers\" to fetch the actual products.\n\n"
 
     return f"""You are Aria, the voice shopping assistant for {store_name}.
 {personality_line}
@@ -389,7 +389,7 @@ class PipelineA:
                 # turn. Set when ask_brain runs; the output_transcription handler checks
                 # Gemini's SPOKEN words against it and substitutes the verified text if
                 # Gemini invents a product. Reset on turn_complete so it can't go stale.
-                spoken_truth: dict = {"names": set(), "full_names": set(), "prices": set(), "verified": ""}
+                spoken_truth: dict = {"names": set(), "full_names": set(), "prices": set(), "stock": {}, "verified": ""}
 
                 # ── Task A: Browser → Gemini ──────────────────────────────────
                 async def receive_from_frontend() -> None:
@@ -506,6 +506,7 @@ class PipelineA:
                                                 retrieved_names=spoken_truth["names"] or None,
                                                 retrieved_full_names=spoken_truth["full_names"] or None,
                                                 retrieved_prices=spoken_truth["prices"] or None,
+                                                retrieved_stock=spoken_truth["stock"] or None,
                                             )
                                             if not ok:
                                                 out_text = spoken_truth["verified"] or assistant_text
@@ -539,7 +540,7 @@ class PipelineA:
                                 if getattr(sc, "turn_complete", False):
                                     # Clear the turn's grounding so it can't flag the next turn.
                                     spoken_truth.update(
-                                        names=set(), full_names=set(), prices=set(), verified="")
+                                        names=set(), full_names=set(), prices=set(), stock={}, verified="")
                                     try:
                                         await websocket.send_text(
                                             json.dumps({"type": "turn_complete"})
@@ -584,12 +585,12 @@ class PipelineA:
                                             # turn (same build_retrieved_context the brain used → no
                                             # drift) so the spoken-transcript monitor can check Gemini.
                                             try:
-                                                _ids, _pr, _at, _nm, _full = build_retrieved_context(
+                                                _ids, _pr, _at, _nm, _full, _stock = build_retrieved_context(
                                                     [a.get("payload", {}) for a in ui_actions
                                                      if isinstance(a, dict)])
                                                 spoken_truth.update(
                                                     names=_nm, full_names=_full, prices=_pr,
-                                                    verified=response_text)
+                                                    stock=_stock, verified=response_text)
                                             except Exception:
                                                 pass
 

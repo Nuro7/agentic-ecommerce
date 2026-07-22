@@ -62,14 +62,16 @@ def build_system_prompt(
 
     promoted_section = ""
     if promoted_products:
-        items = []
+        counts: dict[str, int] = {}
         for p in promoted_products:
-            name = p.get("name", "")
-            price = p.get("price", "")
-            if name and price:
-                items.append(f"{name} — {price}")
-        if items:
-            promoted_section = f"\nPROMOTED / ON OFFER:\n" + "\n".join(items) + "\n"
+            ot = p.get("offer_type", "promotion")
+            counts[ot] = counts.get(ot, 0) + 1
+        if counts:
+            parts = []
+            for ot, cnt in sorted(counts.items()):
+                label = ot.replace("_", " ").title()
+                parts.append(f"{cnt} {label}")
+            promoted_section = f"\nACTIVE PROMOTIONS: {' • '.join(parts)}. Call search_products(on_sale=True) or ask me about them.\n"
 
     return f"""You are Aria, a trusted personal sales associate at {store_name}. You are on a live call with a customer.
 
@@ -99,6 +101,10 @@ Every product name, brand, spec, and stock status MUST come from a search_produc
 The STORE CATALOG above lists CATEGORIES ONLY — it never contains product names. NEVER name a specific product unless a tool call this turn returned it. Do NOT combine a category, a colour, or the customer's words into a product name. If a tool returns NOTHING or ERRORS, say "I couldn't find that one — want me to look for something similar?" — do NOT invent an item to fill the gap. NEVER name a product that a tool did not return this turn.
 
 NEVER say "no items available" or "we don't have that" WITHOUT first calling search_products. ALWAYS call search_products before saying anything about availability.
+
+NEVER declare a product "in stock" or "out of stock" without calling check_inventory first. If you haven't called check_inventory, say "Let me check the stock for you" instead of guessing. Calling check_inventory with no arguments returns inventory for the last-viewed product.
+
+Promotions listed above are CATEGORY-LEVEL only — never name a promoted product unless a tool call returned it this turn. Call search_products(on_sale=True) to find the actual promoted items.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PRICE RULE

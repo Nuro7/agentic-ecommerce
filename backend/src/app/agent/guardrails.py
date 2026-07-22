@@ -213,6 +213,7 @@ def check_output(
     retrieved_attributes: Optional[Set[str]] = None,
     retrieved_names: Optional[Set[str]] = None,
     retrieved_full_names: Optional[Set[str]] = None,
+    retrieved_stock: Optional[Dict[str, bool]] = None,
     detected_language: str = "en",
     allow_retry: bool = True,
     user_query: Optional[str] = None,
@@ -226,6 +227,7 @@ def check_output(
       4. PII strip                              (mutates cleaned text)
       4b. inline price/stock-count strip        (mutates cleaned text — structural enforcement)
       5. language matches detected language     (raises → retry)
+      6. stock-status matches retrieved data    (raises → retry)
 
     On failure raises OutputValidationError so the caller can retry with a
     stricter prompt or return a safe fallback.
@@ -360,7 +362,8 @@ def check_output(
     # Only runs when we have explicit attribute data from retrieved products.
     # Normalizes common size abbreviations (M→medium, L→large, XL→extra large)
     # to prevent false positives when the store stores full names but LLM uses
-    # abbreviations. Requires ≥2 clearly invented values before triggering.
+    # abbreviations. Single invented values are flagged — a fake colour/size is
+    # as harmful as a fake price.
     if retrieved_attributes:
         attr_mentions = set(re.findall(
             r"\b(XS|S|M|L|XL|XXL|XXXL"
@@ -386,7 +389,7 @@ def check_output(
             inv for inv in invented
             if inv not in normalized_retrieved and inv not in name_words
         }
-        if len(invented) >= 2:
+        if len(invented) >= 1:
             msg = f"potentially invented attribute values: {invented}"
             logger.warning("Output validation FAIL — %s", msg)
             if allow_retry:
@@ -410,6 +413,43 @@ def check_output(
             if allow_retry:
                 raise OutputValidationError(msg)
 
+    # ── Check 6: stock-status matches retrieved data ──────────────────────────
+    # Detects "in stock" / "out of stock" / "available" / "sold out" / "only X left"
+    # declarations and verifies against stock_map. The LLM must call check_inventory
+    # before declaring stock status; this check flags unbacked claims.
+    if retrieved_stock and retrieved_product_ids:
+        _STOCK_PATTERNS = re.compile(
+            r"(in stock|out of stock|available|sold out|back in stock|"
+            r"only\s+\d+\s+left|limited stock|low stock|unavailable|"
+            r"currently\s+(not\s+)?available|restocked)",
+            re.IGNORECASE,
+        )
+        if _STOCK_PATTERNS.search(cleaned):
+            # Find all mentioned product IDs in the same sentence as stock language
+            sentences = re.split(r'[.!?\n]+', cleaned)
+            for sent in sentences:
+                if not _STOCK_PATTERNS.search(sent):
+                    continue
+                sid_mentions = set(re.findall(r"\b(\d+)\b", sent))
+                known_ids = {str(pid) for pid in retrieved_product_ids}
+                for sid in sid_mentions:
+                    if sid in known_ids and sid in retrieved_stock:
+                        expected = retrieved_stock[sid]
+                        if expected:
+                            # Declaring "out of stock" for something that IS in stock
+                            if re.search(r"(out of stock|sold out|unavailable|not available)", sent, re.IGNORECASE):
+                                msg = f"stock mismatch: product {sid} is in stock but LLM declared out of stock"
+                                logger.warning("Output validation FAIL — %s", msg)
+                                if allow_retry:
+                                    raise OutputValidationError(msg)
+                        else:
+                            # Declaring "in stock" for something that IS out of stock
+                            if re.search(r"(in stock|available|back in stock|restocked)", sent, re.IGNORECASE):
+                                msg = f"stock mismatch: product {sid} is out of stock but LLM declared in stock"
+                                logger.warning("Output validation FAIL — %s", msg)
+                                if allow_retry:
+                                    raise OutputValidationError(msg)
+
     return cleaned
 
 
@@ -423,6 +463,7 @@ def validate_spoken_text(
     retrieved_full_names: Optional[Set[str]] = None,
     retrieved_names: Optional[Set[str]] = None,
     retrieved_prices: Optional[Set[str]] = None,
+    retrieved_stock: Optional[Dict[str, bool]] = None,
     detected_language: str = "en",
 ) -> tuple[bool, str]:
     """Monitor the voice channel's SPOKEN transcript against the brain's grounding.
@@ -443,6 +484,7 @@ def validate_spoken_text(
             retrieved_names=retrieved_names,
             retrieved_full_names=retrieved_full_names,
             retrieved_prices=retrieved_prices,
+            retrieved_stock=retrieved_stock,
             detected_language=detected_language,
             allow_retry=True,
         )
@@ -518,28 +560,41 @@ def strip_inline_prices(text: str) -> str:
 
 def build_retrieved_context(
     tool_results: List[Dict[str, Any]],
-) -> tuple[Set[str], Set[str], Set[str], Set[str], Set[str]]:
-    """Extract product IDs, prices, attribute values, NAME TOKENS, and FULL NAMES.
+) -> tuple[Set[str], Set[str], Set[str], Set[str], Set[str], Dict[str, bool]]:
+    """Extract product IDs, prices, attribute values, NAME TOKENS, FULL NAMES, and stock map.
 
     Pass the return value into check_output() so it can validate the LLM
     response against only what was actually retrieved.
 
     Returns (product_id_set, price_set, attribute_value_set, name_token_set,
-    full_name_set). name_token_set holds the significant lowercased tokens of every
+    full_name_set, stock_map). name_token_set holds the significant lowercased tokens of every
     retrieved name (used for the model-number literal check); full_name_set holds the
     whole lowercased product names (used for the digit-free fuzzy match). The two are
     kept separate on purpose — check_output never crosses them.
+    stock_map maps product_id → True (in stock) / False (out of stock).
     """
     product_ids: Set[str] = set()
     prices: Set[str] = set()
     attributes: Set[str] = set()
     name_tokens: Set[str] = set()
     full_names: Set[str] = set()
+    stock_map: Dict[str, bool] = {}
 
     def _extract_product(p: dict) -> None:
         pid = p.get("id") or p.get("product_id")
         if pid:
-            product_ids.add(str(pid))
+            pid_str = str(pid)
+            product_ids.add(pid_str)
+            # Collect stock status if available
+            raw_stock = p.get("in_stock")
+            if isinstance(raw_stock, bool):
+                stock_map[pid_str] = raw_stock
+            elif isinstance(raw_stock, (int, float)):
+                stock_map[pid_str] = raw_stock > 0
+            stock_qty = p.get("stock_quantity")
+            if stock_qty is not None and isinstance(stock_qty, (int, float)):
+                if pid_str not in stock_map:
+                    stock_map[pid_str] = stock_qty > 0
         # Collect significant name tokens (len>2) AND the whole name for grounding.
         name = str(p.get("name") or "").strip().lower()
         if name:
@@ -586,4 +641,4 @@ def build_retrieved_context(
         if "product" in payload and isinstance(payload["product"], dict):
             _extract_product(payload["product"])
 
-    return product_ids, prices, attributes, name_tokens, full_names
+    return product_ids, prices, attributes, name_tokens, full_names, stock_map

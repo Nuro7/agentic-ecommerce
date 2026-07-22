@@ -710,8 +710,9 @@ async def ask_brain(
     retrieved_prices: Set[str] = set()
     retrieved_names: Set[str] = set()
     retrieved_full_names: Set[str] = set()
+    retrieved_stock: Dict[str, bool] = {}
     try:
-        retrieved_ids, retrieved_prices, retrieved_attrs, retrieved_names, retrieved_full_names = build_retrieved_context(
+        retrieved_ids, retrieved_prices, retrieved_attrs, retrieved_names, retrieved_full_names, retrieved_stock = build_retrieved_context(
             [a.get("payload", {}) for a in ui_actions if isinstance(a, dict)]
         )
 
@@ -751,6 +752,7 @@ async def ask_brain(
             retrieved_attributes=retrieved_attrs or None,
             retrieved_names=retrieved_names or None,
             retrieved_full_names=retrieved_full_names or None,
+            retrieved_stock=retrieved_stock or None,
             detected_language=lang,
             allow_retry=True,
             user_query=cleaned_message,
@@ -766,6 +768,7 @@ async def ask_brain(
             retrieved_prices=retrieved_prices,
             retrieved_names=retrieved_names,
             retrieved_full_names=retrieved_full_names,
+            retrieved_stock=retrieved_stock,
         )
     except Exception as exc:
         logger.debug("Output guardrail skipped: %s", exc)

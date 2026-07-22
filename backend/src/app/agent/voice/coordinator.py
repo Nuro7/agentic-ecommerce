@@ -44,6 +44,7 @@ class VoiceTurnCoordinator:
             "names": set(),
             "full_names": set(),
             "prices": set(),
+            "stock": {},
             "verified": "",
         }
 
@@ -190,11 +191,11 @@ class VoiceTurnCoordinator:
 
             # Capture brain's verified grounding context
             try:
-                _ids, _pr, _at, _nm, _full = build_retrieved_context(
+                _ids, _pr, _at, _nm, _full, _stock = build_retrieved_context(
                     [a.get("payload", {}) for a in ui_actions if isinstance(a, dict)]
                 )
                 self.spoken_truth.update(
-                    names=_nm, full_names=_full, prices=_pr, verified=response_text
+                    names=_nm, full_names=_full, prices=_pr, stock=_stock, verified=response_text
                 )
             except Exception:
                 pass
@@ -342,7 +343,7 @@ class VoiceTurnCoordinator:
                     if self._active_brain_task and not self._active_brain_task.done():
                         logger.info("Barge-in: cancelling active brain turn session=%s", self.session_id)
                         self._active_brain_task.cancel()
-                    self.spoken_truth.update(names=set(), full_names=set(), prices=set(), verified="")
+                    self.spoken_truth.update(names=set(), full_names=set(), prices=set(), stock={}, verified="")
                     await self.safe_send_text(json.dumps({"type": "flush_audio"}))
                     self.transition_state("LISTENING")
                     self._mic_enabled = True
@@ -370,6 +371,7 @@ class VoiceTurnCoordinator:
                                 retrieved_names=self.spoken_truth["names"] or None,
                                 retrieved_full_names=self.spoken_truth["full_names"] or None,
                                 retrieved_prices=self.spoken_truth["prices"] or None,
+                                retrieved_stock=self.spoken_truth["stock"] or None,
                             )
                             if not ok:
                                 out_text = self.spoken_truth["verified"] or text
@@ -394,7 +396,7 @@ class VoiceTurnCoordinator:
                     )
 
                 elif evt_type == "turn_complete":
-                    self.spoken_truth.update(names=set(), full_names=set(), prices=set(), verified="")
+                    self.spoken_truth.update(names=set(), full_names=set(), prices=set(), stock={}, verified="")
                     await self.safe_send_text(json.dumps({"type": "turn_complete"}))
                     self.transition_state("LISTENING")
                     self._mic_enabled = True

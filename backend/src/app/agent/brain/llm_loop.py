@@ -305,6 +305,7 @@ async def retry_with_stricter_prompt(
     retrieved_prices: Any,
     retrieved_names: Any = None,
     retrieved_full_names: Any = None,
+    retrieved_stock: Any = None,
 ) -> str:
     product_lines: List[str] = []
     for p in (last_products or [])[:5]:
@@ -353,6 +354,7 @@ async def retry_with_stricter_prompt(
             retrieved_prices=retrieved_prices or None,
             retrieved_names=retrieved_names or None,
             retrieved_full_names=retrieved_full_names or None,
+            retrieved_stock=retrieved_stock or None,
             detected_language=lang,
             allow_retry=False,
             user_query=user_message,
