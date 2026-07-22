@@ -62,6 +62,13 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         self._response_state = ResponseState.IDLE
         self.event_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._reader_task: asyncio.Task | None = None
+        
+        # Diagnostics & History
+        self._inbound_history: list[str] = []
+        self._outbound_history: list[str] = []
+        self._response_created_received = False
+        self._audio_delta_received = False
+        self._response_done_received = False
 
     async def _send_safe(self, data: str) -> None:
         """
@@ -72,7 +79,12 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             try:
                 try:
                     payload = json.loads(data)
-                    logger.info("Sending OpenAI Event: %s", payload.get("type"))
+                    evt_type = payload.get("type")
+                    logger.info("Sending OpenAI Event: %s", evt_type)
+                    if evt_type:
+                        self._outbound_history.append(evt_type)
+                        if len(self._outbound_history) > 20:
+                            self._outbound_history.pop(0)
                 except Exception:
                     pass
                 async with self.write_lock:
@@ -98,17 +110,31 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 evt_type = event.get("type")
                 logger.info("OpenAI Event: %s", evt_type)
 
+                if evt_type:
+                    self._inbound_history.append(evt_type)
+                    if len(self._inbound_history) > 20:
+                        self._inbound_history.pop(0)
+
                 # Track active response state directly inside the reader
                 if evt_type == "response.created":
                     self._response_state = ResponseState.GENERATING
+                    self._response_created_received = True
+                    self._audio_delta_received = False
+                    self._response_done_received = False
+                elif evt_type in ("response.audio.delta", "response.audio_transcript.delta"):
+                    self._audio_delta_received = True
                 elif evt_type == "response.done":
                     self._response_state = ResponseState.IDLE
+                    self._response_done_received = True
                 elif evt_type == "error":
                     err = event.get("error", {})
                     err_code = err.get("code")
                     err_msg = err.get("message", "")
                     if not (err_code == "cancellation_failed" or "cancellation failed" in err_msg.lower()):
                         self._response_state = ResponseState.IDLE
+                        self._response_created_received = False
+                        self._audio_delta_received = False
+                        self._response_done_received = False
 
                 # Put the event in the queue
                 await self.event_queue.put(event)
@@ -118,11 +144,18 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             logger.error("Error in OpenAI Realtime ws reader loop: %s", e)
         finally:
             self._connected = False
+            self._response_state = ResponseState.IDLE
+            self._response_created_received = False
+            self._audio_delta_received = False
+            self._response_done_received = False
 
     async def connect(self, session_id: str, store_client: Any, tenant_id: str) -> None:
         self._response_state = ResponseState.IDLE
-        # Reset event queue on new connection
-        self.event_queue = asyncio.Queue()
+        self._response_created_received = False
+        self._audio_delta_received = False
+        self._response_done_received = False
+        self._inbound_history = []
+        self._outbound_history = []
         
         api_key = settings.openai_api_key or os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
@@ -154,9 +187,6 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         )
         self._connected = True
         logger.info("OpenAIVoiceProvider connected to model=%s", model_name)
-
-        # Start the reader task immediately
-        self._reader_task = asyncio.create_task(self._ws_reader_loop())
 
         # Build session config
         from ....modules.tenants.service import get_store_config_for_tenant
@@ -230,15 +260,24 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             }
         }))
 
-        # Wait until session.updated is received from the event queue
-        pre_fetched = []
-        logger.info("Waiting for session.updated confirmation from OpenAI queue...")
-        start_time = time.time()
+        # Wait until session.updated is received directly from self.ws
+        # Any other events are stored in pre_handshake_events to be processed later
+        pre_handshake_events = []
         session_ready = False
+        start_time = time.time()
+        logger.info("Waiting for session.updated confirmation from OpenAI...")
         while time.time() - start_time < 10.0:
             try:
-                event = await asyncio.wait_for(self.event_queue.get(), timeout=1.0)
+                raw = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
+                event = json.loads(raw)
                 evt_type = event.get("type")
+                logger.info("OpenAI Event (Handshake): %s", evt_type)
+                
+                if evt_type:
+                    self._inbound_history.append(evt_type)
+                    if len(self._inbound_history) > 20:
+                        self._inbound_history.pop(0)
+
                 if evt_type == "session.updated":
                     logger.info("OpenAI Realtime session initialized successfully for session=%s", session_id)
                     session_ready = True
@@ -248,16 +287,24 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     logger.error("OpenAI Realtime session update failed: %s", err.get("message"))
                     raise RuntimeError(f"OpenAI session update failed: {err.get('message')}")
                 else:
-                    pre_fetched.append(event)
+                    pre_handshake_events.append(event)
             except asyncio.TimeoutError:
                 continue
 
         if not session_ready:
             raise RuntimeError("Timeout waiting for session.updated")
 
-        # Re-enqueue any pre-fetched events back to the event queue
-        for ev in pre_fetched:
+        # Initialize event queue and populate it with pre-handshake events in order
+        self.event_queue = asyncio.Queue()
+        for ev in pre_handshake_events:
+            evt_type = ev.get("type")
+            if evt_type == "response.created":
+                self._response_state = ResponseState.GENERATING
+                self._response_created_received = True
             await self.event_queue.put(ev)
+
+        # Start the reader task immediately AFTER handshake finishes
+        self._reader_task = asyncio.create_task(self._ws_reader_loop())
 
     async def send_audio_chunk(self, chunk: bytes) -> None:
         if self.ws and self._connected:
@@ -285,6 +332,17 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             if evt_type == "input_audio_buffer.speech_started":
                 # Speech detected by server VAD -> barge-in!
                 # Only cancel if there is an active response in progress
+                logger.info(
+                    "Speech started event received. Diagnosis: "
+                    "state=%s, response_created_received=%s, audio_delta_received=%s, response_done_received=%s, "
+                    "inbound_history=%s, outbound_history=%s",
+                    self._response_state.value,
+                    self._response_created_received,
+                    self._audio_delta_received,
+                    self._response_done_received,
+                    self._inbound_history,
+                    self._outbound_history
+                )
                 if self._response_state == ResponseState.GENERATING:
                     logger.info("Speech started during active response -> sending response.cancel")
                     self._response_state = ResponseState.CANCELLING  # Set CANCELLING immediately to prevent duplicate cancel requests
