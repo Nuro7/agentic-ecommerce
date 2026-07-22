@@ -137,7 +137,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             "type": "session.update",
             "session": {
                 "type": "realtime",
-                "output_modalities": ["audio", "text"],
+                "output_modalities": ["audio"],
                 "instructions": system_instruction,
                 "audio": {
                     "input": {
