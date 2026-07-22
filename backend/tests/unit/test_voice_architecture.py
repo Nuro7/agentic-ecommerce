@@ -76,7 +76,7 @@ async def test_openai_voice_provider(monkeypatch):
     assert isinstance(sent_payloads[1]["audio"], str)
 
     # Test receive_events
-    provider._active_response = True
+    provider._response_state = "GENERATING"
     events_received = []
     async for event in provider.receive_events():
         events_received.append(event)

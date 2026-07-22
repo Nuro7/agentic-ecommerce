@@ -51,7 +51,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         self.ws: websockets.WebSocketClientProtocol | None = None
         self._connected = False
         self.write_lock = asyncio.Lock()
-        self._active_response = False
+        self._response_state = "IDLE"
 
     async def _send_safe(self, data: str) -> None:
         """
@@ -215,16 +215,17 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 logger.info("Received OpenAI event: %s", evt_type)
 
             if evt_type == "response.created":
-                self._active_response = True
+                self._response_state = "GENERATING"
 
             elif evt_type == "input_audio_buffer.speech_started":
                 # Speech detected by server VAD -> barge-in!
                 # Only cancel if there is an active response in progress
-                if self._active_response:
+                if self._response_state == "GENERATING":
                     logger.info("Speech started during active response -> sending response.cancel")
+                    self._response_state = "CANCELLING"  # Set CANCELLING immediately to prevent duplicate cancel requests
                     await self._send_safe(json.dumps({"type": "response.cancel"}))
                 else:
-                    logger.info("Speech started but no active response to cancel")
+                    logger.debug("Speech started but no active response to cancel (state=%s)", self._response_state)
                 yield {"type": "flush_audio"}
 
             elif evt_type == "conversation.item.input_audio_transcription.completed":
@@ -259,7 +260,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 }
 
             elif evt_type == "response.done":
-                self._active_response = False
+                self._response_state = "IDLE"
                 yield {"type": "turn_complete"}
 
             elif evt_type == "error":
