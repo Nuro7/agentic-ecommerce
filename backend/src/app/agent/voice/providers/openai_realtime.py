@@ -270,38 +270,23 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         ]
 
         logger.info("Sending GA session.update config for session=%s", session_id)
-        # Send GA configuration payload
         await self._send_safe(json.dumps({
             "type": "session.update",
             "session": {
-                "type": "realtime",
-                "output_modalities": ["audio"],
+                "modalities": ["text", "audio"],
                 "instructions": system_instruction,
-                "audio": {
-                    "input": {
-                        "format": {
-                            "type": "audio/pcm",
-                            "rate": 24000
-                        },
-                        "turn_detection": {
-                            "type": "semantic_vad",   # GA spec: semantic_vad (not server_vad)
-                            "create_response": True,  # Auto-generate response when user stops speaking
-                            "interrupt_response": True # Auto-interrupt active response on new speech
-                        },
-                        "transcription": {
-                            "model": "whisper-1"
-                        }
-                    },
-                    "output": {
-                        "format": {
-                            "type": "audio/pcm",
-                            "rate": 24000
-                        },
-                        "voice": settings.openai_realtime_voice or "alloy"
-                    }
+                "voice": settings.openai_realtime_voice or "alloy",
+                "input_audio_format": "pcm16",
+                "output_audio_format": "pcm16",
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 200
                 },
                 "tools": openai_tools,
-                "tool_choice": "auto"
+                "tool_choice": "auto",
+                "temperature": 0.6
             }
         }))
 
