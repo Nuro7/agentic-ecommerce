@@ -274,7 +274,6 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             "type": "session.update",
             "session": {
                 "type": "realtime",
-                "modalities": ["text", "audio"],
                 "instructions": system_instruction,
                 "voice": settings.openai_realtime_voice or "alloy",
                 "input_audio_format": "pcm16",
