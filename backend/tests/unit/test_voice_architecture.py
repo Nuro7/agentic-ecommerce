@@ -43,6 +43,11 @@ async def test_openai_voice_provider(monkeypatch):
             ]
             for ev in events:
                 yield json.dumps(ev)
+                await asyncio.sleep(0.02)
+            
+            # Keep the iterator alive until connection is explicitly closed
+            while not self.closed:
+                await asyncio.sleep(0.02)
         async def close(self):
             self.closed = True
 
@@ -78,8 +83,9 @@ async def test_openai_voice_provider(monkeypatch):
     # Test receive_events
     provider._response_state = ResponseState.GENERATING
     events_received = []
-    async for event in provider.receive_events():
-        events_received.append(event)
+    events_iter = provider.receive_events()
+    for _ in range(6):
+        events_received.append(await anext(events_iter))
 
     assert len(events_received) == 6
     assert events_received[0]["type"] == "flush_audio"
