@@ -217,16 +217,6 @@ class VoiceTurnCoordinator:
                 if response_text:
                     await self.safe_send_text(json.dumps({"type": "transcript", "text": response_text}))
                 
-                # Split provider requires TTS synthesis even for text input fallback
-                from .providers.split_voice import SplitVoiceProvider
-                if isinstance(self.provider, SplitVoiceProvider) and response_text:
-                    try:
-                        pcm_bytes = await self.provider.tts.synthesize(text=response_text, language=language)
-                        if pcm_bytes:
-                            await self.safe_send_bytes(pcm_bytes)
-                    except Exception as e:
-                        logger.error("TTS failed for text input in Split provider: %s", e)
-
                 await self.safe_send_text(json.dumps({"type": "turn_complete"}))
 
         except asyncio.TimeoutError:

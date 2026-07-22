@@ -66,10 +66,13 @@ class Settings(BaseSettings):
     grok_api_key: str = ""       # xAI Grok STT (Pipeline B streaming STT)
     stt_provider: str = "grok"   # grok | groq | deepgram
 
-    # Voice Provider (gemini_live, split, openai)
-    voice_provider: str = "gemini_live"
+    # Voice Provider (gemini_live, openai)
+    voice_provider: str = "openai"
     openai_realtime_model: str = "gpt-realtime-2.1-mini"
     openai_realtime_voice: str = "alloy"
+    openai_realtime_temperature: float = 0.6
+    openai_realtime_language: str = "en"
+    gemini_live_model: str = "models/gemini-3.1-flash-live-preview"
 
     google_tts_api_key: str = ""
     elevenlabs_api_key: str = ""

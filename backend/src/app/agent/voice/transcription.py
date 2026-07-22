@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from typing import AsyncIterator, Tuple
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class STTService:
@@ -101,21 +104,28 @@ class STTService:
         elif "ogg" in mime_type:
             ext = "ogg"
 
-        form_data: dict[str, str] = {"format": "true"}
+        form_data: dict[str, str] = {
+            "model": os.getenv("GROK_STT_MODEL", "xai/grok-stt").strip() or "xai/grok-stt",
+            "format": "true",
+        }
         if language_hint:
             form_data["language"] = language_hint
 
         headers = {"Authorization": f"Bearer {self.grok_xai_api_key}"}
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(
-                "https://api.x.ai/v1/stt",
-                headers=headers,
-                files={"file": (f"audio.{ext}", audio_bytes, mime_type)},
-                data=form_data,
-            )
-            response.raise_for_status()
-            payload = response.json()
+            try:
+                response = await client.post(
+                    "https://api.x.ai/v1/stt",
+                    headers=headers,
+                    files={"file": (f"audio.{ext}", audio_bytes, mime_type)},
+                    data=form_data,
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error("xAI STT API error status=%d response=%s", e.response.status_code, e.response.text)
+                raise
 
         transcript = str(payload.get("text", "")).strip()
         duration   = float(payload.get("duration", 0.0) or 0.0)
