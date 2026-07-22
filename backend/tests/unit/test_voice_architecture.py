@@ -32,8 +32,8 @@ async def test_openai_voice_provider(monkeypatch):
                 {"type": "session.updated"},
                 {"type": "input_audio_buffer.speech_started"},
                 {"type": "conversation.item.input_audio_transcription.completed", "transcript": "test transcript"},
-                {"type": "response.audio_transcript.delta", "delta": "hello"},
-                {"type": "response.audio.delta", "delta": "YQ=="}, # base64 for 'a'
+                {"type": "response.output_audio_transcript.delta", "delta": "hello"},
+                {"type": "response.output_audio.delta", "delta": "YQ=="}, # base64 for 'a'
                 {"type": "response.function_call_arguments.done", "call_id": "call_1", "name": "ask_brain", "arguments": "{\"query\":\"find shoes\"}"},
                 {"type": "response.done"},
             ]
@@ -85,7 +85,8 @@ async def test_openai_voice_provider(monkeypatch):
     assert isinstance(sent_payloads[1]["audio"], str)
 
     # Test receive_events
-    provider._response_state = ResponseState.GENERATING
+    provider._response_state = ResponseState.RESPONSE_CREATED
+    provider._audio_delta_received = True
     events_received = []
     events_iter = provider.receive_events()
     for _ in range(6):
@@ -106,10 +107,16 @@ async def test_openai_voice_provider(monkeypatch):
 
     # Test send_tool_response
     await provider.send_tool_response(call_id="call_1", name="ask_brain", response="done")
+    assert len(sent_payloads) == 4
+    assert sent_payloads[2]["type"] == "conversation.item.create"
+    assert sent_payloads[2]["item"]["call_id"] == "call_1"
+    assert sent_payloads[3]["type"] == "response.create"
+
+    # Test manual cancel
+    provider._response_state = ResponseState.STREAMING_AUDIO
+    await provider.cancel_response()
     assert len(sent_payloads) == 5
-    assert sent_payloads[3]["type"] == "conversation.item.create"
-    assert sent_payloads[3]["item"]["call_id"] == "call_1"
-    assert sent_payloads[4]["type"] == "response.create"
+    assert sent_payloads[4]["type"] == "response.cancel"
 
     # Test close
     await provider.close()
