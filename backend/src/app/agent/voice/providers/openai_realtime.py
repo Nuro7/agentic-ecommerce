@@ -139,9 +139,6 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 "type": "realtime",
                 "output_modalities": ["audio", "text"],
                 "instructions": system_instruction,
-                "input_audio_transcription": {
-                    "model": "whisper-1"
-                },
                 "audio": {
                     "input": {
                         "format": "pcm16",
@@ -150,6 +147,9 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                             "threshold": 0.5,
                             "prefix_padding_ms": 300,
                             "silence_duration_ms": 600
+                        },
+                        "transcription": {
+                            "model": "whisper-1"
                         }
                     },
                     "output": {
