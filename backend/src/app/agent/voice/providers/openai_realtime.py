@@ -58,7 +58,6 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         url = f"wss://api.openai.com/v1/realtime?model={model_name}"
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "OpenAI-Beta": "realtime=v1",
         }
 
         import inspect
