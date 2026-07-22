@@ -20,8 +20,14 @@ logger = logging.getLogger(__name__)
 
 class ResponseState(Enum):
     IDLE = "idle"
+    LISTENING = "listening"
+    TRANSCRIBING = "transcribing"
+    WAITING_FOR_TOOL = "waiting_for_tool"
+    TOOL_RUNNING = "tool_running"
     RESPONSE_REQUESTED = "response_requested"
-    GENERATING = "generating"
+    RESPONSE_CREATED = "response_created"
+    STREAMING_AUDIO = "streaming_audio"
+    COMPLETED = "completed"
     CANCELLING = "cancelling"
 
 
@@ -70,17 +76,32 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         self._audio_delta_received = False
         self._response_done_received = False
 
+    def _transition_state(self, new_state: ResponseState) -> None:
+        """Logs and performs response state transitions."""
+        old_state = self._response_state
+        self._response_state = new_state
+        logger.info("STATE [%s] -> [%s]", old_state.name, new_state.name)
+
     async def _send_safe(self, data: str) -> None:
         """
         Thread-safe websocket send operation guarded by an asyncio Lock.
-        Logs every outbound event type.
+        Logs every outbound event with detailed identifiers.
         """
         if self.ws and self._connected:
             try:
                 try:
                     payload = json.loads(data)
                     evt_type = payload.get("type")
-                    logger.info(">>> SEND [%s] %s", evt_type, data)
+                    event_id = payload.get("event_id", "")
+                    resp_id = payload.get("response", {}).get("id") or payload.get("response_id", "")
+                    call_id = payload.get("call_id", "")
+                    item_id = payload.get("item", {}).get("id") or payload.get("item_id", "")
+                    
+                    logger.info(
+                        ">>> SEND [%s] id=%s resp_id=%s call_id=%s item_id=%s payload=%s",
+                        evt_type, event_id, resp_id, call_id, item_id, data
+                    )
+                    
                     if evt_type:
                         self._outbound_history.append(evt_type)
                         if len(self._outbound_history) > 20:
@@ -108,7 +129,15 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     continue
 
                 evt_type = event.get("type")
-                logger.info("<<< RECV [%s] %s", evt_type, raw)
+                event_id = event.get("event_id", "")
+                resp_id = event.get("response", {}).get("id") or event.get("response_id", "")
+                call_id = event.get("call_id", "")
+                item_id = event.get("item", {}).get("id") or event.get("item_id", "")
+                
+                logger.info(
+                    "<<< RECV [%s] id=%s resp_id=%s call_id=%s item_id=%s payload=%s",
+                    evt_type, event_id, resp_id, call_id, item_id, raw
+                )
 
                 if evt_type:
                     self._inbound_history.append(evt_type)
@@ -116,15 +145,20 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                         self._inbound_history.pop(0)
 
                 # Track active response state directly inside the reader
-                if evt_type == "response.created":
-                    self._response_state = ResponseState.GENERATING
+                if evt_type == "input_audio_buffer.speech_started":
+                    self._transition_state(ResponseState.TRANSCRIBING)
+                elif evt_type == "response.created":
+                    self._transition_state(ResponseState.RESPONSE_CREATED)
                     self._response_created_received = True
                     self._audio_delta_received = False
                     self._response_done_received = False
                 elif evt_type in ("response.audio.delta", "response.audio_transcript.delta"):
+                    self._transition_state(ResponseState.STREAMING_AUDIO)
                     self._audio_delta_received = True
+                elif evt_type == "response.function_call_arguments.done":
+                    self._transition_state(ResponseState.WAITING_FOR_TOOL)
                 elif evt_type == "response.done":
-                    self._response_state = ResponseState.IDLE
+                    self._transition_state(ResponseState.COMPLETED)
                     self._response_done_received = True
                 elif evt_type == "error":
                     err = event.get("error", {})
@@ -132,7 +166,8 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     err_msg = err.get("message", "")
                     logger.error("OpenAI Error Event: %s", json.dumps(event, indent=2))
                     if not (err_code == "cancellation_failed" or "cancellation failed" in err_msg.lower()):
-                        self._response_state = ResponseState.IDLE
+                        # Reset to LISTENING for recoverable conversation interruptions or errors
+                        self._transition_state(ResponseState.LISTENING)
                         self._response_created_received = False
                         self._audio_delta_received = False
                         self._response_done_received = False
@@ -145,7 +180,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             logger.error("Error in OpenAI Realtime ws reader loop: %s", e)
         finally:
             self._connected = False
-            self._response_state = ResponseState.IDLE
+            self._transition_state(ResponseState.IDLE)
             self._response_created_received = False
             self._audio_delta_received = False
             self._response_done_received = False
@@ -242,7 +277,9 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                             "type": "server_vad",
                             "threshold": 0.5,
                             "prefix_padding_ms": 300,
-                            "silence_duration_ms": 600
+                            "silence_duration_ms": 600,
+                            "create_response": True,       # Autogenerates response on VAD stopped
+                            "interrupt_response": True     # Auto-interrupts active response on VAD started
                         },
                         "transcription": {
                             "model": "whisper-1"
@@ -262,7 +299,6 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         }))
 
         # Wait until session.updated is received directly from self.ws
-        # Any other events are stored in pre_handshake_events to be processed later
         pre_handshake_events = []
         session_ready = False
         start_time = time.time()
@@ -272,7 +308,12 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 raw = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
                 event = json.loads(raw)
                 evt_type = event.get("type")
-                logger.info("<<< RECV [%s] %s", evt_type, raw)
+                event_id = event.get("event_id", "")
+                
+                logger.info(
+                    "<<< RECV [%s] id=%s payload=%s",
+                    evt_type, event_id, raw
+                )
                 
                 if evt_type:
                     self._inbound_history.append(evt_type)
@@ -281,6 +322,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
 
                 if evt_type == "session.updated":
                     logger.info("OpenAI Realtime session initialized successfully for session=%s", session_id)
+                    self._transition_state(ResponseState.LISTENING)
                     session_ready = True
                     break
                 elif evt_type == "error":
@@ -300,7 +342,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         for ev in pre_handshake_events:
             evt_type = ev.get("type")
             if evt_type == "response.created":
-                self._response_state = ResponseState.GENERATING
+                self._transition_state(ResponseState.RESPONSE_CREATED)
                 self._response_created_received = True
             await self.event_queue.put(ev)
 
@@ -321,6 +363,16 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         # Bypassed in coordinator and routed directly to the Brain
         pass
 
+    async def cancel_response(self) -> None:
+        """
+        Manually request cancellation of the active response if in generating or streaming state.
+        This is not triggered automatically by VAD because turn_detection's auto-interrupt takes care of VAD.
+        """
+        if self._response_state in (ResponseState.RESPONSE_CREATED, ResponseState.STREAMING_AUDIO):
+            logger.info("Manual cancellation requested -> sending response.cancel")
+            self._transition_state(ResponseState.CANCELLING)
+            await self._send_safe(json.dumps({"type": "response.cancel"}))
+
     async def receive_events(self) -> AsyncIterator[dict]:
         while self._connected or not self.event_queue.empty():
             try:
@@ -332,24 +384,19 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
 
             if evt_type == "input_audio_buffer.speech_started":
                 # Speech detected by server VAD -> barge-in!
-                # Only cancel if there is an active response in progress
+                # Note: Server-side turn-detection auto-cancels the active response automatically.
+                # Client only needs to transition state and flush current playback buffers.
                 logger.info(
                     "Speech started event received. Diagnosis: "
                     "state=%s, response_created_received=%s, audio_delta_received=%s, response_done_received=%s, "
                     "inbound_history=%s, outbound_history=%s",
-                    self._response_state.value,
+                    self._response_state.name,
                     self._response_created_received,
                     self._audio_delta_received,
                     self._response_done_received,
                     self._inbound_history,
                     self._outbound_history
                 )
-                if self._response_state == ResponseState.GENERATING and self._audio_delta_received:
-                    logger.info("Speech started during active response -> sending response.cancel")
-                    self._response_state = ResponseState.CANCELLING  # Set CANCELLING immediately to prevent duplicate cancel requests
-                    await self._send_safe(json.dumps({"type": "response.cancel"}))
-                else:
-                    logger.debug("Speech started but no active response to cancel (state=%s, delta_received=%s)", self._response_state, self._audio_delta_received)
                 yield {"type": "flush_audio"}
 
             elif evt_type == "conversation.item.input_audio_transcription.completed":
@@ -384,13 +431,14 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 }
 
             elif evt_type == "response.done":
+                self._transition_state(ResponseState.LISTENING)
                 yield {"type": "turn_complete"}
 
             elif evt_type == "error":
                 err = event.get("error", {})
                 err_msg = err.get("message", "Unknown OpenAI Realtime error")
                 err_code = err.get("code")
-                # Ignore non-fatal cancellation failure errors
+                # Ignore non-fatal cancellation failure warnings
                 if err_code == "cancellation_failed" or "cancellation failed" in err_msg.lower():
                     logger.warning("Ignored non-fatal OpenAI Realtime error: %s", err_msg)
                 else:
@@ -399,6 +447,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
 
     async def send_tool_response(self, call_id: str, name: str, response: str) -> None:
         if self.ws and self._connected:
+            self._transition_state(ResponseState.TOOL_RUNNING)
             # Send function execution output
             await self._send_safe(json.dumps({
                 "type": "conversation.item.create",
@@ -409,14 +458,14 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 }
             }))
             # Trigger response generation
-            self._response_state = ResponseState.RESPONSE_REQUESTED
+            self._transition_state(ResponseState.RESPONSE_REQUESTED)
             await self._send_safe(json.dumps({
                 "type": "response.create"
             }))
 
     async def close(self) -> None:
         self._connected = False
-        self._response_state = ResponseState.IDLE
+        self._transition_state(ResponseState.IDLE)
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
             self._reader_task = None
