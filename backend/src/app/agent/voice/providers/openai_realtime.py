@@ -66,6 +66,15 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         """
         if self.ws and self._connected:
             try:
+                try:
+                    payload = json.loads(data)
+                    evt_type = payload.get("type", "unknown")
+                    if evt_type == "input_audio_buffer.append":
+                        logger.info(">>> Sending OpenAI event: %s (audio size=%d)", evt_type, len(payload.get("audio", "")))
+                    else:
+                        logger.info(">>> Sending OpenAI event: %s", evt_type)
+                except Exception:
+                    pass
                 async with self.write_lock:
                     await self.ws.send(data)
             except Exception as e:
@@ -218,9 +227,8 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
 
             evt_type = event.get("type")
 
-            # Safe structured logging for events
-            if evt_type in ("error", "response.created", "response.done", "response.function_call_arguments.done"):
-                logger.info("Received OpenAI event: %s", evt_type)
+            # Log all received events from OpenAI
+            logger.info("<<< Received OpenAI event: %s", evt_type)
 
             if evt_type == "response.created":
                 self._response_state = ResponseState.GENERATING
