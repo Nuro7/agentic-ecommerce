@@ -12,7 +12,7 @@ from ..config import settings
 
 logger = logging.getLogger(__name__)
 
-_GEMINI_LIVE_MODEL = "models/gemini-3.1-flash-live-preview"
+_GEMINI_LIVE_MODEL = settings.gemini_live_model or "models/gemini-3.1-flash-live-preview"
 
 # ── Gemini Client (singleton) ──────────────────────────────────────────────────
 # CRITICAL: gemini-3.1-flash-live-preview requires api_version="v1alpha".
