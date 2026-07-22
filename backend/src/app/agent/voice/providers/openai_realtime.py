@@ -80,7 +80,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 try:
                     payload = json.loads(data)
                     evt_type = payload.get("type")
-                    logger.info("Sending OpenAI Event: %s", evt_type)
+                    logger.info(">>> SEND [%s] %s", evt_type, data)
                     if evt_type:
                         self._outbound_history.append(evt_type)
                         if len(self._outbound_history) > 20:
@@ -108,7 +108,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     continue
 
                 evt_type = event.get("type")
-                logger.info("OpenAI Event: %s", evt_type)
+                logger.info("<<< RECV [%s] %s", evt_type, raw)
 
                 if evt_type:
                     self._inbound_history.append(evt_type)
@@ -130,6 +130,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     err = event.get("error", {})
                     err_code = err.get("code")
                     err_msg = err.get("message", "")
+                    logger.error("OpenAI Error Event: %s", json.dumps(event, indent=2))
                     if not (err_code == "cancellation_failed" or "cancellation failed" in err_msg.lower()):
                         self._response_state = ResponseState.IDLE
                         self._response_created_received = False
@@ -271,7 +272,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 raw = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
                 event = json.loads(raw)
                 evt_type = event.get("type")
-                logger.info("OpenAI Event (Handshake): %s", evt_type)
+                logger.info("<<< RECV [%s] %s", evt_type, raw)
                 
                 if evt_type:
                     self._inbound_history.append(evt_type)
@@ -393,7 +394,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 if err_code == "cancellation_failed" or "cancellation failed" in err_msg.lower():
                     logger.warning("Ignored non-fatal OpenAI Realtime error: %s", err_msg)
                 else:
-                    logger.error("OpenAI Realtime error: %s", err_msg)
+                    logger.error("OpenAI Error: %s", json.dumps(event, indent=2))
                     yield {"type": "error", "message": err_msg}
 
     async def send_tool_response(self, call_id: str, name: str, response: str) -> None:
