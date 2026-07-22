@@ -75,7 +75,20 @@ async def test_openai_voice_provider(monkeypatch):
     # Verify session.update was sent
     assert len(sent_payloads) == 1
     assert sent_payloads[0]["type"] == "session.update"
-    assert sent_payloads[0]["session"]["audio"]["output"]["voice"] == "alloy"
+    session_cfg = sent_payloads[0]["session"]
+    assert session_cfg["audio"]["output"]["voice"] == "alloy"
+    # GA spec: must use semantic_vad, not server_vad
+    turn_det = session_cfg["audio"]["input"]["turn_detection"]
+    assert turn_det["type"] == "semantic_vad", "turn_detection must be semantic_vad per GA spec"
+    # server_vad-only fields must NOT be present
+    assert "threshold" not in turn_det
+    assert "prefix_padding_ms" not in turn_det
+    assert "silence_duration_ms" not in turn_det
+    # auto-response and interrupt must be enabled
+    assert turn_det["create_response"] is True
+    assert turn_det["interrupt_response"] is True
+    # output_modalities at session level (not inside response.create)
+    assert session_cfg["output_modalities"] == ["audio"]
 
     # Test send_audio_chunk
     await provider.send_audio_chunk(b"\x01\x00" * 160)

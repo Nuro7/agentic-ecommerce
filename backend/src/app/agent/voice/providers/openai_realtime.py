@@ -55,8 +55,11 @@ def resample_pcm16_16k_to_24k(data: bytes) -> bytes:
 
 class OpenAIVoiceProvider(BaseVoiceProvider):
     """
-    Voice provider wrapping the OpenAI Realtime API using GPT Realtime 2.1 Mini.
-    Complying with the GA (General Availability) API specification.
+    Voice provider wrapping the OpenAI Realtime API using gpt-realtime-2.1 (GA).
+    Complies with the official OpenAI Realtime GA specification:
+    - Connects to wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1
+    - Uses semantic_vad for turn detection
+    - Uses output_modalities at session level only
     """
 
     def __init__(self, session_service: Any) -> None:
@@ -200,7 +203,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set — OpenAI provider unavailable")
 
-        model_name = settings.openai_realtime_model or "gpt-realtime-2.1-mini"
+        model_name = settings.openai_realtime_model or "gpt-realtime-2.1"
         url = f"wss://api.openai.com/v1/realtime?model={model_name}"
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -281,12 +284,9 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                             "rate": 24000
                         },
                         "turn_detection": {
-                            "type": "server_vad",
-                            "threshold": 0.5,
-                            "prefix_padding_ms": 300,
-                            "silence_duration_ms": 600,
-                            "create_response": True,       # Autogenerates response on VAD stopped
-                            "interrupt_response": True     # Auto-interrupts active response on VAD started
+                            "type": "semantic_vad",   # GA spec: semantic_vad (not server_vad)
+                            "create_response": True,  # Auto-generate response when user stops speaking
+                            "interrupt_response": True # Auto-interrupt active response on new speech
                         },
                         "transcription": {
                             "model": "whisper-1"
