@@ -18,6 +18,92 @@ def test_resample_pcm16_16k_to_24k():
     assert len(output_pcm) == 480
 
 
+# ── OpenAI Voice Provider Test ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_openai_voice_provider(monkeypatch):
+    from src.app.agent.voice.providers.openai_realtime import OpenAIVoiceProvider
+
+    sent_payloads = []
+    class MockOpenAISocket:
+        def __init__(self):
+            self.closed = False
+        async def send(self, data: str):
+            sent_payloads.append(json.loads(data))
+        async def __aiter__(self):
+            # Yield some test events from OpenAI Realtime
+            events = [
+                {"type": "input_audio_buffer.speech_started"},
+                {"type": "conversation.item.input_audio_transcription.completed", "transcript": "test transcript"},
+                {"type": "response.audio_transcript.delta", "delta": "hello"},
+                {"type": "response.audio.delta", "delta": "YQ=="}, # base64 for 'a'
+                {"type": "response.function_call_arguments.done", "call_id": "call_1", "name": "ask_brain", "arguments": "{\"query\":\"find shoes\"}"},
+                {"type": "response.done"},
+            ]
+            for ev in events:
+                yield json.dumps(ev)
+        async def close(self):
+            self.closed = True
+
+    async def mock_connect(url, extra_headers=None):
+        return MockOpenAISocket()
+
+    # Mock settings / environment
+    monkeypatch.setattr("src.app.config.settings.openai_api_key", "mock-key")
+    monkeypatch.setattr("websockets.connect", mock_connect)
+
+    async def mock_get_store_config_for_tenant(tenant_id):
+        return {"store_name": "Test Store"}
+    monkeypatch.setattr(
+        "src.app.modules.tenants.service.get_store_config_for_tenant",
+        mock_get_store_config_for_tenant
+    )
+
+    provider = OpenAIVoiceProvider(session_service=None)
+    await provider.connect(session_id="test_session", store_client=None, tenant_id="_dev")
+
+    # Verify session.update was sent
+    assert len(sent_payloads) == 1
+    assert sent_payloads[0]["type"] == "session.update"
+    assert sent_payloads[0]["session"]["voice"] == "alloy"
+
+    # Test send_audio_chunk
+    await provider.send_audio_chunk(b"\x01\x00" * 160)
+    assert len(sent_payloads) == 2
+    assert sent_payloads[1]["type"] == "input_audio_buffer.append"
+    # Audio should be base64-encoded
+    assert isinstance(sent_payloads[1]["audio"], str)
+
+    # Test receive_events
+    events_received = []
+    async for event in provider.receive_events():
+        events_received.append(event)
+
+    assert len(events_received) == 6
+    assert events_received[0]["type"] == "flush_audio"
+    assert events_received[1]["type"] == "user_transcript"
+    assert events_received[1]["text"] == "test transcript"
+    assert events_received[2]["type"] == "transcript"
+    assert events_received[2]["text"] == "hello"
+    assert events_received[3]["type"] == "audio"
+    assert events_received[3]["data"] == b"a"
+    assert events_received[4]["type"] == "tool_call"
+    assert events_received[4]["call_id"] == "call_1"
+    assert events_received[4]["arguments"] == {"query": "find shoes"}
+    assert events_received[5]["type"] == "turn_complete"
+
+    # Test send_tool_response
+    await provider.send_tool_response(call_id="call_1", name="ask_brain", response="done")
+    assert len(sent_payloads) == 5
+    assert sent_payloads[3]["type"] == "conversation.item.create"
+    assert sent_payloads[3]["item"]["call_id"] == "call_1"
+    assert sent_payloads[4]["type"] == "response.create"
+
+    # Test close
+    await provider.close()
+    assert provider.ws is None
+
+
 # ── Mocks for Coordinator Test ────────────────────────────────────────────────
 
 class MockWebSocket:
