@@ -93,11 +93,13 @@ async def main():
     # voice-enabled merchant
     async with AsyncSessionLocal() as db:
         tid = (await db.execute(text("SELECT id FROM tenants WHERE email LIKE 'jrn-%' ORDER BY created_at DESC LIMIT 1"))).scalar()
+        if not tid:
+            tid = (await db.execute(text("SELECT id FROM tenants ORDER BY created_at DESC LIMIT 1"))).scalar()
         if tid:
             await db.execute(text("UPDATE subscriptions SET plan_id=:p WHERE tenant_id=:t"), {"p": GROWTH, "t": str(tid)})
             await db.commit()
     if not tid:
-        print("no merchant found — run the journey harness first"); return
+        print("no merchant found — please onboard a merchant or run seed_tenant.py first"); return
     tid = str(tid)
     print(f"merchant={tid}", flush=True)
 
@@ -109,7 +111,11 @@ async def main():
         ("checkout",      "I want to checkout",              "en-US", "FSM starts (asks name)"),
         ("offtopic",      "what is the weather today",        "en-US", "refuses off-topic"),
     ]
-    async with websockets.connect(f"{WS}?session_id={sid}&tenant_id={tid}", open_timeout=20, max_size=16_000_000) as ws:
+    from src.app.agent.gemini_client import generate_ws_token
+    token = generate_ws_token(tid, sid)
+    url = f"{WS}?session_id={sid}&tenant_id={tid}&token={token}"
+
+    async with websockets.connect(url, open_timeout=20, max_size=16_000_000) as ws:
         for label, utt, lang, expect in journey:
             try:
                 pcm = await tts_pcm(utt, lang)

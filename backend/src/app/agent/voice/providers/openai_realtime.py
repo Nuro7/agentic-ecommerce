@@ -58,10 +58,17 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         url = f"wss://api.openai.com/v1/realtime?model={model_name}"
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "OpenAI-Beta": "realtime=v1",
         }
 
-        self.ws = await websockets.connect(url, extra_headers=headers)
+        import inspect
+        connect_kwargs = {}
+        sig = inspect.signature(websockets.connect)
+        if "additional_headers" in sig.parameters:
+            connect_kwargs["additional_headers"] = headers
+        else:
+            connect_kwargs["extra_headers"] = headers
+
+        self.ws = await websockets.connect(url, **connect_kwargs)
         self._connected = True
         logger.info("OpenAIVoiceProvider connected to model=%s", model_name)
 
