@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 class ResponseState(Enum):
     IDLE = "idle"
+    RESPONSE_REQUESTED = "response_requested"
     GENERATING = "generating"
     CANCELLING = "cancelling"
 
@@ -59,20 +60,31 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         self._connected = False
         self.write_lock = asyncio.Lock()
         self._response_state = ResponseState.IDLE
+        self.event_queue: asyncio.Queue[dict] = asyncio.Queue()
+        self._reader_task: asyncio.Task | None = None
+        
+        # Diagnostics & History
+        self._inbound_history: list[str] = []
+        self._outbound_history: list[str] = []
+        self._response_created_received = False
+        self._audio_delta_received = False
+        self._response_done_received = False
 
     async def _send_safe(self, data: str) -> None:
         """
         Thread-safe websocket send operation guarded by an asyncio Lock.
+        Logs every outbound event type.
         """
         if self.ws and self._connected:
             try:
                 try:
                     payload = json.loads(data)
-                    evt_type = payload.get("type", "unknown")
-                    if evt_type == "input_audio_buffer.append":
-                        logger.info(">>> Sending OpenAI event: %s (audio size=%d)", evt_type, len(payload.get("audio", "")))
-                    else:
-                        logger.info(">>> Sending OpenAI event: %s", evt_type)
+                    evt_type = payload.get("type")
+                    logger.info("Sending OpenAI Event: %s", evt_type)
+                    if evt_type:
+                        self._outbound_history.append(evt_type)
+                        if len(self._outbound_history) > 20:
+                            self._outbound_history.pop(0)
                 except Exception:
                     pass
                 async with self.write_lock:
@@ -81,8 +93,70 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 logger.error("Error during thread-safe ws.send: %s", e)
                 raise
 
+    async def _ws_reader_loop(self) -> None:
+        """
+        The single dedicated coroutine responsible for reading raw WebSocket events
+        from OpenAI, parsing them, and placing them in self.event_queue.
+        """
+        try:
+            async for raw in self.ws:
+                if not self._connected:
+                    break
+                try:
+                    event = json.loads(raw)
+                except Exception:
+                    continue
+
+                evt_type = event.get("type")
+                logger.info("OpenAI Event: %s", evt_type)
+
+                if evt_type:
+                    self._inbound_history.append(evt_type)
+                    if len(self._inbound_history) > 20:
+                        self._inbound_history.pop(0)
+
+                # Track active response state directly inside the reader
+                if evt_type == "response.created":
+                    self._response_state = ResponseState.GENERATING
+                    self._response_created_received = True
+                    self._audio_delta_received = False
+                    self._response_done_received = False
+                elif evt_type in ("response.audio.delta", "response.audio_transcript.delta"):
+                    self._audio_delta_received = True
+                elif evt_type == "response.done":
+                    self._response_state = ResponseState.IDLE
+                    self._response_done_received = True
+                elif evt_type == "error":
+                    err = event.get("error", {})
+                    err_code = err.get("code")
+                    err_msg = err.get("message", "")
+                    if not (err_code == "cancellation_failed" or "cancellation failed" in err_msg.lower()):
+                        self._response_state = ResponseState.IDLE
+                        self._response_created_received = False
+                        self._audio_delta_received = False
+                        self._response_done_received = False
+
+                # Put the event in the queue
+                await self.event_queue.put(event)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error("Error in OpenAI Realtime ws reader loop: %s", e)
+        finally:
+            self._connected = False
+            self._response_state = ResponseState.IDLE
+            self._response_created_received = False
+            self._audio_delta_received = False
+            self._response_done_received = False
+
     async def connect(self, session_id: str, store_client: Any, tenant_id: str) -> None:
         self._response_state = ResponseState.IDLE
+        self._response_created_received = False
+        self._audio_delta_received = False
+        self._response_done_received = False
+        self._inbound_history = []
+        self._outbound_history = []
+        
         api_key = settings.openai_api_key or os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set — OpenAI provider unavailable")
@@ -186,18 +260,51 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             }
         }))
 
-        # Wait until session.updated is received to guarantee session state is ready before streaming
+        # Wait until session.updated is received directly from self.ws
+        # Any other events are stored in pre_handshake_events to be processed later
+        pre_handshake_events = []
+        session_ready = False
+        start_time = time.time()
         logger.info("Waiting for session.updated confirmation from OpenAI...")
-        async for raw in self.ws:
-            event = json.loads(raw)
-            evt_type = event.get("type")
-            if evt_type == "session.updated":
-                logger.info("OpenAI Realtime session initialized successfully for session=%s", session_id)
-                break
-            elif evt_type == "error":
-                err = event.get("error", {})
-                logger.error("OpenAI Realtime session update failed: %s", err.get("message"))
-                raise RuntimeError(f"OpenAI session update failed: {err.get('message')}")
+        while time.time() - start_time < 10.0:
+            try:
+                raw = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
+                event = json.loads(raw)
+                evt_type = event.get("type")
+                logger.info("OpenAI Event (Handshake): %s", evt_type)
+                
+                if evt_type:
+                    self._inbound_history.append(evt_type)
+                    if len(self._inbound_history) > 20:
+                        self._inbound_history.pop(0)
+
+                if evt_type == "session.updated":
+                    logger.info("OpenAI Realtime session initialized successfully for session=%s", session_id)
+                    session_ready = True
+                    break
+                elif evt_type == "error":
+                    err = event.get("error", {})
+                    logger.error("OpenAI Realtime session update failed: %s", err.get("message"))
+                    raise RuntimeError(f"OpenAI session update failed: {err.get('message')}")
+                else:
+                    pre_handshake_events.append(event)
+            except asyncio.TimeoutError:
+                continue
+
+        if not session_ready:
+            raise RuntimeError("Timeout waiting for session.updated")
+
+        # Initialize event queue and populate it with pre-handshake events in order
+        self.event_queue = asyncio.Queue()
+        for ev in pre_handshake_events:
+            evt_type = ev.get("type")
+            if evt_type == "response.created":
+                self._response_state = ResponseState.GENERATING
+                self._response_created_received = True
+            await self.event_queue.put(ev)
+
+        # Start the reader task immediately AFTER handshake finishes
+        self._reader_task = asyncio.create_task(self._ws_reader_loop())
 
     async def send_audio_chunk(self, chunk: bytes) -> None:
         if self.ws and self._connected:
@@ -214,28 +321,28 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         pass
 
     async def receive_events(self) -> AsyncIterator[dict]:
-        if not self.ws:
-            raise RuntimeError("OpenAIVoiceProvider is not connected")
-
-        async for raw in self.ws:
-            if not self._connected:
-                break
+        while self._connected or not self.event_queue.empty():
             try:
-                event = json.loads(raw)
-            except Exception:
+                event = await asyncio.wait_for(self.event_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
                 continue
 
             evt_type = event.get("type")
 
-            # Log all received events from OpenAI
-            logger.info("<<< Received OpenAI event: %s", evt_type)
-
-            if evt_type == "response.created":
-                self._response_state = ResponseState.GENERATING
-
-            elif evt_type == "input_audio_buffer.speech_started":
+            if evt_type == "input_audio_buffer.speech_started":
                 # Speech detected by server VAD -> barge-in!
                 # Only cancel if there is an active response in progress
+                logger.info(
+                    "Speech started event received. Diagnosis: "
+                    "state=%s, response_created_received=%s, audio_delta_received=%s, response_done_received=%s, "
+                    "inbound_history=%s, outbound_history=%s",
+                    self._response_state.value,
+                    self._response_created_received,
+                    self._audio_delta_received,
+                    self._response_done_received,
+                    self._inbound_history,
+                    self._outbound_history
+                )
                 if self._response_state == ResponseState.GENERATING:
                     logger.info("Speech started during active response -> sending response.cancel")
                     self._response_state = ResponseState.CANCELLING  # Set CANCELLING immediately to prevent duplicate cancel requests
@@ -276,7 +383,6 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 }
 
             elif evt_type == "response.done":
-                self._response_state = ResponseState.IDLE
                 yield {"type": "turn_complete"}
 
             elif evt_type == "error":
@@ -288,7 +394,6 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     logger.warning("Ignored non-fatal OpenAI Realtime error: %s", err_msg)
                 else:
                     logger.error("OpenAI Realtime error: %s", err_msg)
-                    self._response_state = ResponseState.IDLE  # Reset state on fatal session/response errors
                     yield {"type": "error", "message": err_msg}
 
     async def send_tool_response(self, call_id: str, name: str, response: str) -> None:
@@ -303,6 +408,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 }
             }))
             # Trigger response generation
+            self._response_state = ResponseState.RESPONSE_REQUESTED
             await self._send_safe(json.dumps({
                 "type": "response.create"
             }))
@@ -310,6 +416,9 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
     async def close(self) -> None:
         self._connected = False
         self._response_state = ResponseState.IDLE
+        if self._reader_task and not self._reader_task.done():
+            self._reader_task.cancel()
+            self._reader_task = None
         if self.ws:
             try:
                 await self.ws.close()

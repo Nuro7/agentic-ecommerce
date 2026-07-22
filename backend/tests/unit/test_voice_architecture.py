@@ -28,11 +28,7 @@ async def test_openai_voice_provider(monkeypatch):
     class MockOpenAISocket:
         def __init__(self):
             self.closed = False
-        async def send(self, data: str):
-            sent_payloads.append(json.loads(data))
-        async def __aiter__(self):
-            # Yield some test events from OpenAI Realtime
-            events = [
+            self.events = [
                 {"type": "session.updated"},
                 {"type": "input_audio_buffer.speech_started"},
                 {"type": "conversation.item.input_audio_transcription.completed", "transcript": "test transcript"},
@@ -41,8 +37,21 @@ async def test_openai_voice_provider(monkeypatch):
                 {"type": "response.function_call_arguments.done", "call_id": "call_1", "name": "ask_brain", "arguments": "{\"query\":\"find shoes\"}"},
                 {"type": "response.done"},
             ]
-            for ev in events:
-                yield json.dumps(ev)
+        async def send(self, data: str):
+            sent_payloads.append(json.loads(data))
+        async def recv(self):
+            await asyncio.sleep(0.01)
+            if self.events:
+                return json.dumps(self.events.pop(0))
+            while not self.closed:
+                await asyncio.sleep(0.01)
+            raise RuntimeError("Socket closed")
+        async def __aiter__(self):
+            while not self.closed:
+                try:
+                    yield await self.recv()
+                except Exception:
+                    break
         async def close(self):
             self.closed = True
 
@@ -78,8 +87,9 @@ async def test_openai_voice_provider(monkeypatch):
     # Test receive_events
     provider._response_state = ResponseState.GENERATING
     events_received = []
-    async for event in provider.receive_events():
-        events_received.append(event)
+    events_iter = provider.receive_events()
+    for _ in range(6):
+        events_received.append(await anext(events_iter))
 
     assert len(events_received) == 6
     assert events_received[0]["type"] == "flush_audio"
