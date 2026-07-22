@@ -222,6 +222,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 # Only cancel if there is an active response in progress
                 if self._active_response:
                     logger.info("Speech started during active response -> sending response.cancel")
+                    self._active_response = False  # Set False immediately to prevent duplicate cancel requests
                     await self._send_safe(json.dumps({"type": "response.cancel"}))
                 else:
                     logger.info("Speech started but no active response to cancel")
