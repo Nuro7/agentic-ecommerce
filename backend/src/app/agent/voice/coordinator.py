@@ -45,6 +45,7 @@ class VoiceTurnCoordinator:
             "full_names": set(),
             "prices": set(),
             "stock": {},
+            "transcript_buffer": "",
             "verified": "",
         }
 
@@ -343,7 +344,7 @@ class VoiceTurnCoordinator:
                     if self._active_brain_task and not self._active_brain_task.done():
                         logger.info("Barge-in: cancelling active brain turn session=%s", self.session_id)
                         self._active_brain_task.cancel()
-                    self.spoken_truth.update(names=set(), full_names=set(), prices=set(), stock={}, verified="")
+                    self.spoken_truth.update(names=set(), full_names=set(), prices=set(), stock={}, transcript_buffer="", verified="")
                     await self.safe_send_text(json.dumps({"type": "flush_audio"}))
                     self.transition_state("LISTENING")
                     self._mic_enabled = True
@@ -361,25 +362,16 @@ class VoiceTurnCoordinator:
                     }))
 
                 elif evt_type == "transcript":
-                    text = event.get("text", "")
-                    if text:
-                        out_text = text
-                        # Grounding checks against spoken truth to prevent product hallucinations
-                        if self.spoken_truth["names"] or self.spoken_truth["full_names"]:
-                            ok, _clean = validate_spoken_text(
-                                text,
-                                retrieved_names=self.spoken_truth["names"] or None,
-                                retrieved_full_names=self.spoken_truth["full_names"] or None,
-                                retrieved_prices=self.spoken_truth["prices"] or None,
-                                retrieved_stock=self.spoken_truth["stock"] or None,
-                            )
-                            if not ok:
-                                out_text = self.spoken_truth["verified"] or text
-                                logger.warning("Spoken transcript diverged from brain — substituting verified text session=%s", self.session_id)
-
+                    delta = event.get("text", "")
+                    if delta:
+                        # Buffer the full transcript; send raw deltas to the widget for
+                        # low-latency streaming. Validation runs on the COMPLETE transcript
+                        # at turn_complete / flush_audio — never on partial text (avoiding
+                        # false-positive name-grounding failures from incomplete fragments).
+                        self.spoken_truth["transcript_buffer"] += delta
                         await self.safe_send_text(json.dumps({
                             "type": "transcript",
-                            "text": out_text,
+                            "text": delta,
                         }))
 
                 elif evt_type == "audio":
@@ -396,7 +388,28 @@ class VoiceTurnCoordinator:
                     )
 
                 elif evt_type == "turn_complete":
-                    self.spoken_truth.update(names=set(), full_names=set(), prices=set(), stock={}, verified="")
+                    # Validate the COMPLETE transcript (buffered from all deltas) against
+                    # the brain's grounding. If the voice model hallucinated a product name
+                    # or price, send a corrected transcript bubble to the widget.
+                    full = self.spoken_truth.get("transcript_buffer", "")
+                    if full and (self.spoken_truth["names"] or self.spoken_truth["full_names"]):
+                        ok, clean = validate_spoken_text(
+                            full,
+                            retrieved_names=self.spoken_truth["names"] or None,
+                            retrieved_full_names=self.spoken_truth["full_names"] or None,
+                            retrieved_prices=self.spoken_truth["prices"] or None,
+                            retrieved_stock=self.spoken_truth["stock"] or None,
+                        )
+                        if not ok:
+                            corrected = self.spoken_truth["verified"] or clean or full
+                            logger.warning("Final spoken transcript diverged from brain — sending correction session=%s", self.session_id)
+                            await self.safe_send_text(json.dumps({
+                                "type": "transcript_correction",
+                                "text": corrected,
+                                "original": full,
+                            }))
+
+                    self.spoken_truth.update(names=set(), full_names=set(), prices=set(), stock={}, transcript_buffer="", verified="")
                     await self.safe_send_text(json.dumps({"type": "turn_complete"}))
                     self.transition_state("LISTENING")
                     self._mic_enabled = True
