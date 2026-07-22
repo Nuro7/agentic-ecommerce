@@ -7,6 +7,7 @@ import logging
 import os
 import struct
 import time
+from enum import Enum
 from typing import Any, AsyncIterator
 
 import websockets
@@ -15,6 +16,12 @@ from ....config import settings
 from .base import BaseVoiceProvider
 
 logger = logging.getLogger(__name__)
+
+
+class ResponseState(Enum):
+    IDLE = "idle"
+    GENERATING = "generating"
+    CANCELLING = "cancelling"
 
 
 def resample_pcm16_16k_to_24k(data: bytes) -> bytes:
@@ -51,7 +58,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         self.ws: websockets.WebSocketClientProtocol | None = None
         self._connected = False
         self.write_lock = asyncio.Lock()
-        self._response_state = "IDLE"
+        self._response_state = ResponseState.IDLE
 
     async def _send_safe(self, data: str) -> None:
         """
@@ -66,6 +73,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 raise
 
     async def connect(self, session_id: str, store_client: Any, tenant_id: str) -> None:
+        self._response_state = ResponseState.IDLE
         api_key = settings.openai_api_key or os.environ.get("OPENAI_API_KEY", "").strip()
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY not set — OpenAI provider unavailable")
@@ -215,14 +223,14 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 logger.info("Received OpenAI event: %s", evt_type)
 
             if evt_type == "response.created":
-                self._response_state = "GENERATING"
+                self._response_state = ResponseState.GENERATING
 
             elif evt_type == "input_audio_buffer.speech_started":
                 # Speech detected by server VAD -> barge-in!
                 # Only cancel if there is an active response in progress
-                if self._response_state == "GENERATING":
+                if self._response_state == ResponseState.GENERATING:
                     logger.info("Speech started during active response -> sending response.cancel")
-                    self._response_state = "CANCELLING"  # Set CANCELLING immediately to prevent duplicate cancel requests
+                    self._response_state = ResponseState.CANCELLING  # Set CANCELLING immediately to prevent duplicate cancel requests
                     await self._send_safe(json.dumps({"type": "response.cancel"}))
                 else:
                     logger.debug("Speech started but no active response to cancel (state=%s)", self._response_state)
@@ -260,7 +268,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 }
 
             elif evt_type == "response.done":
-                self._response_state = "IDLE"
+                self._response_state = ResponseState.IDLE
                 yield {"type": "turn_complete"}
 
             elif evt_type == "error":
@@ -272,6 +280,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     logger.warning("Ignored non-fatal OpenAI Realtime error: %s", err_msg)
                 else:
                     logger.error("OpenAI Realtime error: %s", err_msg)
+                    self._response_state = ResponseState.IDLE  # Reset state on fatal session/response errors
                     yield {"type": "error", "message": err_msg}
 
     async def send_tool_response(self, call_id: str, name: str, response: str) -> None:
@@ -292,6 +301,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
 
     async def close(self) -> None:
         self._connected = False
+        self._response_state = ResponseState.IDLE
         if self.ws:
             try:
                 await self.ws.close()
