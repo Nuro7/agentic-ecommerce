@@ -137,20 +137,25 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             "type": "session.update",
             "session": {
                 "type": "realtime",
-                "modalities": ["text", "audio"],
+                "output_modalities": ["audio", "text"],
                 "instructions": system_instruction,
-                "voice": settings.openai_realtime_voice or "alloy",
-                "temperature": settings.openai_realtime_temperature or 0.6,
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
                 "input_audio_transcription": {
                     "model": "whisper-1"
                 },
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 600
+                "audio": {
+                    "input": {
+                        "format": "pcm16",
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": 0.5,
+                            "prefix_padding_ms": 300,
+                            "silence_duration_ms": 600
+                        }
+                    },
+                    "output": {
+                        "format": "pcm16",
+                        "voice": settings.openai_realtime_voice or "alloy"
+                    }
                 },
                 "tools": openai_tools,
                 "tool_choice": "auto"

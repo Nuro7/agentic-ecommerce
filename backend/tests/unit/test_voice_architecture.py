@@ -33,6 +33,7 @@ async def test_openai_voice_provider(monkeypatch):
         async def __aiter__(self):
             # Yield some test events from OpenAI Realtime
             events = [
+                {"type": "session.updated"},
                 {"type": "input_audio_buffer.speech_started"},
                 {"type": "conversation.item.input_audio_transcription.completed", "transcript": "test transcript"},
                 {"type": "response.audio_transcript.delta", "delta": "hello"},
@@ -65,7 +66,7 @@ async def test_openai_voice_provider(monkeypatch):
     # Verify session.update was sent
     assert len(sent_payloads) == 1
     assert sent_payloads[0]["type"] == "session.update"
-    assert sent_payloads[0]["session"]["voice"] == "alloy"
+    assert sent_payloads[0]["session"]["audio"]["output"]["voice"] == "alloy"
 
     # Test send_audio_chunk
     await provider.send_audio_chunk(b"\x01\x00" * 160)
