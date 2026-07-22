@@ -24,7 +24,6 @@ class ResponseState(Enum):
     TRANSCRIBING = "transcribing"
     WAITING_FOR_TOOL = "waiting_for_tool"
     TOOL_RUNNING = "tool_running"
-    RESPONSE_REQUESTED = "response_requested"
     RESPONSE_CREATED = "response_created"
     STREAMING_AUDIO = "streaming_audio"
     COMPLETED = "completed"
@@ -147,12 +146,16 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 # Track active response state directly inside the reader
                 if evt_type == "input_audio_buffer.speech_started":
                     self._transition_state(ResponseState.TRANSCRIBING)
+                elif evt_type == "conversation.item.created":
+                    item = event.get("item", {})
+                    if item.get("type") == "function_call_output":
+                        self._transition_state(ResponseState.TOOL_RUNNING)
                 elif evt_type == "response.created":
                     self._transition_state(ResponseState.RESPONSE_CREATED)
                     self._response_created_received = True
                     self._audio_delta_received = False
                     self._response_done_received = False
-                elif evt_type in ("response.audio.delta", "response.audio_transcript.delta"):
+                elif evt_type in ("response.output_audio.delta", "response.output_audio_transcript.delta"):
                     self._transition_state(ResponseState.STREAMING_AUDIO)
                     self._audio_delta_received = True
                 elif evt_type == "response.function_call_arguments.done":
@@ -165,7 +168,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     err_code = err.get("code")
                     err_msg = err.get("message", "")
                     logger.error("OpenAI Error Event: %s", json.dumps(event, indent=2))
-                    if not (err_code == "cancellation_failed" or "cancellation failed" in err_msg.lower()):
+                    if not (err_code in ("cancellation_failed", "response_cancel_not_active") or "cancellation failed" in err_msg.lower()):
                         # Reset to LISTENING for recoverable conversation interruptions or errors
                         self._transition_state(ResponseState.LISTENING)
                         self._response_created_received = False
@@ -223,6 +226,10 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         )
         self._connected = True
         logger.info("OpenAIVoiceProvider connected to model=%s", model_name)
+
+        # Start the reader task immediately (the ONLY WebSocket reader)
+        self.event_queue = asyncio.Queue()
+        self._reader_task = asyncio.create_task(self._ws_reader_loop())
 
         # Build session config
         from ....modules.tenants.service import get_store_config_for_tenant
@@ -298,28 +305,15 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             }
         }))
 
-        # Wait until session.updated is received directly from self.ws
+        # Wait until session.updated is received directly from event_queue (read by background task)
         pre_handshake_events = []
         session_ready = False
         start_time = time.time()
-        logger.info("Waiting for session.updated confirmation from OpenAI...")
+        logger.info("Waiting for session.updated confirmation from event_queue...")
         while time.time() - start_time < 10.0:
             try:
-                raw = await asyncio.wait_for(self.ws.recv(), timeout=1.0)
-                event = json.loads(raw)
+                event = await asyncio.wait_for(self.event_queue.get(), timeout=1.0)
                 evt_type = event.get("type")
-                event_id = event.get("event_id", "")
-                
-                logger.info(
-                    "<<< RECV [%s] id=%s payload=%s",
-                    evt_type, event_id, raw
-                )
-                
-                if evt_type:
-                    self._inbound_history.append(evt_type)
-                    if len(self._inbound_history) > 20:
-                        self._inbound_history.pop(0)
-
                 if evt_type == "session.updated":
                     logger.info("OpenAI Realtime session initialized successfully for session=%s", session_id)
                     self._transition_state(ResponseState.LISTENING)
@@ -337,17 +331,13 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         if not session_ready:
             raise RuntimeError("Timeout waiting for session.updated")
 
-        # Initialize event queue and populate it with pre-handshake events in order
-        self.event_queue = asyncio.Queue()
+        # Now prepend pre-handshake events back to the event queue
+        new_queue = asyncio.Queue()
         for ev in pre_handshake_events:
-            evt_type = ev.get("type")
-            if evt_type == "response.created":
-                self._transition_state(ResponseState.RESPONSE_CREATED)
-                self._response_created_received = True
-            await self.event_queue.put(ev)
-
-        # Start the reader task immediately AFTER handshake finishes
-        self._reader_task = asyncio.create_task(self._ws_reader_loop())
+            await new_queue.put(ev)
+        while not self.event_queue.empty():
+            await new_queue.put(self.event_queue.get_nowait())
+        self.event_queue = new_queue
 
     async def send_audio_chunk(self, chunk: bytes) -> None:
         if self.ws and self._connected:
@@ -404,12 +394,12 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 if transcript:
                     yield {"type": "user_transcript", "text": transcript}
 
-            elif evt_type == "response.audio_transcript.delta":
+            elif evt_type == "response.output_audio_transcript.delta":
                 delta = event.get("delta")
                 if delta:
                     yield {"type": "transcript", "text": delta}
 
-            elif evt_type == "response.audio.delta":
+            elif evt_type == "response.output_audio.delta":
                 delta = event.get("delta")
                 if delta:
                     audio_bytes = base64.b64decode(delta)
@@ -439,7 +429,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 err_msg = err.get("message", "Unknown OpenAI Realtime error")
                 err_code = err.get("code")
                 # Ignore non-fatal cancellation failure warnings
-                if err_code == "cancellation_failed" or "cancellation failed" in err_msg.lower():
+                if err_code in ("cancellation_failed", "response_cancel_not_active") or "cancellation failed" in err_msg.lower():
                     logger.warning("Ignored non-fatal OpenAI Realtime error: %s", err_msg)
                 else:
                     logger.error("OpenAI Error: %s", json.dumps(event, indent=2))
@@ -447,7 +437,6 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
 
     async def send_tool_response(self, call_id: str, name: str, response: str) -> None:
         if self.ws and self._connected:
-            self._transition_state(ResponseState.TOOL_RUNNING)
             # Send function execution output
             await self._send_safe(json.dumps({
                 "type": "conversation.item.create",
@@ -457,10 +446,12 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     "output": json.dumps({"response": response})
                 }
             }))
-            # Trigger response generation
-            self._transition_state(ResponseState.RESPONSE_REQUESTED)
+            # Trigger response generation with explicit GA modalities
             await self._send_safe(json.dumps({
-                "type": "response.create"
+                "type": "response.create",
+                "response": {
+                    "modalities": ["audio"]
+                }
             }))
 
     async def close(self) -> None:

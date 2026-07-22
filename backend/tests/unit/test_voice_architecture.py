@@ -32,8 +32,8 @@ async def test_openai_voice_provider(monkeypatch):
                 {"type": "session.updated"},
                 {"type": "input_audio_buffer.speech_started"},
                 {"type": "conversation.item.input_audio_transcription.completed", "transcript": "test transcript"},
-                {"type": "response.audio_transcript.delta", "delta": "hello"},
-                {"type": "response.audio.delta", "delta": "YQ=="}, # base64 for 'a'
+                {"type": "response.output_audio_transcript.delta", "delta": "hello"},
+                {"type": "response.output_audio.delta", "delta": "YQ=="}, # base64 for 'a'
                 {"type": "response.function_call_arguments.done", "call_id": "call_1", "name": "ask_brain", "arguments": "{\"query\":\"find shoes\"}"},
                 {"type": "response.done"},
             ]
