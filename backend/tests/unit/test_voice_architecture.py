@@ -45,7 +45,7 @@ async def test_openai_voice_provider(monkeypatch):
         async def close(self):
             self.closed = True
 
-    async def mock_connect(url, extra_headers=None):
+    async def mock_connect(url, **kwargs):
         return MockOpenAISocket()
 
     # Mock settings / environment
