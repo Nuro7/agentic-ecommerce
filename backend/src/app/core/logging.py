@@ -4,8 +4,14 @@ from ..config import settings
 
 
 def configure_logging() -> None:
+    log_level = settings.log_level.upper()
     logging.basicConfig(
-        level=settings.log_level.upper(),
-        format='{"time":"%(asctime)s","level":"%(levelname)s","name":"%(name)s","msg":"%(message)s"}',
+        level=log_level,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
         stream=sys.stdout,
+        force=True,
     )
+    logging.getLogger().setLevel(log_level)
+    # Ensure src and websockets loggers are set to INFO
+    logging.getLogger("src").setLevel(logging.INFO)
+    logging.getLogger("websockets").setLevel(logging.INFO)
