@@ -446,12 +446,9 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                     "output": json.dumps({"response": response})
                 }
             }))
-            # Trigger response generation with explicit GA modalities
+            # Trigger response generation
             await self._send_safe(json.dumps({
-                "type": "response.create",
-                "response": {
-                    "modalities": ["audio"]
-                }
+                "type": "response.create"
             }))
 
     async def close(self) -> None:
