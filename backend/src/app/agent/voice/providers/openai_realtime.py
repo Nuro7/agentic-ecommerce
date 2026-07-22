@@ -269,24 +269,14 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
             }
         ]
 
-        logger.info("Sending GA session.update config for session=%s", session_id)
+        logger.info("Sending session.update config for session=%s", session_id)
         await self._send_safe(json.dumps({
             "type": "session.update",
             "session": {
                 "type": "realtime",
                 "instructions": system_instruction,
-                "voice": settings.openai_realtime_voice or "alloy",
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 200
-                },
                 "tools": openai_tools,
-                "tool_choice": "auto",
-                "temperature": 0.6
+                "tool_choice": "auto"
             }
         }))
 
