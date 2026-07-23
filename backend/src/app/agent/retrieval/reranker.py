@@ -120,6 +120,7 @@ def rerank(
     # ── 4. Light rerank — apply boosts ────────────────────────────────────────
     boosted: list[tuple[float, RawCandidate]] = []
     clean_lower = nq.clean.lower()
+    query_tokens = set(clean_lower.split())
 
     for rrf_score, c in filtered:
         boost = 0.0
@@ -131,6 +132,19 @@ def rerank(
         # Name starts with query → medium boost
         if clean_lower and c.name.lower().startswith(clean_lower[:10]):
             boost += 0.02
+
+        # Category/tag alignment — products whose category or tags match
+        # query tokens are more relevant than cross-category noise
+        if c.category_slug:
+            slug_tokens = set(c.category_slug.replace("-", " ").lower().split())
+            overlap = len(query_tokens & slug_tokens)
+            if overlap:
+                boost += 0.04 * overlap
+        if c.tags:
+            tag_tokens = set(c.tags.lower().replace(",", " ").replace("-", " ").split())
+            tag_overlap = len(query_tokens & tag_tokens)
+            if tag_overlap:
+                boost += 0.03 * tag_overlap
 
         # In-stock preference (slight)
         if c.in_stock:

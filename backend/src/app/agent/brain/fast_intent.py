@@ -636,6 +636,7 @@ async def handle_add_to_cart(
                 "variation_id": variation_id,
                 "variation": variation_data,
                 "quantity": final_qty,
+                "permalink": product.get("permalink", ""),
             },
         }],
         "suggested_replies": ["Add another item", "View cart", "Proceed to checkout"],
@@ -662,14 +663,14 @@ async def _resolve_product_for_add(
             pid = _get_pid(last_products[0])
             if pid:
                 detail = await store_client.get_product_details(pid)
-                return {"id": detail.get("id"), "name": detail.get("name", "Product")}
+                return {"id": detail.get("id"), "name": detail.get("name", "Product"), "permalink": detail.get("permalink", "")}
 
     product_id_match = re.search(r"product\s*id\s*(\d+)", lower)
     if product_id_match:
         pid = int(product_id_match.group(1))
         detail = await store_client.get_product_details(pid)
         if detail.get("id"):
-            return {"id": detail.get("id"), "name": detail.get("name", "Product")}
+            return {"id": detail.get("id"), "name": detail.get("name", "Product"), "permalink": detail.get("permalink", "")}
 
     query = extract_add_query(message)
     if query:
@@ -681,6 +682,6 @@ async def _resolve_product_for_add(
         pid = _get_pid(last_products[0])
         if pid:
             detail = await store_client.get_product_details(pid)
-            return {"id": detail.get("id"), "name": detail.get("name", "Product")}
+            return {"id": detail.get("id"), "name": detail.get("name", "Product"), "permalink": detail.get("permalink", "")}
 
     return None
