@@ -104,9 +104,9 @@ class VoiceTurnCoordinator:
         call_id: str | None = None,
         name: str | None = None,
     ) -> None:
-        """Spawns brain turn task, cancelling any currently running tasks to support barge-in."""
+        logger.info("[FLOW] coordinator.run_brain_turn ENTER session=%s query=%.60s lang=%s call_id=%s", self.session_id, query, language, call_id)
         if self._active_brain_task and not self._active_brain_task.done():
-            logger.info("Cancelling active brain turn task session=%s", self.session_id)
+            logger.info("[FLOW] coordinator cancelling previous brain turn session=%s", self.session_id)
             self._active_brain_task.cancel()
             try:
                 await self._active_brain_task
@@ -171,15 +171,10 @@ class VoiceTurnCoordinator:
 
             latency = (time.perf_counter() - start_time) * 1000.0
             logger.info(
-                "Brain execution completed: session=%s query_len=%d latency_ms=%.2f",
-                self.session_id, len(query), latency,
-                extra={
-                    "session_id": self.session_id,
-                    "tenant_id": self.tenant_id,
-                    "action": "brain_turn",
-                    "latency_ms": latency,
-                    "query_length": len(query),
-                }
+                "[FLOW] coordinator brain_turn DONE session=%s latency_ms=%.2f actions=%d query=%.60s",
+                self.session_id, latency,
+                len(result.get("ui_actions") or result.get("actions") or []),
+                query[:60],
             )
 
             response_text = (

@@ -39,13 +39,11 @@ class AgentOrchestrator:
         cart_context: Optional[Dict[str, Any]] = None,
         tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        # Voice pipelines don't build a store_context — inject the resolved tenant_id
-        # so session/facts/cart keys are tenant-scoped. HTTP callers (/chat) already
-        # put tenant_id in store_context, so only override when explicitly passed.
         store_context = store_context or {}
         if tenant_id is not None:
             store_context = {**store_context, "tenant_id": tenant_id}
-        return await ask_brain(
+        logger.info("[FLOW] orchestrator.run ENTER session=%s query=%.60s lang=%s", session_id, user_message, language)
+        result = await ask_brain(
             session_id=session_id,
             user_message=user_message,
             store_context=store_context,
@@ -57,6 +55,8 @@ class AgentOrchestrator:
             redis=self._redis,
             db_session_factory=self._db_factory,
         )
+        logger.info("[FLOW] orchestrator.run EXIT session=%s ui_actions=%d text=%.80s", session_id, len(result.get("ui_actions") or []), result.get("response_text", "")[:80])
+        return result
 
     async def handle_address_collection(
         self,

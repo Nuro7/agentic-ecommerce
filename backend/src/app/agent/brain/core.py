@@ -399,14 +399,15 @@ async def ask_brain(
         tenant_id, session_id, {**session_meta, "language": lang, "en_streak": en_streak}
     )
 
-    logger.debug(
-        "Brain: intent=%s conf=%.2f via=%s lang=%s session=%s",
+    logger.info("[FLOW] brain step2 intent=%s conf=%.2f via=%s lang=%s history=%d last_products=%d session=%s",
         intent_result.intent, intent_result.confidence, intent_result.via,
-        lang, session_id,
-    )
+        lang, len(history), len(last_products), session_id)
 
     # ── Step 4: Cart fetch ────────────────────────────────────────────────────
     cart = await _fetch_cart(tenant_id, session_id, cart_context, store_client, session_service)
+    logger.info("[FLOW] brain step4 cart items=%d total=%s session=%s",
+        cart.get("item_count") or cart.get("count") or 0,
+        cart.get("total") or "empty", session_id)
     cart_for_prompt = {
         "is_empty": (int(cart.get("item_count") or cart.get("count") or 0) == 0),
         "item_count": int(cart.get("item_count") or cart.get("count") or 0),
@@ -418,6 +419,7 @@ async def ask_brain(
     lower_msg = cleaned_message.lower()
 
     # ── Step 5: Intent routing ────────────────────────────────────────────────
+    logger.info("[FLOW] brain step5 intent_routing ENTER intent=%s session=%s", intent_result.intent, session_id)
     if intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
         result = off_topic_response(lang)
 
@@ -598,8 +600,11 @@ async def ask_brain(
             except Exception as exc:
                 logger.warning("handle_buy_intent failed: %s", exc)
 
+    logger.info("[FLOW] brain step5 result_pre_llm=%s session=%s", "cached" if result else "None", session_id)
+
     # ── Primary: LLM agent ────────────────────────────────────────────────────
     if result is None and ANY_LLM_AVAILABLE:
+        logger.info("[FLOW] brain step6 llm_agent ENTER session=%s", session_id)
         try:
             # Retrieval errored (infra down) + no session history → LLM has nothing
             # grounded. Override store_catalog to mandate a live tool call instead of
@@ -643,28 +648,33 @@ async def ask_brain(
 
     # ── Fallback 1: fast-intent ───────────────────────────────────────────────
     if result is None:
-        degraded = True  # primary LLM path didn't produce a result
+        degraded = True
+        logger.info("[FLOW] brain fallback1 fast_intent ENTER session=%s", session_id)
         try:
             result = await run_fast_intent(
                 cleaned_message, session_id, lang, store_context,
                 tenant_id=tenant_id,
                 store_client=store_client, session_service=session_service,
             )
+            logger.info("[FLOW] brain fallback1 fast_intent EXIT has_result=%s session=%s", result is not None, session_id)
         except Exception as exc:
             logger.warning("[turn %s] Fast-intent fallback failed: %s", turn_id, exc)
 
     # ── Fallback 2: product discovery ────────────────────────────────────────
     if result is None:
+        logger.info("[FLOW] brain fallback2 product_discovery ENTER session=%s", session_id)
         try:
             result = await handle_product_discovery(
                 cleaned_message, lower_msg, lang,
                 store_client=store_client,
             )
+            logger.info("[FLOW] brain fallback2 product_discovery EXIT has_result=%s session=%s", result is not None, session_id)
         except Exception as exc:
             logger.warning("[turn %s] handle_product_discovery fallback failed: %s", turn_id, exc)
 
     if result is None:
         result = _help_fallback_result(lang)
+        logger.info("[FLOW] brain fallback3 help_fallback session=%s", session_id)
 
     # ── Step 6: Post-processing ───────────────────────────────────────────────
     response_text = str(

@@ -399,6 +399,7 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 call_id = event.get("call_id")
                 name = event.get("name")
                 args_str = event.get("arguments", "{}")
+                logger.info("[FLOW] openai tool_call call_id=%s name=%s args=%s", call_id, name, args_str[:120])
                 try:
                     arguments = json.loads(args_str)
                 except Exception:

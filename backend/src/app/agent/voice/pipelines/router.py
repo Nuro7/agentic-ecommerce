@@ -1,10 +1,6 @@
 """
 Pipeline Router — Active Pipeline Selector with Circuit Breaker + Health Monitor.
-Routes each voice WebSocket session through the available provider cascade:
-
-  PRIMARY:  OpenAI Realtime (GPT-4o Realtime) — model: gpt-realtime-2.1-mini
-  FALLBACK: Gemini Live (Gemini 2.0 Flash)  — model: models/gemini-2.0-flash-001
-  DEGRADED: Text-only (no voice, typed chat)
+Routes each voice WebSocket session through the available provider cascade.
 
 Each provider has its own circuit breaker (2 failures → 30s cooldown).
 Every start, failure, and fallback is logged with [pipeline] prefix for
