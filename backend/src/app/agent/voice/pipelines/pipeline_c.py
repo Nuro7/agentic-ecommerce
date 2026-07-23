@@ -40,6 +40,7 @@ class PipelineC:
     def __init__(self, session_service: Any) -> None:
         self.session_service = session_service
         self._orchestrators: dict[str, AgentOrchestrator] = {}
+        self._page_context: dict = {}
 
     def _get_orchestrator(self, session_id: str, store_client: Any) -> AgentOrchestrator:
         if session_id not in self._orchestrators:
@@ -93,6 +94,10 @@ class PipelineC:
                 except json.JSONDecodeError:
                     continue
 
+                if ctrl.get("type") == "page_update":
+                    self._page_context = ctrl.get("page_context") or {}
+                    continue
+
                 if ctrl.get("type") != "text_input" or not ctrl.get("text"):
                     continue
 
@@ -117,6 +122,7 @@ class PipelineC:
                         user_message=query,
                         language=language,
                         tenant_id=tenant_id,
+                        page_context=self._page_context,
                     )
                     response_text = (
                         result.get("speech_text")

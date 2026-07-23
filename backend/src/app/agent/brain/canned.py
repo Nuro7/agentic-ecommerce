@@ -242,7 +242,10 @@ def say(language: str, key: str, **kwargs: Any) -> str:
         kwargs["stock_text"] = "is available" if in_stock_val else "is currently unavailable"
         kwargs["qty_text"] = f" with only {qty} left" if isinstance(qty, int) else ""
 
+    escaped = {k: (str(v).replace("{", "{{").replace("}", "}}") if isinstance(v, (str, int, float, bool)) else v) for k, v in kwargs.items()}
+
     try:
-        return tpl.format(**kwargs)
-    except KeyError:
+        return tpl.format(**escaped)
+    except (KeyError, ValueError):
         return tpl
+
