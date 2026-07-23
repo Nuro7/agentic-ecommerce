@@ -210,21 +210,43 @@ async def execute_tool_call(
             variation_id = safe_int(inv.get("variation_id"), 0)
             if hasattr(store_client, "_attributes_to_variation_map"):
                 variation_data = store_client._attributes_to_variation_map(inv.get("attributes", []))
+        try:
+            cart_result = await store_client.add_to_cart(
+                session_id=session_id,
+                product_id=product_id,
+                variation_id=variation_id,
+                quantity=quantity,
+                variation=variation_data or None,
+            )
+        except Exception as exc:
+            logger.error("add_to_cart server-side failed session=%s: %s", session_id, exc)
+            return {"error": "Failed to add to cart. Please try again."}, actions, [], None
+        success = cart_result.get("success", True)
+        if not success:
+            return {"error": cart_result.get("error", "Could not add to cart.")}, actions, [], None
         actions.append({
-            "type": "add_to_cart",
-            "payload": {
-                "product_id": product_id,
-                "variation_id": variation_id,
-                "variation": variation_data,
-                "quantity": quantity,
-            },
+            "type": "cart_updated",
+            "payload": {"cart": cart_result, "product_id": product_id},
         })
-        return {"add_to_cart": "client_side_action"}, actions, [product_id], None
+        return {"add_to_cart": "success", "cart": cart_result}, actions, [product_id], None
 
     if tool_name == "remove_from_cart":
         cart_item_key = str(tool_args.get("cart_item_key") or "").strip()
-        actions.append({"type": "remove_from_cart", "payload": {"cart_item_key": cart_item_key}})
-        return {"remove_from_cart": "client_side_action"}, actions, [], None
+        product_id = safe_int(tool_args.get("product_id"), 0)
+        try:
+            cart_result = await store_client.remove_from_cart(
+                session_id=session_id,
+                cart_item_key=cart_item_key or None,
+                product_id=product_id or None,
+            )
+        except Exception as exc:
+            logger.error("remove_from_cart server-side failed session=%s: %s", session_id, exc)
+            return {"error": "Failed to remove item from cart."}, actions, [], None
+        actions.append({
+            "type": "cart_updated",
+            "payload": {"cart": cart_result},
+        })
+        return {"remove_from_cart": "success", "cart": cart_result}, actions, [], None
 
     if tool_name == "get_orders":
         email = str(tool_args.get("customer_email") or "").strip().lower()
