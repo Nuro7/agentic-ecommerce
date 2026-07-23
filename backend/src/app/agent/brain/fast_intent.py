@@ -267,6 +267,12 @@ async def handle_product_discovery(
         query=query, min_price=min_price, max_price=max_price,
         in_stock_only=in_stock_only, limit=limit,
     )
+    if not products and query and not wants_all:
+        return with_actions_alias({
+            "response_text": f"I couldn't find anything matching '{query}' in this store. Try a different search or browse our catalog.",
+            "ui_actions": [],
+            "suggested_replies": ["Show all products", "Browse categories", "Show my cart"],
+        })
     if not products:
         products = await store_client.search_products(
             query="", min_price=min_price, max_price=max_price,

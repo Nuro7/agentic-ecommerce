@@ -92,6 +92,7 @@ def say(language: str, key: str, **kwargs: Any) -> str:
             "cart_empty": "Your cart is empty right now.",
             "removed_from_cart": "Removed {name} from your cart.",
             "no_products": "I couldn't find a close match. Try product name, brand, size, or budget.",
+            "no_products_specific": "I couldn't find anything matching '{query}' in this store. Try a different search or browse our catalog.",
             "products_found": "{name} looks like your best bet. Want me to show the size and color options?",
             "ask_product_for_stock": "Tell me the product name and size, and I'll check live stock.",
             "availability": "{name} {size_text}is {stock_text}{qty_text}.",
