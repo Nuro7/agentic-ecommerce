@@ -2585,6 +2585,8 @@
         window.dispatchEvent(new CustomEvent(eventName, { detail }));
         break;
       }
+    }
+  }
 
   async function addToCartViaWoo(payload) {
     const endpoint = String(CFG.rest_url || '').replace(/\/$/, '') + '/cart/add';
