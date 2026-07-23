@@ -79,9 +79,10 @@ class PipelineRouter:
             if name == "Gemini Live" and provider_choice == "openai":
                 pass  # always try as fallback even when openai is primary
             if breaker and not breaker.is_available():
+                cooldown = breaker.health().get("recovery_in", 0)
                 logger.warning(
                     "[pipeline] %s breaker OPEN — skipping (cooldown %.0fs): session=%s",
-                    name, breaker.remaining_cooldown or 0, session_id,
+                    name, cooldown, session_id,
                 )
                 return False
             logger.info("[pipeline] Starting %s: session=%s", name, session_id)
