@@ -291,7 +291,14 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
                 "type": "realtime",
                 "instructions": system_instruction,
                 "tools": openai_tools,
-                "tool_choice": "auto"
+                "tool_choice": "auto",
+                "turn_detection": {
+                    "type": "server_vad",
+                    "threshold": 0.5,
+                    "prefix_padding_ms": 300,
+                    "silence_duration_ms": 600
+                },
+                "modalities": ["text", "audio"]
             }
         }))
 
