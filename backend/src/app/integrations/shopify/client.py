@@ -305,6 +305,22 @@ class ShopifyClient(BaseStoreClient):
                 "options": opt.get("values", []),
             })
 
+        raw_tags = node.get("tags")
+        parsed_tags: list[str] = []
+        if isinstance(raw_tags, list):
+            parsed_tags = [str(t) for t in raw_tags if t]
+        elif isinstance(raw_tags, str):
+            parsed_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+
+        categories = [
+            {
+                "id": _gid_to_int(e["node"]["id"]),
+                "name": e["node"]["title"],
+                "slug": e["node"]["handle"],
+            }
+            for e in node.get("collections", {}).get("edges", [])
+        ]
+
         return {
             "id": _gid_to_int(node.get("id", "")),
             "name": node.get("title", ""),
@@ -319,6 +335,8 @@ class ShopifyClient(BaseStoreClient):
             "attributes": attributes,
             "variations_summary": variations_summary,
             "on_sale": on_sale,
+            "tags": parsed_tags,
+            "categories": categories,
         }
 
     def _normalize_admin_gql_node(self, node: Dict[str, Any]) -> Dict[str, Any]:
@@ -621,7 +639,7 @@ class ShopifyClient(BaseStoreClient):
             pageInfo { hasNextPage endCursor }
             edges {
               node {
-                id title handle description availableForSale totalInventory
+                id title handle description availableForSale totalInventory tags
                 priceRange {
                   minVariantPrice { amount currencyCode }
                   maxVariantPrice { amount currencyCode }
@@ -629,6 +647,9 @@ class ShopifyClient(BaseStoreClient):
                 compareAtPriceRange { minVariantPrice { amount currencyCode } }
                 images(first: 1) { edges { node { url } } }
                 options { name values }
+                collections(first: 5) {
+                  edges { node { id title handle } }
+                }
                 variants(first: 10) {
                   edges {
                     node {
