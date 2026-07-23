@@ -288,11 +288,9 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
         await self._send_safe(json.dumps({
             "type": "session.update",
             "session": {
-                "type": "realtime",
                 "instructions": system_instruction,
                 "tools": openai_tools,
-                "tool_choice": "auto",
-                "modalities": ["text", "audio"]
+                "tool_choice": "auto"
             }
         }))
 
