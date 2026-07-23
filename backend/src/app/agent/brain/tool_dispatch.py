@@ -84,16 +84,28 @@ async def execute_tool_call(
             brand_found = len(brand_filtered) > 0
         else:
             brand_found = True
-        if not products and raw_query and query != "" and len(query.split()) <= 1:
-            products = await store_client.search_products(
-                query="",
-                category_slug=tool_args.get("category"),
-                min_price=safe_float(tool_args.get("min_price")),
-                max_price=safe_float(tool_args.get("max_price")),
-                in_stock_only=False,
-                limit=min(limit, 8),
-            )
-            brand_found = False
+        if not products and raw_query:
+            words = query.split()
+            # Multi-word query returned nothing — strip words progressively
+            if len(words) > 1:
+                for i in range(1, len(words)):
+                    shorter = " ".join(words[i:])
+                    products = await store_client.search_products(
+                        query=shorter, in_stock_only=in_stock_only, limit=limit,
+                    )
+                    if products:
+                        break
+            # Single-word query or progressive fallback failed → show all
+            if not products and len(words) <= 1:
+                products = await store_client.search_products(
+                    query="",
+                    category_slug=tool_args.get("category"),
+                    min_price=safe_float(tool_args.get("min_price")),
+                    max_price=safe_float(tool_args.get("max_price")),
+                    in_stock_only=False,
+                    limit=min(limit, 8),
+                )
+                brand_found = False
         if query and products:
             query_words = [w for w in query.lower().split() if len(w) > 2]
 

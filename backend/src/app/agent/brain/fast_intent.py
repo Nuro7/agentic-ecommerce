@@ -268,6 +268,17 @@ async def handle_product_discovery(
         in_stock_only=in_stock_only, limit=limit,
     )
     if not products and query and not wants_all:
+        words = query.split()
+        if len(words) > 1:
+            for i in range(1, len(words)):
+                shorter = " ".join(words[i:])
+                products = await store_client.search_products(
+                    query=shorter, min_price=min_price, max_price=max_price,
+                    in_stock_only=in_stock_only, limit=limit,
+                )
+                if products:
+                    break
+    if not products and query and not wants_all:
         return with_actions_alias({
             "response_text": f"I couldn't find anything matching '{query}' in this store. Try a different search or browse our catalog.",
             "ui_actions": [],
