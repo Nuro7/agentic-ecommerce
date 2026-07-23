@@ -117,43 +117,28 @@ def append_live_navigation(
     if types_present & {"redirect", "redirect_checkout", "redirect_checkout_with_address"}:
         return  # navigation already decided this turn
 
-    # 1. Item just added → cart page
-    if "add_to_cart" in types_present:
-        cart_url = str(ctx.get("cart_url") or "").strip()
-        if not cart_url and base_url:
-            cart_url = base_url.rstrip("/") + "/cart"
-        _push(cart_url, "cart")
-        return
-
-    # Collect shown products
+    # Collect shown products for single-product redirect
     products = []
     for a in ui_actions:
-        if isinstance(a, dict) and a.get("type") in ("show_products", "show_product_detail"):
+        if isinstance(a, dict) and a.get("type") == "show_product_detail":
             payload = a.get("payload") or {}
-            items = payload.get("products") or ([payload["product"]] if payload.get("product") else [])
-            products.extend(p for p in items if isinstance(p, dict))
+            if payload.get("product"):
+                products.append(payload["product"])
+    if not products:
+        for a in ui_actions:
+            if isinstance(a, dict) and a.get("type") == "show_products":
+                payload = a.get("payload") or {}
+                items = payload.get("products") or []
+                products.extend(p for p in items if isinstance(p, dict))
     if not products:
         return
 
-    # 2. Exactly one product with a permalink → its page
+    # Exactly one product with a permalink → its page
     if len(products) == 1:
         purl = product_page_url(products[0])
         if purl:
             _push(purl, "product")
             return
-
-    # 3. Multiple results → storefront search reflecting the spoken requirement
-    # Prefer the clean LLM-extracted query if available, otherwise fall back to raw message
-    action_query = ""
-    for a in ui_actions:
-        if isinstance(a, dict) and a.get("type") == "show_products":
-            payload = a.get("payload") or {}
-            if payload.get("query"):
-                action_query = str(payload["query"]).strip()
-                break
-
-    nav_q = action_query or normalize_discovery_query(str(query or "")) or str(query or "").strip()
-    _push(storefront_search_url(base_url, platform, nav_q) or "", "search", nav_q)
 
 
 # ── Query normalisation ───────────────────────────────────────────────────────

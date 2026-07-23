@@ -268,6 +268,17 @@ async def handle_product_discovery(
         in_stock_only=in_stock_only, limit=limit,
     )
     if not products and query and not wants_all:
+        words = query.split()
+        if len(words) > 1:
+            for i in range(1, len(words)):
+                shorter = " ".join(words[i:])
+                products = await store_client.search_products(
+                    query=shorter, min_price=min_price, max_price=max_price,
+                    in_stock_only=in_stock_only, limit=limit,
+                )
+                if products:
+                    break
+    if not products and query and not wants_all:
         return with_actions_alias({
             "response_text": f"I couldn't find anything matching '{query}' in this store. Try a different search or browse our catalog.",
             "ui_actions": [],
@@ -294,13 +305,38 @@ async def handle_product_discovery(
     name = products[0].get("name", "")
     price = products[0].get("price", "")
     price_text = f", ₹{price}" if price else ""
-    response = f"{name}{price_text} — want me to show the size and color options?"
+
+    is_sold_out = all(not in_stock(p) for p in products[:3])
+
+    if is_sold_out:
+        alt_query = str(products[0].get("name") or query or "")
+        alternatives = await store_client.search_products(
+            query=alt_query, in_stock_only=True, limit=4,
+        )
+        if alternatives:
+            response = f"{name} is currently out of stock. Here are some similar options that are available:"
+            actions = [
+                {"type": "show_products", "payload": {"products": products}},
+                {"type": "show_products", "payload": {"products": alternatives}},
+            ]
+            suggested = ["Show options", "Add to cart", "Show my cart"]
+            last_ids = [p.get("id") for p in (products + alternatives) if p.get("id")]
+        else:
+            response = f"{name} is currently out of stock, and I couldn't find similar alternatives. Check back later or browse our catalog."
+            actions = [{"type": "show_products", "payload": {"products": products}}]
+            suggested = ["Show all products", "Browse categories", "Show my cart"]
+            last_ids = [p.get("id") for p in products if p.get("id")]
+    else:
+        response = f"{name}{price_text} — want me to show the size and color options?"
+        actions = [{"type": "show_products", "payload": {"products": products}}]
+        suggested = ["Show options", "Add to cart", "Show my cart"]
+        last_ids = [p.get("id") for p in products if p.get("id")]
 
     return with_actions_alias({
         "response_text": response,
-        "ui_actions": [{"type": "show_products", "payload": {"products": products}}],
-        "suggested_replies": ["Show options", "Add to cart", "Show my cart"],
-        "last_products": [p.get("id") for p in products if p.get("id")],
+        "ui_actions": actions,
+        "suggested_replies": suggested,
+        "last_products": last_ids,
     })
 
 

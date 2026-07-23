@@ -194,9 +194,8 @@ async def run_llm_agent(
                     )
                     if tool_actions:
                         actions.extend(tool_actions)
-                    for pid in (product_ids or []):
-                        if pid and pid not in accumulated_products:
-                            accumulated_products.append(pid)
+                    new_pids = [pid for pid in (product_ids or []) if pid and pid not in accumulated_products]
+                    accumulated_products = new_pids + accumulated_products
                     if maybe_email:
                         customer_email = maybe_email
                     messages.append({"role": "assistant", "content": f"Executed inline function {tool_name}"})
@@ -266,9 +265,8 @@ async def run_llm_agent(
 
             if tool_actions:
                 actions.extend(tool_actions)
-            for pid in (product_ids or []):
-                if pid and pid not in accumulated_products:
-                    accumulated_products.append(pid)
+            new_pids = [pid for pid in (product_ids or []) if pid and pid not in accumulated_products]
+            accumulated_products = new_pids + accumulated_products
             if maybe_email:
                 customer_email = maybe_email
 

@@ -2300,11 +2300,6 @@
 
       case 'add_to_cart':
         if (act.payload && act.payload.product_id) {
-          // The backend emits add_to_cart as a CLIENT-SIDE action (it never adds
-          // server-side). The widget must perform the real add so the item lands
-          // in the customer's actual cart — on Shopify via the native AJAX cart,
-          // on WooCommerce via the WP REST bridge. (Previously the Shopify branch
-          // trusted a payload.cart that was never sent → nothing was added.)
           try {
             await addToCartDispatch(act.payload);
           } catch (error) {
@@ -2317,8 +2312,6 @@
 
       case 'remove_from_cart':
         if (act.payload && act.payload.cart_item_key) {
-          // Like add, the backend remove is client-side only — perform the real
-          // removal so the customer's actual cart changes.
           try {
             if (IS_SHOPIFY) {
               await removeFromCartShopify(act.payload.cart_item_key);
@@ -2333,9 +2326,15 @@
 
       case 'cart_updated': {
         const c = act.payload || {};
-        const cnt = c.cart_count || c.item_count || (c.cart && (c.cart.item_count || c.cart.count)) || 0;
+        const cart = c.cart || {};
+        const cnt = c.cart_count || c.item_count || cart.item_count || cart.totalQuantity || 0;
         updateBadge(cnt);
-        if (c.message) showToast('🛒 ' + c.message);
+        if (cart.checkout_url) S.checkoutUrl = cart.checkout_url;
+        if (c.product_id) {
+          showToast('Added to cart!');
+        } else if (c.message) {
+          showToast(c.message);
+        }
         if (window.jQuery) {
           window.jQuery(document.body).trigger('wc_fragment_refresh');
           window.jQuery(document.body).trigger('update_checkout');
