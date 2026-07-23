@@ -136,6 +136,7 @@ def _parse_bulk_jsonl(text: str) -> List[Dict[str, Any]]:
     """
     products: Dict[str, Dict[str, Any]] = {}   # gid → product dict
     variants_map: Dict[str, List[Dict]] = {}   # product_gid → [variant, ...]
+    collections_map: Dict[str, List[Dict]] = {}  # product_gid → [collection, ...]
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -151,10 +152,10 @@ def _parse_bulk_jsonl(text: str) -> List[Dict[str, Any]]:
         parent_id: Optional[str] = obj.get("__parentId")
 
         if parent_id:
-            # Child line — only variants carry __parentId in this query
             if "/ProductVariant/" in gid:
                 variants_map.setdefault(parent_id, []).append(obj)
-            # Images are handled via featuredImage (inlined), so no image lines
+            elif "/Collection/" in gid:
+                collections_map.setdefault(parent_id, []).append(obj)
         elif "/Product/" in gid and "/ProductVariant/" not in gid:
             products[gid] = obj
 
@@ -205,10 +206,16 @@ def _parse_bulk_jsonl(text: str) -> List[Dict[str, Any]]:
         elif isinstance(raw_tags, str):
             parsed_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
 
-        raw_collections = p.get("collections") or {}
+        product_collections = collections_map.get(gid, [])
         collection_edges = [
-            {"node": {"id": e["node"]["id"], "title": e["node"]["title"], "handle": e["node"]["handle"]}}
-            for e in raw_collections.get("edges", [])
+            {
+                "node": {
+                    "id":     c.get("id", ""),
+                    "title":  c.get("title", ""),
+                    "handle": c.get("handle", ""),
+                }
+            }
+            for c in product_collections[:5]
         ]
 
         node: Dict[str, Any] = {
@@ -225,6 +232,7 @@ def _parse_bulk_jsonl(text: str) -> List[Dict[str, Any]]:
             "images":              {"edges": image_edges},
             "collections":         {"edges": collection_edges},
             "variants":            {"edges": variant_edges},
+            "featuredImage":       featured,
         }
         nodes.append(node)
 
