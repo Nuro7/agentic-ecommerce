@@ -461,7 +461,7 @@ async def shopify_callback(
         logger.error("Webhook registration failed for %s: %s", shop, exc)
 
     # Register script tag (non-fatal — the install itself already succeeded).
-    loader_url = f"{backend_url}/api/v1/shopify/widget-loader.js?shop={shop}"
+    loader_url = f"{backend_url}/api/v1/shopify/widget-loader.js"
     try:
         tag = await _register_script_tag(shop, access_token, loader_url)
         logger.info("Script tag registered for %s: id=%s", shop, tag.get("id"))
