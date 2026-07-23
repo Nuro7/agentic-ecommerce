@@ -51,6 +51,7 @@ async def execute_tool_call(
     session_service: Any,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
     """Dispatch a single tool call and return (result, ui_actions, product_ids, customer_email)."""
+    logger.info("[FLOW] tool_dispatch ENTER tool=%s args=%s session=%s", tool_name, json.dumps(tool_args, default=str)[:120], session_id)
     actions: List[Dict[str, Any]] = []
     product_ids: List[Any] = []
     customer_email: Optional[str] = None

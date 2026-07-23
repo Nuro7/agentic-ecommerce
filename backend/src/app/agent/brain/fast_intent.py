@@ -68,6 +68,7 @@ async def run_fast_intent(
     store_client: Any,
     session_service: Any,
 ) -> Optional[Dict[str, Any]]:
+    logger.info("[FLOW] fast_intent ENTER session=%s query=%.60s", session_id, message)
     text = str(message or "")
     lower = text.lower()
     store_name = str((store_context or {}).get("store_name") or "").strip()
