@@ -9,26 +9,26 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# ── xAI Grok (replaces Groq) ──────────────────────────────────────────────────
+# ── xAI Grok ──────────────────────────────────────────────────────────────────
 # OpenAI-compatible API — uses AsyncOpenAI with xAI base URL.
 # GROK_API_KEY  → xai-...  from console.x.ai
 # GROK_MODEL    → LLM brain fallback model (default: grok-4.3)
 # GROK_CLASSIFIER_MODEL → fast model for intent classification (default: grok-3-mini-fast)
 _grok_key = os.environ.get("GROK_API_KEY", "")
-groq_client = None          # kept as groq_client so llm_router imports don't break
-GROQ_MODEL = os.environ.get("GROK_MODEL", "grok-4.3")
+xai_client = None
+XAI_MODEL = os.environ.get("GROK_MODEL", "grok-4.3")
 GROK_CLASSIFIER_MODEL = os.environ.get("GROK_CLASSIFIER_MODEL", "grok-3-mini-fast")
 
 if _grok_key:
     try:
         from openai import AsyncOpenAI
-        groq_client = AsyncOpenAI(
+        xai_client = AsyncOpenAI(
             api_key=_grok_key,
             base_url="https://api.x.ai/v1",
             max_retries=0,
             timeout=8.0,
         )
-        logger.info("LLM client: xAI Grok (%s) ready", GROQ_MODEL)
+        logger.info("LLM client: xAI Grok (%s) ready", XAI_MODEL)
     except Exception as e:
         logger.warning("xAI Grok client init failed: %s", e)
 else:
@@ -87,4 +87,4 @@ CART_KEYWORDS: frozenset[str] = frozenset({
     "cart il", "address", "order cheyyuka",
 })
 
-ANY_LLM_AVAILABLE: bool = any(c is not None for c in (groq_client, gpt_mini_client, gemini_client))
+ANY_LLM_AVAILABLE: bool = any(c is not None for c in (xai_client, gpt_mini_client, gemini_client))

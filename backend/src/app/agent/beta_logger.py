@@ -134,7 +134,7 @@ class BetaLogger:
         if not self._enabled or self._pool is None:
             return
         try:
-            route_groq     = 1 if llm_route == "groq"       else 0
+            route_groq     = 1 if llm_route.startswith("xai:") else 0
             route_gemini   = 1 if llm_route == "gemini"     else 0
             route_gpt_mini = 1 if llm_route == "gpt-4o-mini" else 0
             route_gpt4o    = 1 if llm_route == "gpt-4o"     else 0
