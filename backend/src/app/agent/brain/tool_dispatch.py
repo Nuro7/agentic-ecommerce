@@ -84,7 +84,7 @@ async def execute_tool_call(
             brand_found = len(brand_filtered) > 0
         else:
             brand_found = True
-        if not products and raw_query and query != "":
+        if not products and raw_query and query != "" and len(query.split()) <= 1:
             products = await store_client.search_products(
                 query="",
                 category_slug=tool_args.get("category"),
@@ -197,6 +197,8 @@ async def execute_tool_call(
 
     if tool_name == "add_to_cart":
         product_id = safe_int(tool_args.get("product_id"), 0)
+        if not product_id:
+            return {"error": "A valid product ID is required to add to cart. Please search for the product first."}, actions, [], None
         variation_id = safe_int(tool_args.get("variation_id"), 0)
         quantity = max(1, min(safe_int(tool_args.get("quantity"), 1), 20))
         variation_data: Dict[str, Any] = {}
