@@ -62,6 +62,19 @@ async def run_llm_agent(
     except Exception:
         _personality = None
 
+    # Ingest promoted products (active offers) so Aria can recommend them
+    try:
+        from ...modules.offers.recommendations import get_promoted_products_for_prompt
+        from ...core.database import AsyncSessionLocal
+        promoted_products = await get_promoted_products_for_prompt(
+            tenant_id=tenant_id,
+            store_client=store_client,
+            db_session_factory=lambda: AsyncSessionLocal(),
+            limit=5,
+        )
+    except Exception:
+        promoted_products = None
+
     system_prompt = build_system_prompt(
         store_context=store_context,
         cart=cart,
@@ -70,6 +83,7 @@ async def run_llm_agent(
         address_state=AddressCollectionState.IDLE,
         store_catalog=store_catalog,
         personality=_personality,
+        promoted_products=promoted_products,
     )
 
     try:
@@ -291,6 +305,7 @@ async def retry_with_stricter_prompt(
     retrieved_prices: Any,
     retrieved_names: Any = None,
     retrieved_full_names: Any = None,
+    retrieved_stock: Any = None,
 ) -> str:
     product_lines: List[str] = []
     for p in (last_products or [])[:5]:
@@ -339,6 +354,7 @@ async def retry_with_stricter_prompt(
             retrieved_prices=retrieved_prices or None,
             retrieved_names=retrieved_names or None,
             retrieved_full_names=retrieved_full_names or None,
+            retrieved_stock=retrieved_stock or None,
             detected_language=lang,
             allow_retry=False,
             user_query=user_message,

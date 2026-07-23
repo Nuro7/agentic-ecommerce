@@ -378,6 +378,27 @@ async def execute_tool_call(
             results.append({"product_id": pid, "queued": True})
         return {"results": results, "note": "client_side_action"}, actions, [], None
 
+    if tool_name == "trigger_store_event":
+        event_name = str(tool_args.get("event", "")).strip()
+        product_id = safe_int(tool_args.get("product_id"), 0)
+        detail = {}
+        if product_id:
+            detail["product_id"] = product_id
+        options = tool_args.get("options")
+        if options:
+            detail["options"] = options
+        selector = tool_args.get("selector")
+        if selector:
+            detail["selector"] = selector
+        actions.append({
+            "type": "store_event",
+            "payload": {
+                "event": event_name,
+                "detail": detail,
+            },
+        })
+        return {"store_event": event_name}, actions, [product_id] if product_id else [], None
+
     return {"ignored_tool": tool_name}, actions, product_ids, customer_email
 
 
@@ -606,6 +627,35 @@ def tool_schema() -> List[Dict[str, Any]]:
                         "name": {"type": "string"},
                     },
                     "required": ["product_id", "rating", "review", "name"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "trigger_store_event",
+                "description": "Trigger a store-specific UI action — open cart drawer, open product modal, select variant option, scroll to a section, or fire a custom store event. Use when the customer asks to 'open cart', 'show reviews', 'try this on', 'see size guide', or any store UI action.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "event": {
+                            "type": "string",
+                            "description": "Event name. Built-in: speako:open_cart_drawer, speako:open_product_modal, speako:select_variant, speako:scroll_to. Use speako:<custom_name> for merchant-wired events."
+                        },
+                        "product_id": {
+                            "type": "integer",
+                            "description": "Product ID when the event relates to a specific product."
+                        },
+                        "options": {
+                            "type": "object",
+                            "description": "Variant options for select_variant: {'Size': 'M', 'Color': 'Black'}"
+                        },
+                        "selector": {
+                            "type": "string",
+                            "description": "CSS selector for scroll_to events (e.g. '#shopify-product-reviews')."
+                        },
+                    },
+                    "required": ["event"],
                 },
             },
         },

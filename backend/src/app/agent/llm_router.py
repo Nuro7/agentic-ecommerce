@@ -14,7 +14,7 @@ Unified response format:
   {
     "text":       str,
     "tool_calls": [{"id": str, "name": str, "arguments": dict}] | None,
-    "llm_route":  str,   # "groq" | "gemini" | "gpt-4o-mini" | "gpt-4o"
+    "llm_route":  str,   # "xai:grok-4.3" | "gemini" | "gpt-4o-mini" | "gpt-4o"
   }
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ from typing import Any
 
 from .schemas import LLMRawResponse
 from .llm_clients import (
-    groq_client, GROQ_MODEL,
+    xai_client, XAI_MODEL,
     gpt_mini_client, GPT_MINI_MODEL,
     gpt4o_client, GPT4O_MODEL,
     gemini_client, BRAIN_MODEL,
@@ -132,11 +132,11 @@ def _openai_tools_to_gemini(openai_tools: list[dict]) -> list[dict]:
 
 async def _call_groq(messages: list[dict], tools: list[dict]) -> dict:
     """xAI Grok via OpenAI-compatible API (GROK_API_KEY / grok-4.3)."""
-    kwargs: dict = dict(model=GROQ_MODEL, messages=messages, temperature=0.2, max_tokens=512)
+    kwargs: dict = dict(model=XAI_MODEL, messages=messages, temperature=0.2, max_tokens=512)
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-    resp = await groq_client.chat.completions.create(**kwargs)
+    resp = await xai_client.chat.completions.create(**kwargs)
     msg = resp.choices[0].message
     tool_calls = [
         {
@@ -149,7 +149,7 @@ async def _call_groq(messages: list[dict], tools: list[dict]) -> dict:
     return {
         "text": msg.content or "",
         "tool_calls": tool_calls or None,
-        "llm_route": f"grok:{GROQ_MODEL}",
+        "llm_route": f"xai:{XAI_MODEL}",
     }
 
 
@@ -318,7 +318,7 @@ async def _best_available(messages: list[dict], tools: list[dict]) -> dict:
     # Order mirrors the default chain: GPT-4o-mini → xAI Grok → Gemini.
     if gpt_mini_client:
         return await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=_FALLBACK_TIMEOUT)
-    if groq_client:
+    if xai_client:
         return await asyncio.wait_for(_call_groq(messages, tools), timeout=_FALLBACK_TIMEOUT)
     if gemini_client:
         return await asyncio.wait_for(_call_gemini_brain(messages, tools), timeout=_FALLBACK_TIMEOUT)
@@ -392,10 +392,10 @@ async def route_and_call(
 
     # ── Secondary: xAI Grok (grok-4.3) ───────────────────────────────────────
     # Flagship backup — leading tool calling, low hallucination, 1M context.
-    if groq_client and _grok_breaker.is_available():
+    if xai_client and _grok_breaker.is_available():
         logger.info(
             "LLM route: xAI Grok [%s, fallback, lang=%s]",
-            GROQ_MODEL, lang,
+            XAI_MODEL, lang,
         )
         try:
             raw = await asyncio.wait_for(

@@ -114,7 +114,10 @@ def build_live_config(cfg, *, system_instruction: str, voice_name: str, tools) -
 # Slimmer than the multi-tool prompt — Gemini only needs to know WHEN to call
 # ask_brain, not the details of each operation. Brain handles the details.
 
-def _build_system_prompt(store_config: dict | None = None) -> str:
+def _build_system_prompt(
+    store_config: dict | None = None,
+    promoted_products: list[dict] | None = None,
+) -> str:
     # Per-tenant store config (tenant DB column → env-var fallback). A tenant
     # with NULL columns keeps the previous env/default behavior exactly.
     cfg = store_config or {}
@@ -129,6 +132,21 @@ def _build_system_prompt(store_config: dict | None = None) -> str:
     personality_line = _PERSONALITY_LINES.get(
         (cfg.get("ai_personality") or "").lower().strip(), ""
     )
+
+    # Active promotions injected into the voice prompt
+    # ANTI-HALLUCINATION: only counts per offer type, never product names or prices.
+    promoted_section = ""
+    if promoted_products:
+        counts: dict[str, int] = {}
+        for p in promoted_products:
+            ot = p.get("offer_type", "promotion")
+            counts[ot] = counts.get(ot, 0) + 1
+        if counts:
+            parts = []
+            for ot, cnt in sorted(counts.items()):
+                label = ot.replace("_", " ").title()
+                parts.append(f"{cnt} {label}")
+            promoted_section = "\nActive promotions: " + " • ".join(parts) + ". Call ask_brain with \"on sale\" or \"offers\" to fetch the actual products.\n\n"
 
     return f"""You are Aria, the voice shopping assistant for {store_name}.
 {personality_line}
@@ -186,7 +204,7 @@ Repeat the Brain's product names verbatim — do not invent or alter any product
 No bullet lists, no markdown, no prices in symbols — say "four ninety-nine rupees" not "₹499".
 Currency: {currency}
 Store info (only when customer asks): Shipping: {shipping} | Returns: {returns} | Payments: {payments}
-"""
+{promoted_section}"""
 
 
 # ── ask_brain tool declaration ────────────────────────────────────────────────
@@ -327,10 +345,24 @@ class PipelineA:
         from ....modules.tenants.service import get_store_config_for_tenant
         store_config = await get_store_config_for_tenant(tenant_id)
 
+        # Active promotions for the voice prompt (non-fatal on failure)
+        promoted_products = None
+        try:
+            from ....modules.offers.recommendations import get_promoted_products_for_prompt
+            from ....core.database import AsyncSessionLocal
+            promoted_products = await get_promoted_products_for_prompt(
+                tenant_id=tenant_id,
+                store_client=store_client,
+                db_session_factory=lambda: AsyncSessionLocal(),
+                limit=5,
+            )
+        except Exception:
+            pass
+
         # ── Session config — single typed builder (see build_live_config) ─────
         live_config = build_live_config(
             settings,
-            system_instruction=_build_system_prompt(store_config),
+            system_instruction=_build_system_prompt(store_config, promoted_products),
             voice_name=voice_name,
             tools=_build_brain_tool(),
         )
@@ -357,7 +389,7 @@ class PipelineA:
                 # turn. Set when ask_brain runs; the output_transcription handler checks
                 # Gemini's SPOKEN words against it and substitutes the verified text if
                 # Gemini invents a product. Reset on turn_complete so it can't go stale.
-                spoken_truth: dict = {"names": set(), "full_names": set(), "prices": set(), "verified": ""}
+                spoken_truth: dict = {"names": set(), "full_names": set(), "prices": set(), "stock": {}, "verified": ""}
 
                 # ── Task A: Browser → Gemini ──────────────────────────────────
                 async def receive_from_frontend() -> None:
@@ -474,6 +506,7 @@ class PipelineA:
                                                 retrieved_names=spoken_truth["names"] or None,
                                                 retrieved_full_names=spoken_truth["full_names"] or None,
                                                 retrieved_prices=spoken_truth["prices"] or None,
+                                                retrieved_stock=spoken_truth["stock"] or None,
                                             )
                                             if not ok:
                                                 out_text = spoken_truth["verified"] or assistant_text
@@ -507,7 +540,7 @@ class PipelineA:
                                 if getattr(sc, "turn_complete", False):
                                     # Clear the turn's grounding so it can't flag the next turn.
                                     spoken_truth.update(
-                                        names=set(), full_names=set(), prices=set(), verified="")
+                                        names=set(), full_names=set(), prices=set(), stock={}, verified="")
                                     try:
                                         await websocket.send_text(
                                             json.dumps({"type": "turn_complete"})
@@ -552,12 +585,12 @@ class PipelineA:
                                             # turn (same build_retrieved_context the brain used → no
                                             # drift) so the spoken-transcript monitor can check Gemini.
                                             try:
-                                                _ids, _pr, _at, _nm, _full = build_retrieved_context(
+                                                _ids, _pr, _at, _nm, _full, _stock = build_retrieved_context(
                                                     [a.get("payload", {}) for a in ui_actions
                                                      if isinstance(a, dict)])
                                                 spoken_truth.update(
                                                     names=_nm, full_names=_full, prices=_pr,
-                                                    verified=response_text)
+                                                    stock=_stock, verified=response_text)
                                             except Exception:
                                                 pass
 

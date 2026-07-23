@@ -2525,8 +2525,66 @@
       case 'show_store_info':
         renderStoreInfo(act.payload || {});
         break;
-    }
-  }
+
+      case 'store_event': {
+        // Generic store event dispatch — lets Speako trigger ANY store UI action
+        // by firing a custom DOM event that the store theme or an app listens for.
+        // Built-in Shopify events handled directly:
+        const ev = act.payload || {};
+        const eventName = ev.event || '';
+        const detail = ev.detail || {};
+
+        if (eventName === 'speako:open_cart_drawer') {
+          // Shopify cart drawer — try common theme selectors
+          const drawers = [
+            document.querySelector('[data-cart-drawer-toggle]'),
+            document.querySelector('[data-cart-toggle]'),
+            document.querySelector('.cart-drawer__toggle'),
+            document.querySelector('.js-cart-drawer-trigger'),
+            document.querySelector('.header__icon--cart'),
+            document.querySelector('a[href="/cart"]'),
+          ];
+          for (const btn of drawers) {
+            if (btn) { btn.click(); break; }
+          }
+        } else if (eventName === 'speako:open_product_modal') {
+          // Open product quick-view / modal on the current page
+          const pid = detail.product_id;
+          const triggers = [
+            document.querySelector(`[data-product-id="${pid}"] [data-quick-view]`),
+            document.querySelector(`[data-product-id="${pid}"] .quick-view`),
+            document.querySelector(`a[href*="/products/"][data-modal]`),
+          ];
+          for (const el of triggers) {
+            if (el) { el.click(); break; }
+          }
+        } else if (eventName === 'speako:select_variant') {
+          // Select a specific variant option on the product page
+          const opts = detail.options || {};
+          for (const [label, value] of Object.entries(opts)) {
+            const radios = document.querySelectorAll(
+              `[data-option-value]:not(.hidden):not([disabled])`
+            );
+            for (const radio of radios) {
+              if (radio.textContent.trim().toLowerCase() === String(value).toLowerCase()) {
+                radio.click();
+                break;
+              }
+            }
+          }
+        } else if (eventName === 'speako:scroll_to') {
+          // Scroll to a specific section (e.g., reviews, description)
+          const target = detail.selector || '';
+          if (target) {
+            const el = document.querySelector(target);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }
+
+        // Always dispatch as custom event for merchant-installed listeners
+        window.dispatchEvent(new CustomEvent(eventName, { detail }));
+        break;
+      }
 
   async function addToCartViaWoo(payload) {
     const endpoint = String(CFG.rest_url || '').replace(/\/$/, '') + '/cart/add';
