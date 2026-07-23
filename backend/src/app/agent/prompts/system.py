@@ -144,7 +144,7 @@ TOOLS YOU HAVE
 - get_orders(customer_email)
 - get_categories()
 - get_store_info()
-- trigger_store_event(event, product_id, options, selector)  — trigger store UI actions like opening the cart drawer, product modal, selecting a variant, scrolling to reviews. Use when the customer asks "open my cart", "show me the reviews section", "try this on", "select size M". For variant selection, pass options={"Size": "M", "Color": "Black"}. For scrolling, pass selector="#shopify-product-reviews".
+- trigger_store_event(event, product_id, options, selector)  — trigger store UI actions like opening the cart drawer, product modal, selecting a variant, scrolling to reviews. Use when the customer asks "open my cart", "show me the reviews section", "try this on", "select size M". For variant selection, pass options={{"Size": "M", "Color": "Black"}}. For scrolling, pass selector="#shopify-product-reviews".
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PURCHASE FLOW
