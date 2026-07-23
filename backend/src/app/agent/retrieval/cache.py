@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 import time
 from typing import Any, Optional
 
@@ -90,6 +91,9 @@ async def l1_set(redis, tenant_id: str, cache_key: str, results: list[dict]) -> 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Embedding helper — OpenAI text-embedding-3-small  (1536 dims)
+# Product-side embeddings include category_slug and tags (see sync_products.py),
+# so the query embedding is augmented to match the product format — the query is
+# repeated in both "name" and "description" positions to improve cosine alignment.
 # Falls back gracefully if OPENAI_API_KEY is missing.
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -109,15 +113,42 @@ def _get_embed_client():
     return _embed_client
 
 
+def _augment_query(text: str) -> str:
+    """Format the query to match the product embedding text format so cosine
+    similarity aligns better.
+
+    Product embeddings now include category_slug and tags (see sync_products.py),
+    with the format: \"Name [category] [tags]. Description\".
+
+    To match this format without knowing category/tags at query time, we repeat
+    the query in both \"name\" and \"description\" slots:
+      query \"formal shoes\" → \"formal shoes. formal shoes search\"
+
+    This works universally across ANY product vertical (apparel, electronics,
+    furniture, groceries, etc.) — it doesn't rely on hardcoded keywords.
+
+    The augmented text is only used for embedding — BM25 and caches still
+    see the original clean text.
+    """
+    if not text.strip():
+        return text
+    text = text.strip()[:200]
+    if len(text.split()) < 2:
+        return text
+    # Format: "name.name description" — mirrors product "Name. Description"
+    return f"{text}. {text} search"
+
+
 async def embed_text(text: str) -> Optional[list[float]]:
     """Return 1536-dim embedding or None if OpenAI unavailable."""
     client = _get_embed_client()
     if client is None:
         return None
     try:
+        augmented = _augment_query(text)
         resp = await client.embeddings.create(
             model="text-embedding-3-small",
-            input=text[:512],    # cap to avoid token overrun
+            input=augmented[:512],    # cap to avoid token overrun
         )
         return resp.data[0].embedding
     except Exception as exc:

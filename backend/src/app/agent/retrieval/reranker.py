@@ -134,7 +134,8 @@ def rerank(
             boost += 0.02
 
         # Category/tag alignment — products whose category or tags match
-        # query tokens are more relevant than cross-category noise
+        # query tokens are more relevant than cross-category noise.
+        # Works for ANY e-commerce vertical (apparel, electronics, furniture, etc.)
         if c.category_slug:
             slug_tokens = set(c.category_slug.replace("-", " ").lower().split())
             overlap = len(query_tokens & slug_tokens)
@@ -145,6 +146,13 @@ def rerank(
             tag_overlap = len(query_tokens & tag_tokens)
             if tag_overlap:
                 boost += 0.03 * tag_overlap
+
+        # Cross-arm presence — products found by BOTH BM25 AND vector search
+        # are much more likely to be relevant. A product appearing in only one
+        # arm is often cross-category noise.  This is the single strongest
+        # universal signal because it doesn't depend on any product metadata.
+        if c.bm25_pos > 0 and c.vec_pos > 0:
+            boost += 0.025
 
         # In-stock preference (slight)
         if c.in_stock:

@@ -349,7 +349,7 @@ async def _sync_tenant(*, db, store_client, adapter, tenant) -> tuple[int, int]:
 
     products = adapter.normalize_many(raw_products, tenant_id=tenant.id)
     texts = [
-        f"{p.name}. {(p.description or p.short_description)[:300]}"
+        _product_embed_text(p)
         for p in products
     ]
     embeddings = await _batch_embed(texts)
@@ -411,7 +411,7 @@ async def _diff_sync_tenant(*, db, store_client, adapter, tenant) -> tuple[int, 
 
     products = adapter.normalize_many(raw_products, tenant_id=tenant_id)
     texts = [
-        f"{p.name}. {(p.description or p.short_description)[:300]}"
+        _product_embed_text(p)
         for p in products
     ]
     embeddings = await _batch_embed(texts)
@@ -785,6 +785,28 @@ async def _cleanup_deleted(db, tenant_id: str) -> int:
             "Cleaned up %d stale products for tenant=%s", deleted, tenant_id,
         )
     return deleted
+
+
+# ── Embedding text builder ────────────────────────────────────────────────────
+
+def _product_embed_text(p: Any) -> str:
+    """Build the text to embed for a product.
+
+    Includes category_slug and tags so the embedding vector captures taxonomy.
+    This lets the vector search distinguish products across categories even when
+    the embedding model itself (text-embedding-3-small) is general-purpose.
+    The same function is applied during sync AND diff-sync so all product
+    embeddings are consistent.
+    """
+    parts = [p.name]
+    if p.category_slug:
+        parts.append(f"[{p.category_slug.replace('-', ' ')}]")
+    if p.tags:
+        parts.append(f"[{p.tags.replace(',', ' ')}]")
+    desc = (p.description or p.short_description or "")[:280]
+    if desc:
+        parts.append(f". {desc}")
+    return " ".join(parts)
 
 
 # ── Batch embedding ───────────────────────────────────────────────────────────
