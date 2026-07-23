@@ -93,7 +93,9 @@ class ShopifyAdapter:
                 image_url=v_img,
             ))
 
-        # Category: Shopify doesn't set this in search results — empty by default
+        # Category from Shopify collections (populated by sync when collections
+        # are requested in the GraphQL query). Empty for search-result nodes
+        # that don't include collections.
         categories: List[str] = [
             c.get("slug") or c.get("name", "")
             for c in raw.get("categories", [])
@@ -101,9 +103,19 @@ class ShopifyAdapter:
         ]
         category_slug = categories[0] if categories else None
 
-        # Tags: join all attribute option values for FTS boost
-        tag_parts = [opt for opts in attrs.values() for opt in opts]
-        tags = ", ".join(tag_parts) if tag_parts else None
+        # Tags: Shopify product tags (e.g. "men, formal, leather") are the primary
+        # source. Attribute option values are appended for FTS discoverability
+        # (so "UK 6" in a Size attribute is searchable even without real tags).
+        raw_tags = raw.get("tags")
+        if isinstance(raw_tags, list):
+            tag_list = [str(t) for t in raw_tags if t]
+        elif isinstance(raw_tags, str):
+            tag_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
+        else:
+            tag_list = []
+        attr_tags = [opt for opts in attrs.values() for opt in opts]
+        all_tags = tag_list + attr_tags
+        tags = ", ".join(all_tags) if all_tags else None
 
         return CanonicalProduct(
             platform_id=str(raw.get("id", "")),

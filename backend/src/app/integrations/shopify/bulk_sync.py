@@ -52,6 +52,7 @@ _BULK_INNER_QUERY = """
         description
         status
         totalInventory
+        tags
         priceRangeV2 {
           minVariantPrice { amount currencyCode }
           maxVariantPrice { amount currencyCode }
@@ -61,6 +62,15 @@ _BULK_INNER_QUERY = """
         }
         featuredImage { url }
         options { name values }
+        collections(first: 5) {
+          edges {
+            node {
+              id
+              title
+              handle
+            }
+          }
+        }
         variants {
           edges {
             node {
@@ -188,6 +198,19 @@ def _parse_bulk_jsonl(text: str) -> List[Dict[str, Any]]:
         if cap_raw.get("minVariantCompareAtPrice"):
             compare_at_range = {"minVariantPrice": cap_raw["minVariantCompareAtPrice"]}
 
+        raw_tags = p.get("tags")
+        parsed_tags: list[str] = []
+        if isinstance(raw_tags, list):
+            parsed_tags = [str(t) for t in raw_tags if t]
+        elif isinstance(raw_tags, str):
+            parsed_tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+
+        raw_collections = p.get("collections") or {}
+        collection_edges = [
+            {"node": {"id": e["node"]["id"], "title": e["node"]["title"], "handle": e["node"]["handle"]}}
+            for e in raw_collections.get("edges", [])
+        ]
+
         node: Dict[str, Any] = {
             "id":                  gid,
             "title":               p.get("title", ""),
@@ -195,10 +218,12 @@ def _parse_bulk_jsonl(text: str) -> List[Dict[str, Any]]:
             "description":         p.get("description", ""),
             "availableForSale":    prod_available,
             "totalInventory":      p.get("totalInventory"),
+            "tags":                parsed_tags,
             "priceRange":          price_range,
             "compareAtPriceRange": compare_at_range,
             "options":             p.get("options") or [],
             "images":              {"edges": image_edges},
+            "collections":         {"edges": collection_edges},
             "variants":            {"edges": variant_edges},
         }
         nodes.append(node)
