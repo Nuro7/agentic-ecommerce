@@ -314,9 +314,9 @@ def check_output(
                 # Conservative fuzzy match against the retrieved FULL names ONLY
                 # (never the token set). Needs ≥2 distinctive tokens and a full-name
                 # set to compare against. token-overlap handles reordered/partial real
-                # names; SequenceMatcher tolerates plurals/typos. Threshold 0.80 errs
-                # toward PASSING real products (a false reject makes Aria refuse a real
-                # item — worse than letting a borderline mention through).
+                # names; SequenceMatcher tolerates plurals/typos. Threshold 0.95 errs
+                # toward catching borderline mentions — a false accept means the LLM
+                # describes a plausible-sounding but wrong product to the customer.
                 if full_names and len(toks) >= 2:
                     joined = " ".join(toks)
                     said = set(toks)
@@ -326,9 +326,9 @@ def check_output(
                         overlap = len(said & name_toks) / len(said)
                         ratio = difflib.SequenceMatcher(None, joined, name).ratio()
                         best = max(best, overlap, ratio)
-                        if best >= 0.80:
+                        if best >= 0.95:
                             break
-                    if best < 0.80:
+                    if best < 0.95:
                         hallucinated = True
 
             if hallucinated:
@@ -337,6 +337,19 @@ def check_output(
                 if allow_retry:
                     raise OutputValidationError(msg)
                 break  # non-retry: stop at first; caller will re-ground or fall back
+
+    # ── Check 1c: empty-retrieval guard ───────────────────────────────────────
+    # If no products were retrieved at all, any product-like mention (price,
+    # stock claim, availability) is a hallucination — the LLM has nothing
+    # grounded to talk about.
+    no_retrieval = not retrieved_product_ids and not retrieved_full_names
+    if no_retrieval:
+        has_product_claim = bool(re.search(r"(?:in stock|available|price|₹|costs?|rupees)", cleaned, re.IGNORECASE))
+        if has_product_claim:
+            msg = "hallucinated product mention without any retrieved products"
+            logger.warning("Output validation FAIL — %s", msg)
+            if allow_retry:
+                raise OutputValidationError(msg)
 
     # ── Check 2: prices must come from retrieved data ─────────────────────────
     # Normalize commas and spaces before comparing so "₹12,499" matches "₹12499".
