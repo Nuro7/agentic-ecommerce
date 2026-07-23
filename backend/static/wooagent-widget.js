@@ -2760,10 +2760,19 @@
     let variantId = parseInt(payload && (payload.variation_id || payload.variant_id), 10);
     if (!Number.isInteger(variantId) || variantId <= 0) {
       // No explicit variant: resolve from the handle. Prefer the payload handle,
-      // else the handle we remembered when this product's card was rendered.
+      // else the handle we remembered when this product's card was rendered,
+      // else extract from permalink or current page URL.
       let handle = (payload && (payload.handle || payload.product_handle)) || '';
+      if (!handle && payload && payload.permalink) {
+        const m = String(payload.permalink).match(/\/products\/([^/?#]+)/);
+        handle = m ? m[1] : '';
+      }
       if (!handle && payload && payload.product_id) {
         handle = (S.productHandles || {})[String(payload.product_id)] || '';
+      }
+      if (!handle) {
+        const m = location.pathname.match(/\/products\/([^/?#]+)/);
+        handle = m ? m[1] : '';
       }
       variantId = await resolveShopifyVariantId({ handle });
     }
