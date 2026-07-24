@@ -431,6 +431,9 @@ def check_output(
             logger.warning("Output validation FAIL — %s", msg)
             if allow_retry:
                 raise OutputValidationError(msg)
+        else:
+            logger.info("[TRACE] Guardrail Check2 PASS: prices=%s grounded=%s",
+                sorted(mentioned_prices)[:5], sorted(normalized_retrieved)[:5])
 
     # ── Check 3: no invented attribute values ────────────────────────────────
     # Only runs when we have explicit attribute data from retrieved products.
@@ -532,6 +535,7 @@ def check_output(
                                 if allow_retry:
                                     raise OutputValidationError(msg)
 
+    logger.info("[TRACE] Guardrail EXIT: text='%.160s'", cleaned[:160])
     return cleaned
 
 

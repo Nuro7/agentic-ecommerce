@@ -50,6 +50,9 @@ async def run_llm_agent(
     session_service: Any,
     redis: Any = None,
 ) -> Optional[Dict[str, Any]]:
+    logger.info("[TRACE] llm_agent ENTER session=%s user_message='%.80s' last_products=%d history=%d language=%s",
+        session_id, user_message, len(last_products or []), len(history or []), language)
+
     if not ANY_LLM_AVAILABLE:
         return None
 
@@ -166,6 +169,8 @@ async def run_llm_agent(
 
     for _ in range(_MAX_ROUNDS):
         force_text = tool_rounds_done >= _FORCE_TEXT_AFTER
+        logger.info("[TRACE] llm_agent round=%d/%d force_text=%s tool_rounds=%d messages=%d",
+            _ + 1, _MAX_ROUNDS, force_text, tool_rounds_done, len(messages))
         llm_resp = await route_and_call(
             messages=messages,
             tools=tools,
@@ -175,6 +180,13 @@ async def run_llm_agent(
             message_text=user_message,
             force_text=force_text,
         )
+        if llm_resp:
+            tool_count = len(llm_resp.get("tool_calls") or [])
+            text_snippet = (llm_resp.get("text") or "")[:120]
+            logger.info("[TRACE] llm_agent route=%s tool_calls=%d text='%.120s'",
+                llm_resp.get("llm_route", "unknown"), tool_count, text_snippet)
+        else:
+            logger.warning("[TRACE] llm_agent route_and_call returned None")
         if not llm_resp:
             break
         last_llm_route = llm_resp.get("llm_route", "gpt-4o-mini")
@@ -192,6 +204,8 @@ async def run_llm_agent(
                         tenant_id=tenant_id,
                         store_client=store_client, session_service=session_service,
                     )
+                    logger.info("[TRACE] llm_agent tool=%s args=%s result_products=%d actions=%d",
+                        tool_name, json.dumps(tool_args), len(product_ids or []), len(tool_actions or []))
                     if tool_actions:
                         actions.extend(tool_actions)
                     new_pids = [pid for pid in (product_ids or []) if pid and pid not in accumulated_products]
@@ -210,6 +224,9 @@ async def run_llm_agent(
             if not final:
                 return None
 
+            resp_text_short = final[:100]
+            logger.info("[TRACE] llm_agent EXIT response_text='%.100s' actions=%d products=%d route=%s",
+                resp_text_short, len(actions), len(accumulated_products), last_llm_route)
             return {
                 "response_text": final,
                 "ui_actions": actions,
@@ -263,6 +280,8 @@ async def run_llm_agent(
                     except Exception as _eq:
                         logger.debug("Failed to enqueue retry: %s", _eq)
 
+            logger.info("[TRACE] llm_agent tool=%s args=%s result_products=%d actions=%d",
+                tool_name, json.dumps(tool_args), len(product_ids or []), len(tool_actions or []))
             if tool_actions:
                 actions.extend(tool_actions)
             new_pids = [pid for pid in (product_ids or []) if pid and pid not in accumulated_products]
@@ -282,6 +301,9 @@ async def run_llm_agent(
     # Loop exhausted — return accumulated actions
     if actions:
         fallback_text = summarize_actions_for_voice(actions)
+        resp_text_short = (fallback_text or "Done! What else can I help you with?")[:100]
+        logger.info("[TRACE] llm_agent EXIT response_text='%.100s' actions=%d products=%d route=%s",
+            resp_text_short, len(actions), len(accumulated_products), last_llm_route)
         return {
             "response_text": fallback_text or "Done! What else can I help you with?",
             "ui_actions": actions,
@@ -290,6 +312,8 @@ async def run_llm_agent(
             "customer_email": customer_email,
             "llm_route": last_llm_route,
         }
+    logger.info("[TRACE] llm_agent EXIT response_text='' actions=%d products=%d route=%s",
+        len(actions), len(accumulated_products), last_llm_route)
     return None
 
 

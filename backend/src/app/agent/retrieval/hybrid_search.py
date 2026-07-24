@@ -120,6 +120,9 @@ async def bm25_search(
             "limit":      _BM25_LIMIT,
         })
         rows = result.mappings().all()
+        pid_list = [r[0] for r in rows]
+        name_list = [r[2][:60] for r in rows]
+        logger.info("[TRACE] BM25 arm: found=%d rows query='%s' products=%s", len(rows), nq.clean[:40], name_list[:5])
 
         if rows:
             candidates = [
@@ -368,6 +371,8 @@ async def l3_search(
     transaction and kills the cached-search arm). The vector arm gets its own
     session; one arm failing no longer kills the other.
     """
+    logger.info("[TRACE] hybrid_search ENTER query='%s' tokens=%s", nq.clean[:80], nq.tokens[:6])
+
     async def _vector_isolated():
         async with AsyncSessionLocal() as db2:
             return await vector_search(db2, tenant_id, nq)
@@ -383,4 +388,10 @@ async def l3_search(
     if isinstance(vec_results, Exception):
         logger.warning("Vector arm failed: %s", vec_results)
         vec_results = []
+    logger.info("[TRACE] hybrid_search arms: bm25=%d vec=%d", len(bm25_results), len(vec_results))
+    logger.info("[TRACE] hybrid_search reranked: final=%d products=%s", len(bm25_results), [(r.name[:50], f"₹{r.price}") for r in bm25_results[:5]])
+    if bm25_results:
+        logger.info("[TRACE] hybrid_search EXIT returning=%d products: %s", len(bm25_results), [(r.name[:50], r.price, r.currency, r.in_stock) for r in bm25_results])
+    else:
+        logger.info("[TRACE] hybrid_search EXIT returning=0 products — no matches for query='%s'", nq.clean[:60])
     return bm25_results, vec_results

@@ -28,6 +28,7 @@ Pipeline (9 steps):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -397,6 +398,16 @@ async def ask_brain(
     t_start = time.monotonic()
     degraded = False
 
+    logger.info("")
+    logger.info("╔══════════════════════════════════════════════════════════╗")
+    logger.info("║ [TRACE] ask_brain ENTER  turn=%s  session=%s  ║", turn_id, session_id)
+    logger.info("╚══════════════════════════════════════════════════════════╝")
+    logger.info("[TRACE] tenant=%s lang=%s", tenant_id, language)
+    logger.info("[TRACE] RAW user_message: %s", user_message)
+    logger.info("[TRACE] store_context: %s", json.dumps(store_context, default=str))
+    logger.info("[TRACE] page_context: %s", json.dumps(page_context, default=str))
+    logger.info("[TRACE] cart_context: %s", json.dumps(cart_context, default=str) if cart_context else "None")
+
     # ── Step 1: Input sanitisation + guardrail ────────────────────────────────
     cleaned_message = sanitize_text(user_message or "", max_len=500)
     try:
@@ -412,11 +423,14 @@ async def ask_brain(
         lang = normalize_language(language)
         return _empty_response(session_id, text, lang)
 
+    logger.info("[TRACE] Step1 input_guardrail: sanitized=%s", bool(cleaned_message))
+
     # ── Step 2: Parallel pre-processing ──────────────────────────────────────
     detected_lang = detect_language(cleaned_message)
 
     gather_results = await asyncio.gather(
         get_classifier().classify(cleaned_message, detected_lang),
+
         session_service.get_session(tenant_id, session_id),
         session_service.get_meta(tenant_id, session_id),
         return_exceptions=True,
@@ -450,6 +464,12 @@ async def ask_brain(
         except Exception as e:
             logger.warning("Failed to prepend current product to last_products: %s", e)
 
+    logger.info("[TRACE] Step2 classify: intent=%s conf=%.2f via=%s detected_lang=%s",
+        intent_result.intent, intent_result.confidence, intent_result.via, detected_lang)
+    _names = [p.get("name","?")[:40] for p in (last_products or []) if isinstance(p, dict)][:3]
+    logger.info("[TRACE] Step2 session: history=%d turns last_products=%d names=%s",
+        len(history), len(last_products or []), _names if _names else "[]")
+
     # ── Step 3: Language resolution (with English-decay so a stray non-English
     # transcript can't lock the session forever) ──────────────────────────────
     prev_lang = session_meta.get("language", "en") if isinstance(session_meta, dict) else "en"
@@ -468,6 +488,13 @@ async def ask_brain(
     logger.info("[FLOW] brain step4 cart items=%d total=%s session=%s",
         cart.get("item_count") or cart.get("count") or 0,
         cart.get("total") or "empty", session_id)
+    _cart_items = [
+        {"name": i.get("title","?")[:30], "qty": i.get("quantity",1), "price": i.get("price","?")}
+        for i in (cart.get("items") or []) if isinstance(i, dict)
+    ]
+    logger.info("[TRACE] Step4 cart_detail: items=%s total=%s",
+        json.dumps(_cart_items[:5], default=str), cart.get("total","?"))
+
     cart_for_prompt = {
         "is_empty": (int(cart.get("item_count") or cart.get("count") or 0) == 0),
         "item_count": int(cart.get("item_count") or cart.get("count") or 0),
@@ -578,13 +605,14 @@ async def ask_brain(
                     }
                     for r in retrieval_results
                 ]
-                logger.debug(
-                    "Retrieval: %d products for '%s'",
+                logger.info(
+                    "[TRACE] Step5 retrieval: found=%d query='%s' products=%s",
                     len(last_products), _search_query[:40],
+                    [{"name": p["name"][:40], "price": p["price"], "stock": p["in_stock"]} for p in last_products[:5]],
                 )
             else:
                 logger.info(
-                    "Retrieval: 0 products for intent=%s query='%s'",
+                    "[TRACE] Step5 retrieval: 0 products for intent=%s query='%s'",
                     intent_result.intent, _search_query[:40],
                 )
                 # A NEW search that found nothing must NOT leave the previous
@@ -614,9 +642,16 @@ async def ask_brain(
         # catch that" reply asking to rephrase, instead of a blank "no products".
         # A query with any real word ("gshk watch") is handled by search, not here.
         if _looks_unintelligible(cleaned_message):
+            logger.info("[TRACE] Step5 hard_stop: unintelligible query='%s'", cleaned_message[:60])
             result = _unintelligible_result(lang)
         else:
+            logger.info("[TRACE] Step5 hard_stop: no products for query='%s'", _search_query[:60])
             result = _no_products_result(lang)
+    else:
+        if retrieval_found:
+            logger.info("[TRACE] Step5 hard_stop: SKIP — retrieval found %d products", len(last_products))
+        elif retrieval_ran:
+            logger.info("[TRACE] Step5 hard_stop: SKIP — generic browse or session has %d old products", len(last_products))
 
     # ── Fast specific handlers (pre-LLM, keyword + intent matched) ───────────
     # These deterministic handlers short-circuit the LLM for well-defined
@@ -677,6 +712,14 @@ async def ask_brain(
     # ── Primary: LLM agent ────────────────────────────────────────────────────
     if result is None and ANY_LLM_AVAILABLE:
         logger.info("[FLOW] brain step6 llm_agent ENTER session=%s", session_id)
+        logger.info("[TRACE] Step6 payload TO LLM: user_message='%s'", cleaned_message[:120])
+        logger.info("[TRACE] Step6 payload: last_products=%s",
+            json.dumps([{"id": p.get("id"), "name": p.get("name","?")[:40], "price": p.get("price")}
+                for p in (last_products or [])[:5]], default=str))
+        logger.info("[TRACE] Step6 payload: history=%d turns cart_items=%d lang=%s",
+            len(history or []),
+            (cart_for_prompt or {}).get("item_count", 0),
+            lang)
         try:
             # Retrieval errored (infra down) + no session history → LLM has nothing
             # grounded. Override store_catalog to mandate a live tool call instead of
@@ -715,8 +758,19 @@ async def ask_brain(
                 session_service=session_service,
                 redis=redis,
             )
+            _llm_resp = result
         except Exception as exc:
             logger.warning("LLM agent failed (%s), falling back.", exc)
+            _llm_resp = None
+
+    if result and _llm_resp is result:
+        logger.info("[TRACE] Step6 llm_agent EXIT: response_text='%.150s' tools=%d products=%d route=%s",
+            (result.get("response_text","") or "")[:150],
+            len(result.get("ui_actions",[]) or result.get("actions",[])),
+            len(result.get("last_products",[]) or []),
+            result.get("llm_route","unknown"))
+    else:
+        logger.info("[TRACE] Step6 llm_agent: skipped or overridden by fast path")
 
     # ── Fallback 1: fast-intent ───────────────────────────────────────────────
     if result is None:
@@ -786,6 +840,9 @@ async def ask_brain(
     if not response_text:
         response_text = "I'm here to help! Ask me about any product."
     response_text = cap_to_sentences(response_text, max_sentences=4)
+
+    logger.info("[TRACE] Step6 post_process: raw='%.150s' caps=%d actions=%d",
+        response_text[:150], len(response_text), len(ui_actions))
 
     # ── Step 7: Output guardrail ──────────────────────────────────────────────
     retrieved_ids: Set[str] = set()
@@ -873,6 +930,14 @@ async def ask_brain(
         logger.debug("AgentResponse schema validation skipped: %s", exc)
 
     speech_text = make_speech_friendly(response_text, lang)
+
+    logger.info("[TRACE] Step8 final: response_text='%.200s'", response_text[:200])
+    logger.info("[TRACE] Step8 final: speech_text='%.200s'", speech_text[:200])
+    logger.info("[TRACE] Step8 final: ui_actions=%s suggested=%s",
+        json.dumps([a.get("type","?") for a in ui_actions[:5]], default=str),
+        suggested[:4])
+    logger.info("[TRACE] Step8 final: last_products=%d route=%s",
+        len(last_products or []), result.get("llm_route", "unknown") if result else "none")
 
     # ── Step 9: Session persistence + telemetry ───────────────────────────────
     updated_history = (history if isinstance(history, list) else [])[-28:]
