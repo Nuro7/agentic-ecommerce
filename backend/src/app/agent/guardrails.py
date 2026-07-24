@@ -431,6 +431,9 @@ def check_output(
             logger.warning("Output validation FAIL — %s", msg)
             if allow_retry:
                 raise OutputValidationError(msg)
+        else:
+            logger.info("[TRACE] Guardrail Check2 PASS: prices=%s grounded=%s",
+                sorted(mentioned_prices)[:5], sorted(normalized_retrieved)[:5])
 
     # ── Check 3: no invented attribute values ────────────────────────────────
     # Only runs when we have explicit attribute data from retrieved products.
@@ -481,7 +484,7 @@ def check_output(
     cleaned = _redact_pii(cleaned)
 
     # ── Check 4b: strip inline prices/stock counts (structural enforcement) ───
-    cleaned = strip_inline_prices(cleaned)
+    cleaned = strip_inline_prices(cleaned, valid_prices=retrieved_prices)
 
     # ── Check 5: language matches detected language ───────────────────────────
     # Only enforce for non-English where we can detect script.
@@ -532,6 +535,7 @@ def check_output(
                                 if allow_retry:
                                     raise OutputValidationError(msg)
 
+    logger.info("[TRACE] Guardrail EXIT: text='%.160s'", cleaned[:160])
     return cleaned
 
 
@@ -604,13 +608,16 @@ def _redact_pii(text: str) -> str:
     return text
 
 
-def strip_inline_prices(text: str) -> str:
+def strip_inline_prices(text: str, valid_prices: Optional[Set[str]] = None) -> str:
     """Remove inline price and stock-count numbers from LLM output.
 
     Structural enforcement of the strict price/stock model. The interface renders
     prices from FactBundle/ui_actions; spoken text must contain no numbers. Runs
     after generation regardless of whether the price matches retrieved data —
     complement to (not replacement of) Check 2 which raises for retry.
+
+    When valid_prices is provided, prices that appear in the retrieved set are
+    PRESERVED — only ungrounded prices get stripped.
 
     Known limitations: mid-sentence stripping leaves grammatical fragments
     ("It costs and ships free"); pattern 2 misses novel phrasings; stock stripper
@@ -621,10 +628,30 @@ def strip_inline_prices(text: str) -> str:
     if not price_hit and not stock_hit:
         return text
 
+    # Build a normalised set of valid numeric price values for comparison
+    _valid_numerics: Set[str] = set()
+    if valid_prices:
+        for vp in valid_prices:
+            v = re.sub(r"[₹$€£¥\s,]", "", vp)
+            _valid_numerics.add(v)
+            _valid_numerics.add(re.sub(r"\.0$", "", v))
+
+    def _keep_price(match: re.Match) -> str:
+        """Return the original match text if the price is in the valid set, else empty string."""
+        if not _valid_numerics:
+            return ""
+        # Extract all numeric values from the match (handles all 3 regex patterns)
+        match_nums = re.findall(r"[\d,]+(?:\.\d{1,2})?", match.group(0))
+        for num in match_nums:
+            n = re.sub(r"[\s,]", "", num)
+            if n in _valid_numerics or re.sub(r"\.0$", "", n) in _valid_numerics:
+                return match.group(0)  # keep the whole match — price is grounded
+        return ""
+
     logger.warning(
         "Output contained inline price/stock number (stripped — strict model): %.120s", text
     )
-    cleaned = _INLINE_PRICE_RE.sub("", text)
+    cleaned = _INLINE_PRICE_RE.sub(_keep_price, text)
     cleaned = _INLINE_STOCK_RE.sub("", cleaned)
 
     # Post-strip cleanup so removal never leaves grammatical garbage:
