@@ -211,6 +211,11 @@ async def execute_tool_call(
 
     if tool_name == "add_to_cart":
         product_id = safe_int(tool_args.get("product_id"), 0)
+        logger.info(
+            "[TOOL] add_to_cart called session=%s product_id=%s variation_id=%s quantity=%s attributes=%s",
+            session_id, tool_args.get("product_id"), tool_args.get("variation_id"),
+            tool_args.get("quantity"), tool_args.get("attributes"),
+        )
         if not product_id:
             return {"error": "A valid product ID is required to add to cart. Please search for the product first."}, actions, [], None
         variation_id = safe_int(tool_args.get("variation_id"), 0)
