@@ -14,6 +14,7 @@ Reciprocal Rank Fusion formula:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -122,16 +123,37 @@ def rerank(
     clean_lower = nq.clean.lower()
     query_tokens = set(clean_lower.split())
 
+    # Detect conflicting intent: if query asks for a specific style, penalize
+    # products whose name/description suggests the opposite category.
+    _INTENT_CONFLICTS = {
+        "formal":   {"sports", "walking", "running", "athletic", "gym", "casual", "sneaker", "trainer"},
+        "sports":   {"formal", "dress", "office", "loafer"},
+        "casual":   {"formal", "dress", "office"},
+        "running":  {"formal", "dress", "loafer", "office"},
+        "walking":  {"formal", "dress", "loafer"},
+    }
+    query_intent_words = query_tokens & set(_INTENT_CONFLICTS.keys())
+
     for rrf_score, c in filtered:
         boost = 0.0
+        name_lower = c.name.lower()
+        desc_lower = c.description.lower() if c.description else ""
 
         # Exact name match → strong boost
-        if clean_lower and clean_lower in c.name.lower():
+        if clean_lower and clean_lower in name_lower:
             boost += 0.05
 
         # Name starts with query → medium boost
-        if clean_lower and c.name.lower().startswith(clean_lower[:10]):
+        if clean_lower and name_lower.startswith(clean_lower[:10]):
             boost += 0.02
+
+        # Description token match — query tokens appearing in product description
+        # is a strong relevance signal, especially for intent words not in the name
+        if c.description:
+            desc_tokens = set(re.findall(r"[a-z]+", desc_lower))
+            desc_overlap = len(query_tokens & desc_tokens)
+            if desc_overlap:
+                boost += 0.03 * desc_overlap
 
         # Category/tag alignment — products whose category or tags match
         # query tokens are more relevant than cross-category noise.
@@ -160,6 +182,16 @@ def rerank(
 
         # Vector similarity confidence
         boost += c.vec_sim * 0.01
+
+        # ── Intent conflict penalty ────────────────────────────────────────────
+        # If the query says "formal shoes" but the product name contains "sports",
+        # "walking", "running" etc., it's likely irrelevant — apply a penalty.
+        if query_intent_words:
+            name_desc_tokens = set(re.findall(r"[a-z]+", name_lower + " " + desc_lower))
+            for intent_word in query_intent_words:
+                conflicts = _INTENT_CONFLICTS[intent_word] & name_desc_tokens
+                if conflicts:
+                    boost -= 0.04 * len(conflicts)
 
         boosted.append((rrf_score + boost, c))
 
