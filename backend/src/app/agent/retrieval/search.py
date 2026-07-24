@@ -1,17 +1,17 @@
 """Main entry point for the retrieval layer.
 
-Call:  results = await hybrid_search(tenant_id, query, redis, db)
+Call:  results = await hybrid_search(tenant_id, query, redis, store_client)
 
-Full pipeline:
-  L0  normalize(query)            →  NormalizedQuery   (~0.5ms)
-  L1  l1_get(cache_key)          →  hit? return early  (~3ms)
-  L2  l2_get(query_embedding)    →  hit? return early  (~15ms)
-  L3  l3_search(bm25 + vector)   →  parallel search    (~60-150ms)
-      rerank(RRF + boost)        →  Top 5
-  →   l1_set + l2_set (write-through cache)
+Simplified pipeline (BM25/vector/RRF bypassed — store API is the primary path):
+  L0  normalize(query)              →  NormalizedQuery   (~0.5ms)
+  L1  l1_get(cache_key)            →  hit? return early  (~3ms)
+  →   store_client.search_products(query)  live API      (~200-500ms)
+  →   l1_set (write-through cache)
   →   return list[SearchResult]
 
-Falls back to live store API when product_cache is empty.
+BM25/tsvector, pgvector, and RRF reranker code is kept in the repo but not
+connected in this function. The store's native search API returns fresher,
+more relevant results for natural-language shopping queries.
 """
 from __future__ import annotations
 
@@ -22,9 +22,8 @@ from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .normalizer import normalize, NormalizedQuery
-from .cache import l1_get, l1_set, l2_get, l2_set, l2_filter_sig
-from .hybrid_search import l3_search
-from .reranker import rerank, SearchResult
+from .cache import l1_get, l1_set
+from .reranker import SearchResult
 from ...integrations.adapters import ShopifyAdapter, WooAdapter, CustomAdapter
 
 logger = logging.getLogger(__name__)
@@ -92,42 +91,14 @@ async def hybrid_search(
         )
         return results
 
-    # ── L2: Semantic cache ─────────────────────────────────────────────────────
-    # Skip L2 entirely when the query pins a discriminating attribute (colour/size/
-    # capacity). Those queries embed too close to their siblings ("red" vs "blue"),
-    # so a fuzzy hit would return the wrong variant. L1 (exact key) already covered.
-    fsig = l2_filter_sig(nq.min_price, nq.max_price, nq.in_stock_only)
-    if nq.clean and not nq.has_attribute:
-        cached = await l2_get(redis, tenant_id, nq.clean, fsig)
-        if cached is not None:
-            results = _dicts_to_results(cached)[:limit]
-            # Promote to L1 for next exact hit
-            await l1_set(redis, tenant_id, nq.cache_key, cached)
-            logger.info(
-                "Search L2 HIT  tenant=%s query='%s'  n=%d  (%.1fms)",
-                tenant_id, nq.clean[:40], len(results),
-                (time.monotonic() - t0) * 1000,
-            )
-            return results
-
-    # ── L3: Hybrid search ─────────────────────────────────────────────────────
+    # ── Live API (primary) — call the store's native search directly.
+    # BM25/tsvector, pgvector, and RRF reranker code exists in the repo but is
+    # BYPASSED here because the store's own API returns fresher, more relevant
+    # results for natural-language queries. The L0 normalizer still runs to
+    # strip noise and extract price filters.
     results: list[SearchResult] = []
 
-    if db is not None:
-        try:
-            bm25_hits, vec_hits = await l3_search(db, tenant_id, nq)
-            results = rerank(bm25_hits, vec_hits, nq, top_n=limit)
-            logger.info(
-                "Search L3 MISS tenant=%s query='%s'  bm25=%d vec=%d → top=%d  (%.1fms)",
-                tenant_id, nq.clean[:40],
-                len(bm25_hits), len(vec_hits), len(results),
-                (time.monotonic() - t0) * 1000,
-            )
-        except Exception as exc:
-            logger.warning("L3 DB search failed (%s), falling back to live API", exc)
-
-    # ── Live API fallback (when product_cache is empty or DB unavailable) ──────
-    if not results and store_client is not None:
+    if store_client is not None:
         try:
             raw = await store_client.search_products(
                 query=nq.clean or "",
@@ -144,19 +115,17 @@ async def hybrid_search(
             )
             results = _raw_to_results(raw, platform=platform)
             logger.info(
-                "Search LIVE FALLBACK tenant=%s query='%s'  n=%d  (%.1fms)",
+                "Search LIVE tenant=%s query='%s'  n=%d  (%.1fms)",
                 tenant_id, nq.clean[:40], len(results),
                 (time.monotonic() - t0) * 1000,
             )
         except Exception as exc:
-            logger.error("Live API fallback also failed: %s", exc)
+            logger.error("Live API search failed: %s", exc)
 
     # ── Write-through cache ────────────────────────────────────────────────────
     if results:
         result_dicts = [r.to_dict() for r in results]
         await l1_set(redis, tenant_id, nq.cache_key, result_dicts)
-        if nq.clean:
-            await l2_set(redis, tenant_id, nq.cache_key, nq.clean, result_dicts, fsig)
 
     return results
 
