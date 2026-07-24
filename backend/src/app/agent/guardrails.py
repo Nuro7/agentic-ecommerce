@@ -300,6 +300,26 @@ def check_output(
                 if len(t) > 2 and t not in _GENERIC_NAME_TOKENS
             ]
             if not toks:
+                # All tokens were generic (e.g. "Table Lamp", "Dress Shirt", "Wooden Chair").
+                # Can't do token-level matching, but the full phrase may still be a real
+                # product name. Fall back to SequenceMatcher against full names.
+                if not full_names:
+                    continue
+                all_phrase_toks = [t for t in re.findall(r"[a-z0-9]+", phrase.lower()) if len(t) > 2]
+                if len(all_phrase_toks) < 2:
+                    continue
+                joined = " ".join(all_phrase_toks)
+                hallucinated = True
+                for name in full_names:
+                    ratio = difflib.SequenceMatcher(None, joined, name).ratio()
+                    if ratio >= 0.60:
+                        hallucinated = False
+                        break
+                if hallucinated:
+                    msg = f"hallucinated product name: {phrase!r}"
+                    logger.warning("Output validation FAIL — %s", msg)
+                    if allow_retry:
+                        raise OutputValidationError(msg)
                 continue
 
             model_toks = [t for t in toks if _MODEL_TOKEN_RE.search(t)]
