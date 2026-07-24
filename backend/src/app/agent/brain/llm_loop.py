@@ -246,7 +246,7 @@ async def run_llm_agent(
                     store_client=store_client, session_service=session_service,
                 )
             except Exception as tool_exc:
-                logger.warning("Tool %s failed: %s", tool_name, tool_exc)
+                logger.warning("Tool %s failed: %s", tool_name, tool_exc, exc_info=True)
                 tool_result = {"error": f"Tool {tool_name} temporarily unavailable. Please try again."}
                 tool_actions, product_ids, maybe_email = [], [], None
 
