@@ -186,8 +186,14 @@ _GENERIC_NAME_TOKENS = frozenset({
     "color", "colour", "version", "model", "type", "style", "classic", "special",
     # colors
     "black", "white", "red", "blue", "green", "grey", "gray", "yellow", "pink", "purple", "orange", "brown", "navy", "beige", "cream", "olive", "tan", "gold", "silver",
-    # generic product terms / apparel
+    # generic product terms — fashion
     "shoes", "shoe", "sneaker", "sneakers", "clothing", "apparel", "shirt", "shirts", "pants", "jeans", "jacket", "jackets", "coat", "coats", "boots", "sandals", "slippers", "footwear", "item", "items", "product", "products", "selection", "collection", "brand", "brands", "running", "walking", "gym", "sports", "fashion", "men", "mens", "women", "womens", "boy", "boys", "girl", "girls", "kid", "kids", "child", "children", "size", "sizes",
+    # generic product terms — furniture / home
+    "chair", "chairs", "table", "tables", "sofa", "sofas", "bed", "beds", "desk", "desks", "cabinet", "cabinets", "shelf", "shelves", "lamp", "lamps", "furniture", "home", "decor", "decoration",
+    # generic product terms — electronics / appliances
+    "appliance", "appliances", "device", "devices", "machine", "machines", "tool", "tools", "electronic", "electronics", "gadget", "gadgets",
+    # generic product terms — apparel extended
+    "dress", "dresses", "gown", "gowns", "fabric", "fabrics", "material", "materials", "wear", "outfit", "outfits",
     # common commerce / policy / English words that appear Title-Cased but are NOT
     # products (e.g. "Cash On Delivery", "Free Shipping", "Best Seller") — excluded
     # so they never look like a fabricated product name.
