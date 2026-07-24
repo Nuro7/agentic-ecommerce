@@ -425,11 +425,24 @@ class VoiceTurnCoordinator:
                     )
 
                 elif evt_type == "turn_complete":
-                    # Validate the COMPLETE transcript (buffered from all deltas) against
-                    # the brain's grounding. If the voice model hallucinated a product name
-                    # or price, send a corrected transcript bubble to the widget.
+                    # Always compare the COMPLETE spoken transcript against the brain's
+                    # verified text. Even if the guardrail doesn't fire (no names/prices
+                    # in the new transcript), the voice model may have paraphrased — send
+                    # a correction with the brain's authoritative text when they differ.
                     full = self.spoken_truth.get("transcript_buffer", "")
-                    if full and (self.spoken_truth["names"] or self.spoken_truth["full_names"]):
+                    verified = self.spoken_truth.get("verified", "")
+                    if full and verified and verified.strip() != full.strip():
+                        corrected = verified
+                        logger.info(
+                            "Spoken transcript differs from brain — sending correction session=%s",
+                            self.session_id,
+                        )
+                        await self.safe_send_text(json.dumps({
+                            "type": "transcript_correction",
+                            "text": corrected,
+                            "original": full,
+                        }))
+                    elif full and (self.spoken_truth["names"] or self.spoken_truth["full_names"]):
                         ok, clean = validate_spoken_text(
                             full,
                             retrieved_names=self.spoken_truth["names"] or None,
@@ -439,7 +452,10 @@ class VoiceTurnCoordinator:
                         )
                         if not ok:
                             corrected = self.spoken_truth["verified"] or clean or full
-                            logger.warning("Final spoken transcript diverged from brain — sending correction session=%s", self.session_id)
+                            logger.warning(
+                                "Final spoken transcript diverged from brain — sending correction session=%s",
+                                self.session_id,
+                            )
                             await self.safe_send_text(json.dumps({
                                 "type": "transcript_correction",
                                 "text": corrected,

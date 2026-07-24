@@ -747,6 +747,16 @@ async def ask_brain(
                     retrieved_ids.add(str(_pid))
             elif _p:
                 retrieved_ids.add(str(_p))  # bare-id form
+        # Also add products discovered in the current LLM turn, so the guardrail
+        # doesn't flag names that were just retrieved but not persisted yet.
+        for _p in (result.get("last_products") or []):
+            if isinstance(_p, dict):
+                _add_mem_name(_p.get("name"))
+                _pid = _p.get("id") or _p.get("product_id")
+                if _pid:
+                    retrieved_ids.add(str(_pid))
+            elif _p:
+                retrieved_ids.add(str(_p))
         try:
             _facts = await get_session_facts_service().get(tenant_id, session_id)
             _add_mem_name(_facts.get("last_product_name"))

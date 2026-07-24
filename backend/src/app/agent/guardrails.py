@@ -129,9 +129,19 @@ _SIZE_ABBREV: Dict[str, str] = {
 }
 
 
+_SIZE_REGION_PREFIX_RE = re.compile(r"^(uk|eu|us)\s+(\d+)$", re.IGNORECASE)
+
+
 def _normalize_attr(value: str) -> str:
-    """Lowercase + expand common size abbreviations for comparison."""
+    """Lowercase + expand common size abbreviations for comparison.
+
+    Also strips UK/EU/US region prefixes from numeric sizes so that
+    "uk 6" normalizes to "6" and matches a stored attribute of "6".
+    """
     v = value.strip().lower()
+    m = _SIZE_REGION_PREFIX_RE.match(v)
+    if m:
+        v = m.group(2)
     return _SIZE_ABBREV.get(v, v)
 
 
@@ -689,13 +699,19 @@ def build_retrieved_context(
         if isinstance(attrs, dict):
             for vals in attrs.values():
                 if isinstance(vals, list):
-                    attributes.update(str(v).lower() for v in vals if v)
+                    for v in vals:
+                        if v:
+                            raw = str(v).lower()
+                            attributes.add(raw)
+                            attributes.add(_normalize_attr(raw))
         elif isinstance(attrs, list):
             for attr in attrs:
                 if not isinstance(attr, dict):
                     continue
                 for vals in (attr.get("options") or []):
-                    attributes.add(str(vals).lower())
+                    raw = str(vals).lower()
+                    attributes.add(raw)
+                    attributes.add(_normalize_attr(raw))
         # Variant-level attributes
         for variant in p.get("variants", []):
             if not isinstance(variant, dict):
@@ -704,7 +720,11 @@ def build_retrieved_context(
             if isinstance(v_attrs, dict):
                 for vals in v_attrs.values():
                     if isinstance(vals, list):
-                        attributes.update(str(v).lower() for v in vals if v)
+                        for v in vals:
+                            if v:
+                                raw = str(v).lower()
+                                attributes.add(raw)
+                                attributes.add(_normalize_attr(raw))
 
     for result in tool_results:
         payload = result if isinstance(result, dict) else {}

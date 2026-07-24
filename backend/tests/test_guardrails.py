@@ -164,6 +164,7 @@ class TestCheckOutputPrices:
         with pytest.raises(OutputValidationError, match="hallucinated prices"):
             check_output(
                 text,
+                retrieved_product_ids={"1"},
                 retrieved_prices={"₹12499"},
                 allow_retry=True,
             )
