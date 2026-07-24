@@ -1472,6 +1472,7 @@
   // Initialize state machine properties in S
   S.menuOpen = false;
   S.mode = 'idle'; // 'idle', 'chat', 'voice_nav'
+  S.lastShownProduct = null; // {id, handle, name, variation_id, variation} for local voice commands
 
   function toggleMenu() {
     S.menuOpen = !S.menuOpen;
@@ -2135,6 +2136,9 @@
   async function sendToAgent(message) {
     if (S.loading) return;
     clearSuggestions();
+    // ── Local voice command intercept (text/push-to-talk) ────────────────
+    // For ALL basic commands, handle frontend-only without backend round trip.
+    if (handleLocalVoiceCommand(message)) return;
     // Clear live transcript pill — agent is now processing
     if (livePill) { livePill.classList.remove('active'); livePill.innerHTML = ''; }
 
@@ -2294,12 +2298,22 @@
         renderProducts((act.payload && act.payload.products) || []);
         break;
 
-      case 'show_product_detail':
-        if (act.payload && act.payload.product) renderProducts([act.payload.product]);
+      case 'show_product_detail': {
+        const _prod = act.payload && act.payload.product;
+        if (_prod) {
+          S.lastShownProduct = { id: _prod.id || _prod.product_id, handle: _extractHandle(_prod), name: _prod.name, variation_id: null, variation: {} };
+          renderProducts([_prod]);
+        }
         break;
+      }
 
       case 'add_to_cart':
         if (act.payload && act.payload.product_id) {
+          // Dedup: skip if we just handled this product locally via user_transcript
+          if (S._localAddHandled && (Date.now() - S._localAddHandled) < 5000) {
+            const same = Number(act.payload.product_id) === Number((S.lastShownProduct || {}).id);
+            if (same) { S._localAddHandled = 0; break; }
+          }
           try {
             await addToCartDispatch(act.payload);
           } catch (error) {
@@ -2721,6 +2735,80 @@
       S.productHandles = S.productHandles || {};
       S.productHandles[String(id)] = handle;
     }
+  }
+
+  function speakLocal(text) {
+    if (S.muted || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = S.language || 'en';
+    u.rate = 1.0;
+    speechSynthesis.speak(u);
+  }
+
+  function handleLocalVoiceCommand(text) {
+    const t = text.trim();
+    if (!t || t.length > 120) return false;
+    // Add to cart — either /cart/add.js (Shopify) or REST (WooCommerce)
+    // Matches: "add to cart", "add this to cart", "put it in cart", "buy this", etc.
+    if (/(add|put)\s+(this|it|that\s+)?(to|in)\s+(my\s+)?(cart|bag)/i.test(t) ||
+        /^buy\s+(this|it|that)/i.test(t) ||
+        /^(i want to\s+)?buy\s+(this|it|that)/i.test(t)) {
+      const last = S.lastShownProduct;
+      if (!last || !last.id) return false;
+      S._localAddHandled = Date.now();
+      addToCartDispatch({
+        product_id: last.id,
+        variation_id: last.variation_id || 0,
+        variation: last.variation || {},
+        handle: last.handle || '',
+        quantity: 1
+      }).then(() => {
+        speakLocal('Added to cart');
+        showToast('🛒 Added to cart');
+      }).catch(e => {
+        S._localAddHandled = 0;
+        showToast(String(e.message || 'Add to cart failed'));
+      });
+      return true;
+    }
+    // Remove from cart
+    if (/(remove|delete|take)\s+(this|it|that)\s+(from|out\s+of)\s+(my\s+)?(cart|bag)/i.test(t) ||
+        /^remove\s+(this|it)/i.test(t)) {
+      if (S.cartSnapshot && Array.isArray(S.cartSnapshot.items) && S.cartSnapshot.items.length) {
+        const lastItem = S.cartSnapshot.items[S.cartSnapshot.items.length - 1];
+        if (lastItem && lastItem.cart_item_key) {
+          (IS_SHOPIFY ? removeFromCartShopify(lastItem.cart_item_key) : removeFromCartViaWoo(lastItem.cart_item_key))
+            .then(() => speakLocal('Removed from cart'))
+            .catch(e => showToast(String(e.message || 'Remove failed')));
+          return true;
+        }
+      }
+      showToast('No item to remove');
+      return true;
+    }
+    // Go to home
+    if (/^(go\s+to\s+)?(home|homepage|home\s+page)$/i.test(t)) {
+      window.location.href = '/';
+      return true;
+    }
+    // Go to cart
+    if (/^(go\s+to|show|view|open)\s+(my\s+)?cart$/i.test(t)) {
+      window.location.href = '/cart';
+      return true;
+    }
+    // Checkout
+    if (/^(go\s+to\s+)?(checkout|check\s*out)$/i.test(t) || /^buy\s+now$/i.test(t)) {
+      goToCheckout();
+      return true;
+    }
+    // Search
+    const sm = t.match(/^(search|find|show|look)\s+(for\s+)?(.+)/i);
+    if (sm && sm[3]) {
+      window.location.href = '/search?q=' + encodeURIComponent(sm[3].trim());
+      return true;
+    }
+    return false;
   }
 
   async function resolveShopifyVariantId(payload) {
@@ -3175,6 +3263,7 @@
 
     unique.forEach(p => {
       _rememberProduct(p);
+      S.lastShownProduct = { id: p.id || p.product_id, handle: _extractHandle(p), name: p.name, variation_id: null, variation: {} };
       const stockStatus = String(p.stock_status || '').toLowerCase();
       // onbackorder = purchasable in WooCommerce; empty = assume in stock
       const inStock = !stockStatus || stockStatus === 'instock' || stockStatus === 'onbackorder';
@@ -3946,6 +4035,13 @@
             // Barge-in: user interrupted — seal whatever text arrived so far
             _a2aStreamBubble = null;
             _a2aStreamText   = '';
+          }
+
+          // ── User transcript: local voice command intercept (all providers) ──
+          // For navigation and add-to-cart commands, act immediately instead of
+          // waiting for the backend brain pipeline. Deduplicates via S._localAddHandled.
+          if (msg.type === 'user_transcript' && msg.text) {
+            if (handleLocalVoiceCommand(msg.text)) return;
           }
 
           // ── Gemini 3.1: transcript — chunks arrive word-by-word ──────────

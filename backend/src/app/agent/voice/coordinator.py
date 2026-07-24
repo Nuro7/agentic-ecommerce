@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -38,6 +39,9 @@ class VoiceTurnCoordinator:
 
         # Mic state (for pause/resume handling)
         self._mic_enabled = True
+
+        # Basic command detection — skip brain for simple voice commands
+        self._skip_next_tool = False
 
         # Grounding / verified truth for the current turn
         self.spoken_truth = {
@@ -87,6 +91,31 @@ class VoiceTurnCoordinator:
                 await self.websocket.send_bytes(data)
             except Exception as e:
                 logger.debug("Failed to send binary payload session=%s: %s", self.session_id, e)
+
+    # ── Basic command patterns (skip brain, act directly) ───────────────────
+    _NAV_PATTERNS = [
+        (re.compile(r'^(go\s+to\s+)?(home|homepage|home\s+page)$', re.I), '/'),
+        (re.compile(r'^(go\s+to|show|view|open)\s+(my\s+)?cart$', re.I), '/cart'),
+        (re.compile(r'^(go\s+to\s+)?(checkout|check\s*out)$', re.I), '/checkout'),
+    ]
+    _SEARCH_PATTERN = re.compile(r'^(search|find|show|look)\s+(for\s+)?(.+)', re.I)
+    _ADD_CART_PATTERN = re.compile(
+        r'^(add|put|cart)\s+(this|it|that)\s+(to|in)\s+(my\s+)?(cart|bag)|^buy\s+(this|it|that)', re.I
+    )
+
+    def _is_basic_command(self, text: str) -> bool:
+        t = text.strip()
+        if not t or len(t) > 120:
+            return False
+        tl = t.lower()
+        for pat, _ in self._NAV_PATTERNS:
+            if pat.match(tl):
+                return True
+        if self._SEARCH_PATTERN.match(tl):
+            return True
+        if self._ADD_CART_PATTERN.match(tl):
+            return True
+        return False
 
     def _get_orchestrator(self) -> AgentOrchestrator:
         if self.session_id not in self._orchestrators:
@@ -340,6 +369,7 @@ class VoiceTurnCoordinator:
                         logger.info("Barge-in: cancelling active brain turn session=%s", self.session_id)
                         self._active_brain_task.cancel()
                     self.spoken_truth.update(names=set(), full_names=set(), prices=set(), stock={}, transcript_buffer="", verified="")
+                    self._skip_next_tool = False
                     await self.safe_send_text(json.dumps({"type": "flush_audio"}))
                     self.transition_state("LISTENING")
                     self._mic_enabled = True
@@ -351,9 +381,14 @@ class VoiceTurnCoordinator:
                     }))
 
                 elif evt_type == "user_transcript":
+                    text = event.get("text", "")
+                    # Basic command detection — skip brain for simple voice commands
+                    if text and self._is_basic_command(text):
+                        self._skip_next_tool = True
+                        logger.info("Basic command detected (skip brain): session=%s text=%.60s", self.session_id, text)
                     await self.safe_send_text(json.dumps({
                         "type": "user_transcript",
-                        "text": event.get("text"),
+                        "text": text,
                     }))
 
                 elif evt_type == "transcript":
@@ -375,6 +410,13 @@ class VoiceTurnCoordinator:
                     self._mic_enabled = False
 
                 elif evt_type == "tool_call":
+                    if self._skip_next_tool:
+                        self._skip_next_tool = False
+                        call_id = event.get("call_id")
+                        name = event.get("name")
+                        logger.info("Skipping brain for basic command session=%s call=%s", self.session_id, call_id)
+                        await self.provider.send_tool_response(call_id, name, '{"response": "ok"}')
+                        continue
                     await self.run_brain_turn(
                         query=event.get("arguments", {}).get("query", ""),
                         language=event.get("arguments", {}).get("language", "en"),

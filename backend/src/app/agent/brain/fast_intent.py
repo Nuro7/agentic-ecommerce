@@ -628,6 +628,11 @@ async def handle_add_to_cart(
                 })
 
     final_qty = max(1, qty)
+    _handle = product.get("handle") or ""
+    if not _handle:
+        _m = re.search(r"/products/([^/?#]+)", product.get("permalink", ""))
+        if _m:
+            _handle = _m.group(1)
     return with_actions_alias({
         "response_text": say(language, "added_to_cart", name=product.get("name", "Product"), qty=final_qty),
         "ui_actions": [{
@@ -638,6 +643,7 @@ async def handle_add_to_cart(
                 "variation": variation_data,
                 "quantity": final_qty,
                 "permalink": product.get("permalink", ""),
+                "handle": _handle,
             },
         }],
         "suggested_replies": ["Add another item", "View cart", "Proceed to checkout"],
