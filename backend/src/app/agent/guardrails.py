@@ -311,25 +311,34 @@ def check_output(
                     hallucinated = True
             else:
                 # ── Digit-free path (P1-8) ─────────────────────────────────────
-                # Conservative fuzzy match against the retrieved FULL names ONLY
-                # (never the token set). Needs ≥2 distinctive tokens and a full-name
-                # set to compare against. token-overlap handles reordered/partial real
-                # names; SequenceMatcher tolerates plurals/typos. Threshold 0.95 errs
-                # toward catching borderline mentions — a false accept means the LLM
-                # describes a plausible-sounding but wrong product to the customer.
+                # Fuzzy match against the retrieved FULL names. Two strategies:
+                #   a) Token overlap — the LLM mentions a subset of the product's
+                #      distinctive tokens (handles abbreviation/reordering).
+                #   b) Prefix match — the LLM's phrase is a leading substring of a
+                #      full name (natural conversational truncation of long names).
+                #   c) SequenceMatcher ratio as fallback.
+                # Threshold 0.60 is intentionally lenient — multi-tenant ecommerce
+                # has long descriptive names that the LLM naturally abbreviates for
+                # speech (e.g. "Robbie jones Casual Sneakers Canvas Outwear…" →
+                # "Robbie Jones Casual Sneakers"). False accepts are acceptable:
+                # Check 1c (empty-retrieval) and Check 2 (price) catch the rest.
                 if full_names and len(toks) >= 2:
                     joined = " ".join(toks)
-                    said = set(toks)
-                    best = 0.0
+                    said_set = set(toks)
+                    hallucinated = True
                     for name in full_names:
-                        name_toks = set(re.findall(r"[a-z0-9]+", name))
-                        overlap = len(said & name_toks) / len(said)
-                        ratio = difflib.SequenceMatcher(None, joined, name).ratio()
-                        best = max(best, overlap, ratio)
-                        if best >= 0.95:
+                        all_toks = set(re.findall(r"[a-z0-9]+", name))
+                        overlap = len(said_set & all_toks) / len(said_set)
+                        if overlap >= 0.60:
+                            hallucinated = False
                             break
-                    if best < 0.95:
-                        hallucinated = True
+                        if name.startswith(joined):
+                            hallucinated = False
+                            break
+                        ratio = difflib.SequenceMatcher(None, joined, name).ratio()
+                        if ratio >= 0.60:
+                            hallucinated = False
+                            break
 
             if hallucinated:
                 msg = f"hallucinated product name: {phrase!r}"
@@ -353,17 +362,29 @@ def check_output(
 
     # ── Check 2: prices must come from retrieved data ─────────────────────────
     # Normalize commas and spaces before comparing so "₹12,499" matches "₹12499".
+    # Also strip trailing ".0" so "₹484" matches "₹484.0".
     if retrieved_prices:
         mentioned_prices_raw = re.findall(r"[₹$€£¥]\s*[\d,]+(?:\.\d{1,2})?", cleaned)
-        mentioned_prices = {re.sub(r"[\s,]", "", p) for p in mentioned_prices_raw}
-        # P1-8c: symbol-less / currency-WORD prices the symbol regex misses —
-        # "Rs 9999" / "INR 9999" (prefix) and "9999 rupees" / "9999 rs" (suffix).
-        # Anchored to a currency word so plain sizes/counts ("2 items") aren't caught.
+        mentioned_prices = set()
+        for p in mentioned_prices_raw:
+            p = re.sub(r"[\s,]", "", p)
+            mentioned_prices.add(p)
+            mentioned_prices.add(re.sub(r"\.0$", "", p))
+        # Symbol-less / currency-WORD prices: "Rs 9999" / "INR 9999" (prefix)
         for _m in re.findall(r"(?:rs\.?|inr)\s*([\d,]+(?:\.\d{1,2})?)", cleaned, re.IGNORECASE):
-            mentioned_prices.add(re.sub(r"[\s,]", "", _m))
+            p = re.sub(r"[\s,]", "", _m)
+            mentioned_prices.add(p)
+            mentioned_prices.add(re.sub(r"\.0$", "", p))
+        # Suffix: "9999 rupees" / "9999 rs"
         for _m in re.findall(r"([\d,]+(?:\.\d{1,2})?)\s*(?:rupees?|rs\b|inr)", cleaned, re.IGNORECASE):
-            mentioned_prices.add(re.sub(r"[\s,]", "", _m))
-        normalized_retrieved = {re.sub(r"[\s,]", "", p) for p in retrieved_prices}
+            p = re.sub(r"[\s,]", "", _m)
+            mentioned_prices.add(p)
+            mentioned_prices.add(re.sub(r"\.0$", "", p))
+        normalized_retrieved = set()
+        for p in retrieved_prices:
+            p = re.sub(r"[\s,]", "", p)
+            normalized_retrieved.add(p)
+            normalized_retrieved.add(re.sub(r"\.0$", "", p))
         unknown_prices = mentioned_prices - normalized_retrieved
         if unknown_prices:
             msg = f"hallucinated prices: {unknown_prices}"
@@ -381,16 +402,24 @@ def check_output(
         attr_mentions = set(re.findall(
             r"\b(XS|S|M|L|XL|XXL|XXXL"
             r"|\d+(?:\s*(?:cm|mm|inch|inches|kg|g|ml))"
-            r"|(?:red|blue|green|black|white|grey|gray|yellow|pink|purple|orange|brown|navy|beige|cream)\b)",
+            r"|(?:red|blue|green|black|white|grey|gray|yellow|pink|purple|orange|brown|navy|beige|cream)"
+            r"|(?:uk|eu|us)\s*\d+\b)",
             cleaned,
             re.IGNORECASE,
         ))
         normalized_retrieved = {_normalize_attr(a) for a in retrieved_attributes}
-        # Ground attributes against words in retrieved product names to prevent false-positives
-        # for attributes that exist in product titles but aren't formally stored in taxonomies.
+        # Ground attributes against ALL words in retrieved product names to prevent
+        # false-positives for attributes that exist in product titles but aren't
+        # formally stored in structured taxonomies. Includes generic tokens so
+        # color words appearing in product names (e.g. "White" in "...Shoes - White")
+        # are never flagged as invented.
         name_words = set()
         for fn in (retrieved_full_names or set()):
             name_words.update(re.findall(r"[a-z0-9]+", fn.lower()))
+        # Also include user query tokens so the customer's own words ("brown shoes")
+        # are not flagged when the LLM repeats them.
+        if user_query:
+            name_words.update(re.findall(r"[a-z0-9]+", user_query.lower()))
 
         # Lowercase and deduplicate mentions to prevent capitalization differences
         # (e.g. {'black', 'Black'}) from being counted as multiple invented attributes.
@@ -559,9 +588,11 @@ def strip_inline_prices(text: str) -> str:
     cleaned = _INLINE_STOCK_RE.sub("", cleaned)
 
     # Post-strip cleanup so removal never leaves grammatical garbage:
-    cleaned = re.sub(r"(?<=\s)\.\d{1,2}\b", "", cleaned)          # orphan decimal tail ".0" left by a stripped "$120"
+    cleaned = re.sub(r"(?<=\s)\.\d{1,2}\b", "", cleaned)          # orphan decimal tail ".0" left by a stripped "$120" or "₹484.0"
     cleaned = re.sub(r"\b(?:with|and)\s+(?:left|remaining|in\s+stock)\b", "", cleaned, flags=re.IGNORECASE)  # "with left"
     cleaned = re.sub(r"(?<![\w])(?:left|remaining)\b(?!\s*\w)", "", cleaned, flags=re.IGNORECASE)  # dangling "left"
+    cleaned = re.sub(r"\b(?:available\s+|is\s+)(?:with|and)\s*$", "", cleaned, flags=re.IGNORECASE)  # trailing "available with" / "is with"
+    cleaned = re.sub(r"\b(?:only|just)\s*$", "", cleaned, flags=re.IGNORECASE)  # trailing "only" / "just"
     cleaned = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", cleaned, flags=re.IGNORECASE)  # doubled word "is is" → "is"
     cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)            # space before punctuation
     cleaned = re.sub(r"([,;:])\s*([.])", r"\2", cleaned)         # orphaned ", ." → "."
@@ -619,10 +650,13 @@ def build_retrieved_context(
             raw = str(p.get(price_key) or "").strip()
             if raw and raw != "0":
                 norm = re.sub(r"[\s,]", "", raw)   # "1,299" → "1299"
+                sans_dot0 = re.sub(r"\.0$", "", norm)  # "484.0" → "484"
                 prices.add(raw)
                 prices.add(norm)
+                prices.add(sans_dot0)
                 prices.add(f"₹{raw}")
                 prices.add(f"₹{norm}")
+                prices.add(f"₹{sans_dot0}")
                 prices.add(f"₹ {raw}")
         # Flatten attributes dict  {name: [val, val]} or list [{name, options}]
         attrs = p.get("attributes") or {}
