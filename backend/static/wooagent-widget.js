@@ -2314,13 +2314,18 @@
             const same = Number(act.payload.product_id) === Number((S.lastShownProduct || {}).id);
             if (same) { S._localAddHandled = 0; break; }
           }
+          console.log('[WooAgent A2C] Brain dispatched add_to_cart:', act.payload);
           try {
             await addToCartDispatch(act.payload);
+            console.log('[WooAgent A2C] Brain add-to-cart succeeded');
           } catch (error) {
             const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
+            console.error('[WooAgent A2C] Brain add-to-cart failed:', message);
             addBubble('bot', message);
             showToast(message);
           }
+        } else {
+          console.warn('[WooAgent A2C] Brain add_to_cart missing product_id in payload:', act.payload);
         }
         break;
 
@@ -2755,19 +2760,27 @@
         /^buy\s+(this|it|that)/i.test(t) ||
         /^(i want to\s+)?buy\s+(this|it|that)/i.test(t)) {
       const last = S.lastShownProduct;
-      if (!last || !last.id) return false;
+      console.log('[WooAgent A2C] Local command matched:', t, 'lastShownProduct:', last);
+      if (!last || !last.id) {
+        console.warn('[WooAgent A2C] No lastShownProduct — falling through to brain path');
+        return false;
+      }
       S._localAddHandled = Date.now();
-      addToCartDispatch({
+      const payload = {
         product_id: last.id,
         variation_id: last.variation_id || 0,
         variation: last.variation || {},
         handle: last.handle || '',
         quantity: 1
-      }).then(() => {
+      };
+      console.log('[WooAgent A2C] Dispatching local add-to-cart:', payload);
+      addToCartDispatch(payload).then(() => {
+        console.log('[WooAgent A2C] Local add-to-cart succeeded');
         speakLocal('Added to cart');
         showToast('🛒 Added to cart');
       }).catch(e => {
         S._localAddHandled = 0;
+        console.error('[WooAgent A2C] Local add-to-cart failed:', e.message);
         showToast(String(e.message || 'Add to cart failed'));
       });
       return true;
@@ -2815,16 +2828,25 @@
     // Single-variant products (or cards without a picker) arrive with no variant
     // id. Fetch the product JSON by handle and pick the first available variant.
     const handle = payload && (payload.handle || payload.product_handle);
-    if (!handle) return 0;
+    if (!handle) { console.warn('[WooAgent A2C] resolveShopifyVariantId: no handle'); return 0; }
     try {
-      const res = await fetch('/products/' + encodeURIComponent(handle) + '.js',
+      const url = '/products/' + encodeURIComponent(handle) + '.js';
+      console.log('[WooAgent A2C] resolveShopifyVariantId: fetching', url);
+      const res = await fetch(url,
         { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
-      if (!res.ok) return 0;
+      if (!res.ok) {
+        console.warn('[WooAgent A2C] resolveShopifyVariantId: fetch failed', res.status, res.statusText);
+        return 0;
+      }
       const prod = await _parseJsonSafe(res);
       const variants = (prod && prod.variants) || [];
+      console.log('[WooAgent A2C] resolveShopifyVariantId: found', variants.length, 'variants');
       const avail = variants.find(v => v.available) || variants[0];
-      return avail ? (parseInt(avail.id, 10) || 0) : 0;
+      const vid = avail ? (parseInt(avail.id, 10) || 0) : 0;
+      console.log('[WooAgent A2C] resolveShopifyVariantId: resolved variant id =', vid, avail ? '(available)' : '(unavailable)');
+      return vid;
     } catch (e) {
+      console.warn('[WooAgent A2C] resolveShopifyVariantId: exception:', e);
       return 0;
     }
   }
@@ -2846,6 +2868,7 @@
 
   async function addToCartShopify(payload) {
     let variantId = parseInt(payload && (payload.variation_id || payload.variant_id), 10);
+    console.log('[WooAgent A2C] addToCartShopify: payload=', payload, 'explicit variantId=', variantId);
     if (!Number.isInteger(variantId) || variantId <= 0) {
       // No explicit variant: resolve from the handle. Prefer the payload handle,
       // else the handle we remembered when this product's card was rendered,
@@ -2862,11 +2885,14 @@
         const m = location.pathname.match(/\/products\/([^/?#]+)/);
         handle = m ? m[1] : '';
       }
+      console.log('[WooAgent A2C] addToCartShopify: resolved handle=', handle);
       variantId = await resolveShopifyVariantId({ handle });
     }
     if (!Number.isInteger(variantId) || variantId <= 0) {
+      console.error('[WooAgent A2C] addToCartShopify: no valid variant — throwing');
       throw new Error('Please choose a product option first.');
     }
+    console.log('[WooAgent A2C] addToCartShopify: POST /cart/add.js variantId=', variantId);
     const res = await fetch('/cart/add.js', {
       method: 'POST',
       credentials: 'same-origin',
@@ -2879,8 +2905,10 @@
     if (!res.ok) {
       let msg = 'Add to cart failed';
       try { const e = await res.json(); msg = e.description || e.message || msg; } catch (_) {}
+      console.error('[WooAgent A2C] addToCartShopify: HTTP', res.status, msg);
       throw new Error(msg);
     }
+    console.log('[WooAgent A2C] addToCartShopify: POST succeeded, refreshing cart');
     // The add already succeeded (res.ok). We don't need the returned line item —
     // we re-read the whole cart next — so DON'T parse the body. Shopify returns it
     // with a non-JSON content-type, and parsing it used to throw a false
