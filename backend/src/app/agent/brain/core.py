@@ -774,22 +774,13 @@ async def ask_brain(
             retrieved_full_names=retrieved_full_names or None,
             retrieved_stock=retrieved_stock or None,
             detected_language=lang,
-            allow_retry=True,
+            allow_retry=False,
             user_query=cleaned_message,
         )
-    except OutputValidationError as ove:
-        logger.warning("Output guardrail triggered (%s) — retrying", ove.reason)
-        response_text = await retry_with_stricter_prompt(
-            user_message=cleaned_message,
-            failure_reason=ove.reason,
-            last_products=last_products,
-            lang=lang,
-            retrieved_ids=retrieved_ids,
-            retrieved_prices=retrieved_prices,
-            retrieved_names=retrieved_names,
-            retrieved_full_names=retrieved_full_names,
-            retrieved_stock=retrieved_stock,
-        )
+    except OutputValidationError:
+        # Unexpected: allow_retry=False means check_output never raises — this
+        # branch is a safety net only. Logged inside check_output already.
+        pass
     except Exception as exc:
         logger.debug("Output guardrail skipped: %s", exc)
 

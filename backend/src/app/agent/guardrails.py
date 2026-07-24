@@ -318,6 +318,10 @@ def check_output(
                 all_phrase_toks = [t for t in re.findall(r"[a-z0-9]+", phrase.lower()) if len(t) > 2]
                 if len(all_phrase_toks) < 2:
                     continue
+                # If ALL tokens are generic descriptors (colors, sizes, product types),
+                # this is not a specific product name — skip it.
+                if all(t in _GENERIC_NAME_TOKENS for t in all_phrase_toks):
+                    continue
                 joined = " ".join(all_phrase_toks)
                 hallucinated = True
                 for name in full_names:
