@@ -271,6 +271,66 @@ async def _run_retrieval(
                 logger.debug("Retrieval DB session close failed: %s", e)
 
 
+async def _extract_search_query(
+    user_message: str,
+    lang: str,
+) -> str:
+    """Use a fast LLM call to extract the core search query from verbose natural language.
+
+    "My husband's birthday is tomorrow, I need formal shoes as a gift"
+    → "formal shoes"
+
+    Returns the extracted query, or empty string if extraction fails/not needed.
+    """
+    word_count = len(user_message.split())
+    if word_count <= 6:
+        return ""
+
+    from ..llm_router import route_and_call
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Extract a concise product search query (2-6 words) from the customer message. "
+                "Ignore all context like birthdays, gifts, occasions, relationships. "
+                "Return ONLY the search query with no extra text.\n\n"
+                "Examples:\n"
+                "Customer: my husband loves shoes, birthday gift, formal shoes\n"
+                "Search: formal shoes\n\n"
+                "Customer: need a red dress for party tonight\n"
+                "Search: red dress\n\n"
+                "Customer: want to buy a laptop under 50000\n"
+                "Search: laptop\n\n"
+                "Customer: looking for some good formal shoes for men\n"
+                "Search: formal shoes for men\n\n"
+                "Customer: I have surprise for husband formal shoes\n"
+                "Search: formal shoes"
+            ),
+        },
+        {"role": "user", "content": user_message},
+    ]
+
+    try:
+        resp = await route_and_call(
+            messages=messages,
+            tools=[],
+            lang=lang,
+            address_active=False,
+            turn_count=0,
+            message_text=user_message,
+            force_text=True,
+        )
+        extracted = (resp.get("text") or "").strip().strip("\"'")
+        if extracted and 2 <= len(extracted) <= 80:
+            logger.debug("Extracted search query: '%s' from: %.60s", extracted, user_message)
+            return extracted
+    except Exception as exc:
+        logger.debug("Search query extraction failed, using original: %s", exc)
+
+    return ""
+
+
 async def _fetch_cart(
     tenant_id: str,
     session_id: str,
@@ -481,10 +541,22 @@ async def ask_brain(
     # stop — the LLM should still get a chance using session history.
     retrieval_ran = False
     retrieval_found = False
+    _search_query = cleaned_message  # default: use cleaned_message
     if result is None and intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY):
+        # For SEARCH intent, extract a clean search query from verbose
+        # natural language so "husband birthday surprise gift formal shoes"
+        # becomes "formal shoes" instead of drowning in conversational noise.
+        if intent_result.intent == SEARCH:
+            extracted = await _extract_search_query(cleaned_message, lang)
+            if extracted:
+                _search_query = extracted
+                logger.info(
+                    "Extracted search query: '%s' ← original: %.80s",
+                    _search_query, cleaned_message,
+                )
         try:
             retrieval_results = await _run_retrieval(
-                query=cleaned_message,
+                query=_search_query,
                 tenant_id=str(store_context.get("tenant_id") or session_id),
                 store_client=store_client,
                 redis=redis,
@@ -508,12 +580,12 @@ async def ask_brain(
                 ]
                 logger.debug(
                     "Retrieval: %d products for '%s'",
-                    len(last_products), cleaned_message[:40],
+                    len(last_products), _search_query[:40],
                 )
             else:
                 logger.info(
                     "Retrieval: 0 products for intent=%s query='%s'",
-                    intent_result.intent, cleaned_message[:40],
+                    intent_result.intent, _search_query[:40],
                 )
                 # A NEW search that found nothing must NOT leave the previous
                 # query's products in context — the LLM would offer them as if
