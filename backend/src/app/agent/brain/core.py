@@ -447,9 +447,8 @@ async def ask_brain(
     history: List[Dict[str, Any]] = (
         state.get("conversation_history", []) if isinstance(state, dict) else []
     )
-    last_products: List[Any] = (
-        state.get("last_products", []) if isinstance(state, dict) else []
-    )
+    _raw_products = state.get("last_products", []) if isinstance(state, dict) else []
+    last_products: List[Any] = [p for p in _raw_products if isinstance(p, dict)]
 
     current_pid = page_context.get("product_id") if isinstance(page_context, dict) else None
     if current_pid:
@@ -710,12 +709,14 @@ async def ask_brain(
     logger.info("[FLOW] brain step5 result_pre_llm=%s session=%s", "cached" if result else "None", session_id)
 
     # ── Primary: LLM agent ────────────────────────────────────────────────────
+    _llm_resp = None
+
     if result is None and ANY_LLM_AVAILABLE:
         logger.info("[FLOW] brain step6 llm_agent ENTER session=%s", session_id)
         logger.info("[TRACE] Step6 payload TO LLM: user_message='%s'", cleaned_message[:120])
         logger.info("[TRACE] Step6 payload: last_products=%s",
             json.dumps([{"id": p.get("id"), "name": p.get("name","?")[:40], "price": p.get("price")}
-                for p in (last_products or [])[:5]], default=str))
+                for p in (last_products or [])[:5] if isinstance(p, dict)], default=str))
         logger.info("[TRACE] Step6 payload: history=%d turns cart_items=%d lang=%s",
             len(history or []),
             (cart_for_prompt or {}).get("item_count", 0),
