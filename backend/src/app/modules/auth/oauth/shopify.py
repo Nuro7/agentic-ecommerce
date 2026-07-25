@@ -163,8 +163,9 @@ def _build_webhook_payload(topic: str, address: str) -> dict:
 async def _register_webhooks(shop_domain: str, access_token: str, address: str) -> int:
     """Idempotently subscribe the store to SHOPIFY_WEBHOOK_TOPICS pointing at
     `address`. Skips topics already registered to our address; tolerates Shopify's
-    422 "address for this topic has already been taken". Returns the number of
-    topics confirmed active (existing + newly created). Never raises."""
+    422 "address for this topic has already been taken". Also removes old webhooks
+    pointing to a stale tenant UUID (e.g. after uninstall/reinstall). Returns the
+    number of topics confirmed active (existing + newly created). Never raises."""
     api_version = _settings.shopify_api_version
     base = f"https://{shop_domain}/admin/api/{api_version}/webhooks.json"
     headers = _shopify_admin_headers(access_token)
@@ -176,8 +177,18 @@ async def _register_webhooks(shop_domain: str, access_token: str, address: str) 
             resp = await client.get(base, headers=headers, params={"limit": 250})
             if resp.status_code == 200:
                 for wh in resp.json().get("webhooks", []):
-                    if str(wh.get("address", "")).rstrip("/") == address.rstrip("/"):
-                        existing.add(str(wh.get("topic", "")))
+                    wh_addr = str(wh.get("address", "")).rstrip("/")
+                    wh_id = wh.get("id")
+                    wh_topic = str(wh.get("topic", ""))
+                    if wh_addr == address.rstrip("/"):
+                        existing.add(wh_topic)
+                    elif wh_id and "/webhooks/shopify/" in wh_addr and wh_addr != address.rstrip("/"):
+                        del_url = f"https://{shop_domain}/admin/api/{api_version}/webhooks/{wh_id}.json"
+                        try:
+                            await client.delete(del_url, headers=headers)
+                            logger.info("Removed stale webhook id=%s topic=%s old_addr=%s", wh_id, wh_topic, wh_addr)
+                        except Exception as exc:
+                            logger.warning("Failed to remove stale webhook id=%s: %s", wh_id, exc)
         except Exception as exc:
             logger.warning("Could not list existing webhooks for %s: %s", shop_domain, exc)
 
