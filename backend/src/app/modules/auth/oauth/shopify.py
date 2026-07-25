@@ -45,7 +45,7 @@ router = APIRouter()
 # install, so merchants never have to create one manually. NOTE: these same scopes
 # must also be enabled in the Shopify Partner app configuration (one-time, per app).
 SHOPIFY_SCOPES = (
-    "read_products,write_script_tags,read_script_tags,read_orders,read_customers,"
+    "read_products,write_script_tags,read_script_tags,read_orders,write_orders,read_customers,"
     "unauthenticated_read_product_listings,unauthenticated_read_product_inventory,"
     "unauthenticated_read_product_tags,unauthenticated_read_checkouts,"
     "unauthenticated_write_checkouts"
