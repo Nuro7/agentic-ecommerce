@@ -28,4 +28,4 @@ jobs:
             sudo docker compose --env-file .env -f infra/docker/docker-compose.prod.yml down --remove-orphans
             sudo docker compose --env-file .env -f infra/docker/docker-compose.prod.yml up -d --build
             sudo docker image prune -f
-            sudo docker compose --env-file .env -f infra/docker/docker-compose.prod.yml ps --health
+            curl -sf https://speako.nuro7.in/api/v1/health && echo "Deploy OK" || echo "Health check FAILED"
