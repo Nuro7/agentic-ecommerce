@@ -104,6 +104,9 @@ def append_live_navigation(
             target_index = 1
         elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower_query):
             target_index = 2
+        elif re.search(r"\b(that|this)\s*(one|product|item)?\s*$", lower_query) or lower_query in ("take that", "take this", "that one", "this one", "that product", "this product"):
+            # Anaphoric reference — pick the last explicitly shown product, else the first
+            target_index = 0
 
         if target_index is not None and len(last_products) > target_index:
             prod = last_products[target_index]

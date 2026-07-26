@@ -220,52 +220,44 @@ async def execute_tool_call(
             return {"error": "A valid product ID is required to add to cart. Please search for the product first."}, actions, [], None
         variation_id = safe_int(tool_args.get("variation_id"), 0)
         quantity = max(1, min(safe_int(tool_args.get("quantity"), 1), 20))
-        variation_data: Dict[str, Any] = {}
         if not variation_id and tool_args.get("attributes"):
-            inv = await store_client.check_inventory(
-                product_id=product_id,
-                attributes=tool_args.get("attributes"),
-            )
-            variation_id = safe_int(inv.get("variation_id"), 0)
-            if hasattr(store_client, "_attributes_to_variation_map"):
-                variation_data = store_client._attributes_to_variation_map(inv.get("attributes", []))
+            try:
+                inv = await store_client.check_inventory(
+                    product_id=product_id,
+                    attributes=tool_args.get("attributes"),
+                )
+                variation_id = safe_int(inv.get("variation_id"), 0)
+            except Exception:
+                pass
+
+        # Look up product to get permalink/handle for the widget's AJAX call
+        product_permalink = ""
         try:
-            cart_result = await store_client.add_to_cart(
-                session_id=session_id,
-                product_id=product_id,
-                variation_id=variation_id,
-                quantity=quantity,
-                variation=variation_data or None,
-            )
-        except Exception as exc:
-            logger.error("add_to_cart server-side failed session=%s: %s", session_id, exc)
-            return {"error": "Failed to add to cart. Please try again."}, actions, [], None
-        success = cart_result.get("success", True)
-        if not success:
-            return {"error": cart_result.get("error", "Could not add to cart.")}, actions, [], None
+            product_detail = await store_client.get_product_details(product_id)
+            product_permalink = str(product_detail.get("permalink") or "")
+        except Exception:
+            pass
+
         actions.append({
-            "type": "cart_updated",
-            "payload": {"cart": cart_result, "product_id": product_id},
+            "type": "add_to_cart",
+            "payload": {
+                "product_id": product_id,
+                "variation_id": variation_id or 0,
+                "quantity": quantity,
+                "permalink": product_permalink,
+            },
         })
-        return {"add_to_cart": "success", "cart": cart_result}, actions, [product_id], None
+        return {"add_to_cart": "dispatched", "message": "Adding to cart…"}, actions, [product_id], None
 
     if tool_name == "remove_from_cart":
         cart_item_key = str(tool_args.get("cart_item_key") or "").strip()
-        product_id = safe_int(tool_args.get("product_id"), 0)
-        try:
-            cart_result = await store_client.remove_from_cart(
-                session_id=session_id,
-                cart_item_key=cart_item_key or None,
-                product_id=product_id or None,
-            )
-        except Exception as exc:
-            logger.error("remove_from_cart server-side failed session=%s: %s", session_id, exc)
-            return {"error": "Failed to remove item from cart."}, actions, [], None
+        if not cart_item_key:
+            return {"error": "A valid cart_item_key is required to remove from cart."}, actions, [], None
         actions.append({
-            "type": "cart_updated",
-            "payload": {"cart": cart_result},
+            "type": "remove_from_cart",
+            "payload": {"cart_item_key": cart_item_key},
         })
-        return {"remove_from_cart": "success", "cart": cart_result}, actions, [], None
+        return {"remove_from_cart": "dispatched", "message": "Removing from cart…"}, actions, [], None
 
     if tool_name == "get_orders":
         email = str(tool_args.get("customer_email") or "").strip().lower()
