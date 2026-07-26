@@ -2293,12 +2293,15 @@
   }
 
   async function processAction(act) {
+    // In voice-nav mode with panel closed, skip DOM-rendering actions
+    const isHidden = S.mode === 'voice_nav' && !S.open;
     switch (act.type) {
       case 'show_products':
-        renderProducts((act.payload && act.payload.products) || []);
+        if (!isHidden) renderProducts((act.payload && act.payload.products) || []);
         break;
 
       case 'show_product_detail': {
+        if (isHidden) break;
         const _prod = act.payload && act.payload.product;
         if (_prod) {
           S.lastShownProduct = { id: _prod.id || _prod.product_id, handle: _extractHandle(_prod), name: _prod.name, variation_id: null, variation: {} };
@@ -2367,6 +2370,7 @@
       }
 
       case 'show_cart':
+        if (isHidden) break;
         // Shopify: render the REAL cart (/cart.js), not the backend's payload —
         // post-unification the authoritative cart lives in the storefront, so the
         // backend's cart snapshot can be stale/empty.
@@ -2379,24 +2383,27 @@
         break;
 
       case 'show_orders':
+        if (isHidden) break;
         renderOrders((act.payload && act.payload.orders) || []);
         break;
 
       case 'show_comparison':
+        if (isHidden) break;
         renderComparison((act.payload && act.payload.items) || []);
         break;
 
       case 'show_variants':
+        if (isHidden) break;
         if (act.payload && act.payload.variations) {
           renderVariantSelector(act.payload);
         }
         break;
 
       case 'show_availability': {
+        if (isHidden) break;
         const prod = (act.payload && act.payload.product) || {};
         const inv = (act.payload && act.payload.inventory) || {};
         if (prod && prod.id) {
-          // Merge precise inventory data into product so the card renders correct stock status
           renderProducts([{
             ...prod,
             stock_status: inv.in_stock ? 'instock' : 'outofstock',
@@ -2407,6 +2414,7 @@
       }
 
       case 'show_reviews':
+        if (isHidden) break;
         renderReviews(act.payload || {});
         break;
 
@@ -2541,6 +2549,7 @@
       }
 
       case 'show_store_info':
+        if (isHidden) break;
         renderStoreInfo(act.payload || {});
         break;
 
