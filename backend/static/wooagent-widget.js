@@ -1513,24 +1513,56 @@
     showToast('🎙️ Voice Navigation Mode Active');
   }
 
+  let _resumePending = false;
+
   function resumeVoiceNavMode() {
     closeMenu();
-    if (S.open) {
-      closePane();
-    }
+    if (S.open) closePane();
     S.mode = 'voice_nav';
+    _resumePending = true;
     fab.classList.add('voice-nav-active');
-    showToast('🎙️ Voice Navigation active. Tap anywhere to talk.');
+    primeAudioEngines();
 
+    showToast('🎙️ Tap to continue voice control.');
     const resumeGesture = () => {
-      primeAudioEngines();
+      if (!_resumePending) return;
+      _resumePending = false;
       startLiveMode();
       document.body.removeEventListener('click', resumeGesture);
       document.body.removeEventListener('touchend', resumeGesture);
     };
-
     document.body.addEventListener('click', resumeGesture);
     document.body.addEventListener('touchend', resumeGesture, { passive: true });
+
+    _tryAutoStartMic().then(ok => {
+      if (ok) {
+        _resumePending = false;
+        document.body.removeEventListener('click', resumeGesture);
+        document.body.removeEventListener('touchend', resumeGesture);
+        showToast('🎙️ Voice Navigation active.');
+      }
+    });
+
+    setTimeout(() => {
+      if (_resumePending) {
+        _resumePending = false;
+        document.body.removeEventListener('click', resumeGesture);
+        document.body.removeEventListener('touchend', resumeGesture);
+      }
+    }, 30000);
+  }
+
+  async function _tryAutoStartMic() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 }
+      });
+      stream.getTracks().forEach(t => t.stop());
+      startLiveMode();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function stopVoiceNavMode() {
@@ -1541,14 +1573,14 @@
   }
 
   fab.addEventListener('click', () => {
-    if (S.open) {
-      closePane();
+    if (S.open) { closePane(); return; }
+    if (_resumePending) {
+      _resumePending = false;
+      startLiveMode();
+      showToast('🎙️ Voice Navigation active.');
       return;
     }
-    if (S.mode === 'voice_nav') {
-      stopVoiceNavMode();
-      return;
-    }
+    if (S.mode === 'voice_nav') { stopVoiceNavMode(); return; }
     toggleMenu();
   });
 
@@ -1914,6 +1946,7 @@
       orb.classList.remove('recording');
       orbHint.innerHTML = isLiveMode ? '<strong>Tap to speak</strong> · tap again to stop' : '<strong>Tap to speak</strong> · or type below';
       console.warn('[WooAgent] Mic error:', err && err.name, err);
+      if (_resumePending) { _resumePending = false; return; } // silent fail during auto-resume
       let errMsg = '';
       if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
         errMsg = 'Mic access was denied. Please allow microphone access in your browser settings, then try again.';
@@ -1928,7 +1961,7 @@
       }
       if (S.open) {
         addBubble('bot', errMsg);
-      } else {
+      } else if (!_resumePending) {
         showToast('❌ ' + errMsg);
       }
     } finally {
@@ -4232,6 +4265,7 @@
     } catch (err) {
       console.warn('[WooAgent A2A] Mic error:', err);
       stopA2AMode();
+      if (_resumePending) return; // silent fail during auto-resume
       _a2aFallback();
     }
   }
