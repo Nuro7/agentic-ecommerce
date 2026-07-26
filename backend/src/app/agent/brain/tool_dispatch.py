@@ -230,10 +230,12 @@ async def execute_tool_call(
             except Exception:
                 pass
 
-        # Look up product to get permalink/handle for the widget's AJAX call
+        # Look up product to get handle + permalink for the widget's AJAX call
+        product_handle = ""
         product_permalink = ""
         try:
             product_detail = await store_client.get_product_details(product_id)
+            product_handle = str(product_detail.get("handle") or "")
             product_permalink = str(product_detail.get("permalink") or "")
         except Exception:
             pass
@@ -244,6 +246,7 @@ async def execute_tool_call(
                 "product_id": product_id,
                 "variation_id": variation_id or 0,
                 "quantity": quantity,
+                "handle": product_handle,
                 "permalink": product_permalink,
             },
         })

@@ -2808,8 +2808,9 @@
     if (!t || t.length > 120) return false;
     // Add to cart — either /cart/add.js (Shopify) or REST (WooCommerce)
     // Matches: "add to cart", "add this to cart", "put it in cart", "buy this", etc.
-    if (/(add|put)\s+(this|it|that\s+)?(to|in)\s+(my\s+)?(cart|bag)$/i.test(t) ||
-        /^buy\s+(this|it|that)$/i.test(t)) {
+    if (/(add|put)\s+(?:(?:this|it|that)\s+)?(to|in)\s+(?:my\s+)?(cart|bag)$/i.test(t) ||
+        /^buy\s+(?:this|it|that)$/i.test(t) ||
+        /^(?:take|get|grab)\s+(?:this(?:\s+one)?|it|that(?:\s+one)?)$/i.test(t)) {
       const last = S.lastShownProduct;
       console.log('[WooAgent A2C] Local command matched:', t, 'lastShownProduct:', last);
       if (!last || !last.id) {

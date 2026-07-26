@@ -193,7 +193,7 @@ def normalize_availability_query(message: str) -> str:
 
 
 def extract_add_query(message: str) -> str:
-    cleaned = re.sub(r"\b(add|to|cart|please|qty|quantity|size\s*[a-z0-9.-]+|color\s*[a-z-]+|my|the|in|into)\b", " ", message.lower())
+    cleaned = re.sub(r"\b(add|to|cart|please|qty|quantity|size\s*[a-z0-9.-]+|color\s*[a-z-]+|my|the|in|into|take|that|this|one|product|item)\b", " ", message.lower())
     cleaned = re.sub(r"[\"']", " ", cleaned)
     cleaned = re.sub(r"\b\d+\b", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()

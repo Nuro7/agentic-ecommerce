@@ -665,7 +665,8 @@ async def _resolve_product_for_add(
         except (TypeError, ValueError):
             return None
 
-    if any(token in lower for token in ["add it", "add this", "add first", "yes add", "add one"]):
+    _anaphoric = ("add it", "add this", "add first", "yes add", "add one", "take that", "take this", "take it", "that one", "this one", "that product", "this product", "that item", "this item")
+    if any(token in lower for token in _anaphoric):
         if last_products:
             pid = _get_pid(last_products[0])
             if pid:

@@ -659,7 +659,7 @@ async def ask_brain(
         _order_kw = ("my order", "order status", "track my", "where is my order", "order number", "order tracking")
         _compare_kw = ("compare", " vs ", " versus ", "difference between", "which is better", "which one is")
         _buy_kw = ("i want to buy", "i want to get", "buy me", "get me a", "i'd like to buy", "i'll take", "purchase a")
-        _add_kw = ("add to cart", "add it to cart", "put in cart", "add one", "add two", "add three", "add to bag")
+        _add_kw = ("add to cart", "add it to cart", "put in cart", "add one", "add two", "add three", "add to bag", "take that", "take this", "that one", "this one", "that product", "this product", "take it")
 
         if any(kw in lower_msg for kw in _order_kw):
             try:
