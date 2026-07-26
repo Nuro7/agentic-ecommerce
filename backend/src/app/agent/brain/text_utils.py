@@ -104,7 +104,7 @@ def append_live_navigation(
             target_index = 1
         elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower_query):
             target_index = 2
-        elif re.search(r"\b(that|this)\s*(one|product|item)?\s*$", lower_query) or lower_query in ("take that", "take this", "that one", "this one", "that product", "this product"):
+        elif re.search(r"\b(that|this)\s*(one|product|item)?(?:\s*(?:please|thanks|thank\s*you))*\s*$", lower_query) or lower_query in ("take that", "take this", "that one", "this one", "that product", "this product"):
             # Anaphoric reference — pick the last explicitly shown product, else the first
             target_index = 0
 
@@ -156,6 +156,8 @@ def append_live_navigation(
 # ── Query normalisation ───────────────────────────────────────────────────────
 
 def normalize_discovery_query(message: str) -> str:
+    # Strip apostrophes so contractions (i'll, i'm, etc.) don't interfere with \b
+    cleaned = message.lower().replace("'", " ").replace("`", " ")
     cleaned = re.sub(
         r"\b(?:"
         r"show|find|search|products?|items?|available|availability|"
@@ -174,10 +176,10 @@ def normalize_discovery_query(message: str) -> str:
         r"until|during|through|between|among|across|behind|beyond|within|"
         r"along|around|about|above|below|near|past|toward|towards|via|"
         r"without|worth|yet|so|but|or|and|nor|if|though|although|unless|"
-        r"except|thanks|thank|he|she|it|we|they|him|them|office|home|"
-        r"house|work|school|college|i|i'd|i'll|i'm|ive|im|id|ill"
+        r"except|thanks|thank|add|he|she|it|we|they|him|them|office|home|"
+        r"house|work|school|college|i"
         r")\b",
-        " ", message.lower()
+        " ", cleaned
     )
     cleaned = re.sub(r"\b(?:under|below|less\s+than|above|over|more\s+than|upto|up\s+to)\s+\d+(?:\.\d+)?\b", " ", cleaned)
     cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?)\s*\d+(?:\.\d+)?\b", " ", cleaned)

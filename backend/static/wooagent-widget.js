@@ -1514,6 +1514,14 @@
   }
 
   let _resumePending = false;
+  let _cleanupResumeGesture = null;
+
+  function _clearResumeGesture() {
+    if (_cleanupResumeGesture) {
+      _cleanupResumeGesture();
+      _cleanupResumeGesture = null;
+    }
+  }
 
   function resumeVoiceNavMode() {
     closeMenu();
@@ -1528,6 +1536,9 @@
       if (!_resumePending) return;
       _resumePending = false;
       startLiveMode();
+      _clearResumeGesture();
+    };
+    _cleanupResumeGesture = () => {
       document.body.removeEventListener('click', resumeGesture);
       document.body.removeEventListener('touchend', resumeGesture);
     };
@@ -1537,8 +1548,7 @@
     _tryAutoStartMic().then(ok => {
       if (ok) {
         _resumePending = false;
-        document.body.removeEventListener('click', resumeGesture);
-        document.body.removeEventListener('touchend', resumeGesture);
+        _clearResumeGesture();
         showToast('🎙️ Voice Navigation active.');
       }
     });
@@ -1546,8 +1556,7 @@
     setTimeout(() => {
       if (_resumePending) {
         _resumePending = false;
-        document.body.removeEventListener('click', resumeGesture);
-        document.body.removeEventListener('touchend', resumeGesture);
+        _clearResumeGesture();
       }
     }, 30000);
   }
@@ -1576,6 +1585,7 @@
     if (S.open) { closePane(); return; }
     if (_resumePending) {
       _resumePending = false;
+      _clearResumeGesture();
       startLiveMode();
       showToast('🎙️ Voice Navigation active.');
       return;
