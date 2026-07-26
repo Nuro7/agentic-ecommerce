@@ -153,7 +153,7 @@ async def run_fast_intent(
             "response_text": say(language, "cart_opened"),
             "ui_actions": [
                 {"type": "show_cart", "payload": {"cart": normalize_cart_payload(cart)}},
-                {"type": "redirect", "payload": {"url": cart_url}},
+                {"type": "redirect", "payload": {"url": cart_url, "reason": "cart"}},
             ],
             "suggested_replies": ["Checkout now", "Show products"],
         })

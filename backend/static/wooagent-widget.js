@@ -2358,7 +2358,7 @@
           window.jQuery(document.body).trigger('wc_fragment_refresh');
           window.jQuery(document.body).trigger('update_checkout');
         }
-        if (window.location.pathname.includes('/cart') || window.location.pathname.includes('/checkout')) {
+        if (window.location.pathname.includes('/cart') && !window.location.pathname.includes('/checkout')) {
           setTimeout(() => {
             window.location.reload();
           }, 1500);
@@ -2756,9 +2756,8 @@
     if (!t || t.length > 120) return false;
     // Add to cart — either /cart/add.js (Shopify) or REST (WooCommerce)
     // Matches: "add to cart", "add this to cart", "put it in cart", "buy this", etc.
-    if (/(add|put)\s+(this|it|that\s+)?(to|in)\s+(my\s+)?(cart|bag)/i.test(t) ||
-        /^buy\s+(this|it|that)/i.test(t) ||
-        /^(i want to\s+)?buy\s+(this|it|that)/i.test(t)) {
+    if (/(add|put)\s+(this|it|that\s+)?(to|in)\s+(my\s+)?(cart|bag)$/i.test(t) ||
+        /^buy\s+(this|it|that)$/i.test(t)) {
       const last = S.lastShownProduct;
       console.log('[WooAgent A2C] Local command matched:', t, 'lastShownProduct:', last);
       if (!last || !last.id) {
@@ -2815,10 +2814,10 @@
       goToCheckout();
       return true;
     }
-    // Search
-    const sm = t.match(/^(search|find|show|look)\s+(for\s+)?(.+)/i);
-    if (sm && sm[3]) {
-      window.location.href = '/search?q=' + encodeURIComponent(sm[3].trim());
+    // Search — only exact match patterns, no conversational ambiguitiy
+    const sm = t.match(/^search\s+(for\s+)?(.+)/i);
+    if (sm && sm[2]) {
+      window.location.href = '/search?q=' + encodeURIComponent(sm[2].trim());
       return true;
     }
     return false;
@@ -3084,9 +3083,9 @@
       try { localStorage.setItem('_wa_conv', JSON.stringify(S.conversation)); } catch (e) {}
     }
 
-    // In Voice Navigation mode when chatbox is closed, do not append text bubbles into the chatbox panel.
-    // Responses are spoken via audio, and actions move the storefront page directly.
+    // In Voice Navigation mode when chatbox is closed, show toast fallback for bot messages
     if (S.mode === 'voice_nav' && !S.open) {
+      if (who === 'bot' && text && text.length < 120) showToast(text);
       return null;
     }
 
@@ -4051,8 +4050,7 @@
           const msg = JSON.parse(event.data);
 
           if (msg.type === 'ui_action' && msg.action) {
-            // Render product cards, cart updates, etc. — same pipeline as HTTP mode
-            processAction(msg.action).catch(() => {});
+            processAction(msg.action).catch(e => console.warn('[WooAgent A2A] ui_action failed:', msg.action?.type, e));
           }
 
           // ── [1] Barge-in: backend detected user interruption ──────────
@@ -5250,7 +5248,22 @@
     const acts = _arr(inner.ui_actions, inner.actions, inner.actions_taken,
                       data.ui_actions,  data.actions,  data.actions_taken);
 
+    // Fallback: search all nesting levels for any actions field
     const textVal = inner.text || inner.response_text || data.text || data.response_text || '';
+    if (!acts.length && !textVal) {
+      const deep = (obj) => {
+        if (!obj || typeof obj !== 'object') return [];
+        if (Array.isArray(obj.ui_actions) && obj.ui_actions.length) return obj.ui_actions;
+        if (Array.isArray(obj.actions) && obj.actions.length) return obj.actions;
+        if (Array.isArray(obj.actions_taken) && obj.actions_taken.length) return obj.actions_taken;
+        for (const v of Object.values(obj)) {
+          if (v && typeof v === 'object') { const r = deep(v); if (r.length) return r; }
+        }
+        return [];
+      };
+      const fallback = deep(raw);
+      if (fallback.length) return { ...raw, ui_actions: fallback, actions: fallback, suggested_replies: _arr(inner.suggested_replies, data.suggested_replies) };
+    }
 
     return {
       session_id:      inner.session_id   || data.session_id   || S.sessionId,

@@ -78,7 +78,7 @@ def extract_ui_actions(actions_taken: list) -> list:
             if result.get("success"):
                 ui_actions.append({
                     "type": "redirect",
-                    "payload": {"url": result.get("checkout_url")},
+                    "payload": {"url": result.get("checkout_url"), "reason": "checkout"},
                 })
 
     return ui_actions
