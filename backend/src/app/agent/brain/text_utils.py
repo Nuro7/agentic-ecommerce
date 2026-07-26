@@ -140,16 +140,45 @@ def append_live_navigation(
             _push(purl, "product")
             return
 
+    # Multiple products shown → redirect to the storefront search page
+    # with a normalized (conversational filler removed) query.
+    nav_query = normalize_discovery_query(query) if isinstance(products, list) and len(products) > 1 else query
+    if nav_query:
+        search_url = storefront_search_url(base_url, platform, nav_query)
+        if search_url:
+            _push(search_url, "search", nav_query)
+            return
+
 
 # ── Query normalisation ───────────────────────────────────────────────────────
 
 def normalize_discovery_query(message: str) -> str:
     cleaned = re.sub(
-        r"\b(show|find|search|products?|items?|available|availability|compare|cart|checkout|please|i need|i want|looking for|list|what are|that|this|those|these|the|a|an|give me|get me|want|is|are|do|does|can|have|has|there|any|which|tell|me|about|you|in|stock|check|do you|looking|for|what|which|see|any|some)\b",
-        " ",
-        message.lower(),
+        r"\b(?:"
+        r"show|find|search|products?|items?|available|availability|"
+        r"compare|cart|checkout|please|l(?:oo)?king\s+for|"
+        r"list|that|this|those|these|the|a|an|"
+        r"want|is|are|do|does|can|have|has|there|any|which|tell|me|about|"
+        r"you|in|stock|check|for|what|see|some|my|your|his|"
+        r"her|our|their|its|brother|sister|mother|father|friend|wife|husband|"
+        r"son|daughter|birthday|anniversary|wedding|party|gift|present|"
+        r"surprise|tomorrow|today|yesterday|need|would|could|should|will|"
+        r"shall|may|might|must|just|only|also|very|really|quite|all|both|"
+        r"each|every|no|nor|not|none|neither|either|with|without|from|into|"
+        r"onto|upon|than|then|now|here|there|where|when|why|how|well|too|"
+        r"such|as|at|by|to|of|on|off|up|down|out|over|under|again|further|"
+        r"once|which|while|who|whom|what|whether|because|since|after|before|"
+        r"until|during|through|between|among|across|behind|beyond|within|"
+        r"along|around|about|above|below|near|past|toward|towards|via|"
+        r"without|worth|yet|so|but|or|and|nor|if|though|although|unless|"
+        r"except|thanks|thank|he|she|it|we|they|him|them|office|home|"
+        r"house|work|school|college|i|i'd|i'll|i'm|ive|im|id|ill"
+        r")\b",
+        " ", message.lower()
     )
-    cleaned = re.sub(r"\b(under|below|less than|above|over|more than)\s*\d+(?:\.\d+)?\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:under|below|less\s+than|above|over|more\s+than|upto|up\s+to)\s+\d+(?:\.\d+)?\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?)\s*\d+(?:\.\d+)?\b", " ", cleaned)
+    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?)\b", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
