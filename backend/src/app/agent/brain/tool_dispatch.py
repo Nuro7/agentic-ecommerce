@@ -128,8 +128,6 @@ async def execute_tool_call(
 
         actions.append({"type": "show_products", "payload": {"products": products}})
         product_ids = [p.get("id") for p in products if p.get("id")]
-        if products:
-            await session_service.save_meta(tenant_id, session_id, {"last_products": products[:8]})
         compact = [
             {"id": p.get("id"), "name": p.get("name"), "price": p.get("price"), "in_stock": p.get("in_stock")}
             for p in products
@@ -155,11 +153,6 @@ async def execute_tool_call(
         if product.get("id"):
             product_ids.append(product.get("id"))
         actions.append({"type": "show_product_detail", "payload": {"product": product}})
-        if product.get("id"):
-            existing = await session_service.get_meta(tenant_id, session_id)
-            last = existing.get("last_products", [])
-            last = [product] + [p for p in last if (p.get("id") if isinstance(p, dict) else p) != product["id"]]
-            await session_service.save_meta(tenant_id, session_id, {"last_products": last[:8]})
         return {"product": product}, actions, product_ids, None
 
     if tool_name == "check_inventory":

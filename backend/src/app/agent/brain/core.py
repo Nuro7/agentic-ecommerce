@@ -1,7 +1,7 @@
 """
-Consolidated brain decision layer — shared entry point for all voice pipelines.
+Consolidated brain decision layer â€” shared entry point for all voice pipelines.
 
-Both Pipeline A (Gemini Live → ask_brain tool) and Pipeline B (Groq STT → Brain)
+Both Pipeline A (Gemini Live â†’ ask_brain tool) and Pipeline B (Groq STT â†’ Brain)
 call orchestrator.run(), which delegates here. This is the single authoritative
 implementation of the full shopping-brain pipeline.
 
@@ -10,18 +10,18 @@ Entry point:  ask_brain(*, session_id, user_message, ..., store_client, session_
 Pipeline (9 steps):
   1. Input sanitisation + input guardrail
   2. Parallel pre-processing  (asyncio.gather):
-       • Intent classify   (Groq LLaMA, ~50 ms)
-       • Session load      (Redis, ~5 ms)
-       • Session meta load (Redis, ~5 ms)
+       â€¢ Intent classify   (Groq LLaMA, ~50 ms)
+       â€¢ Session load      (Redis, ~5 ms)
+       â€¢ Session meta load (Redis, ~5 ms)
   3. Language resolution  (detected vs. saved)
-  4. Cart fetch           (live store → Redis fallback)
+  4. Cart fetch           (live store â†’ Redis fallback)
   5. Intent routing:
-       OFF_TOPIC  → guardrail rejection
-       CHITCHAT   → cached canned response
-       STORE_INFO / CART_ACTION / policy intents → fast deterministic handler
-       SEARCH / PRODUCT_DETAIL / INVENTORY → retrieval pre-fetch → LLM agent
+       OFF_TOPIC  â†’ guardrail rejection
+       CHITCHAT   â†’ cached canned response
+       STORE_INFO / CART_ACTION / policy intents â†’ fast deterministic handler
+       SEARCH / PRODUCT_DETAIL / INVENTORY â†’ retrieval pre-fetch â†’ LLM agent
   6. Post-processing      (strip markup, cap sentences, extract suggestions)
-  7. Output guardrail     (hallucination check → stricter-prompt retry)
+  7. Output guardrail     (hallucination check â†’ stricter-prompt retry)
   8. Schema validation    (AgentResponse Pydantic)
   9. Session persistence + telemetry
 """
@@ -74,7 +74,7 @@ from .text_utils import (
 
 logger = logging.getLogger(__name__)
 
-# ── Module-level catalog cache ────────────────────────────────────────────────
+# â”€â”€ Module-level catalog cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Keyed by a STABLE per-tenant store identifier (not id(), which churns every
 # time the per-tenant client cache rebuilds a client and can be reused after GC).
 # Bounded so a many-tenant worker can't grow it without limit.
@@ -83,10 +83,10 @@ _CATALOG_TTL = 300.0  # 5 minutes
 _CATALOG_MAX_ENTRIES = 500
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # A non-English language locks the session immediately, but it must DECAY back to
-# English over several clean-English turns — a single English turn doesn't flip it
+# English over several clean-English turns â€” a single English turn doesn't flip it
 # (avoids flip-flop), and one stray non-English turn doesn't lock it forever.
 _ENGLISH_RESET_STREAK = 3
 
@@ -114,7 +114,7 @@ def _store_key(store_client: Any) -> str:
 
 # Tokens that make up a "truly generic" browse request ("what do you have",
 # "show me everything", "what products do you sell"). A query is generic ONLY if
-# every content token is in this set — otherwise it names something specific
+# every content token is in this set â€” otherwise it names something specific
 # (e.g. "watches") and a zero-result search must hard-stop, not reach the LLM.
 _GENERIC_BROWSE_TOKENS = frozenset({
     "what", "which", "show", "list", "see", "tell", "give", "me", "us", "do",
@@ -144,7 +144,7 @@ _AFFIRMATIVE_TOKENS = frozenset({
 
 def _is_affirmative_followup(message: str, history: Any) -> bool:
     """True when `message` is a bare affirmative/negative AND the assistant's last
-    turn ended with a question/offer — i.e. a continuation, not cold-start chitchat."""
+    turn ended with a question/offer â€” i.e. a continuation, not cold-start chitchat."""
     tokens = [t for t in re.findall(r"[a-z]+", message.lower()) if t]
     if not tokens or len(tokens) > 4:
         return False
@@ -160,7 +160,7 @@ def _is_affirmative_followup(message: str, history: Any) -> bool:
 
 def _is_continuation_reply(message: str, history: Any) -> bool:
     """True when a SHORT message arrives mid-conversation (the assistant has already
-    spoken). Such a message — a name ("John"), a number ("38"), a phone — is an ANSWER
+    spoken). Such a message â€” a name ("John"), a number ("38"), a phone â€” is an ANSWER
     to the prior turn, not a cold-start greeting, even though the classifier labels it
     CHITCHAT. Route it to the LLM (which has the history) instead of the canned greeting.
 
@@ -173,7 +173,7 @@ def _is_continuation_reply(message: str, history: Any) -> bool:
     )
     if not has_prior_assistant:
         return False
-    # Short, answer-like message — the kind the classifier mislabels as CHITCHAT.
+    # Short, answer-like message â€” the kind the classifier mislabels as CHITCHAT.
     return len(message.split()) <= 6
 
 
@@ -210,9 +210,9 @@ async def _get_store_catalog(tenant_id: str, store_client: Any) -> str:
 
         # ANTI-HALLUCINATION: do NOT inject specific product names or prices here.
         # The model would paraphrase/combine them into fake variants ("iPhone 13" +
-        # "blue" → "iPhone 13 Blue Edition") and misattribute a real price to the
+        # "blue" â†’ "iPhone 13 Blue Edition") and misattribute a real price to the
         # wrong product. It must call search_products to learn any name. We only
-        # surface a count + a sale signal — never a name.
+        # surface a count + a sale signal â€” never a name.
         try:
             sample = await store_client.search_products(query="", in_stock_only=False, limit=10)
             if sample:
@@ -253,7 +253,7 @@ async def _run_retrieval(
         if db_session_factory is not None:
             db = db_session_factory()
     except Exception as e:
-        # Falling back to Redis-only search silently hid DB outages — surface it.
+        # Falling back to Redis-only search silently hid DB outages â€” surface it.
         logger.warning("Retrieval DB session factory failed, using Redis-only search: %s", e)
     try:
         return await hybrid_search(
@@ -279,7 +279,7 @@ async def _extract_search_query(
     """Use a fast LLM call to extract the core search query from verbose natural language.
 
     "My husband's birthday is tomorrow, I need formal shoes as a gift"
-    → "formal shoes"
+    â†’ "formal shoes"
 
     Returns the extracted query, or empty string if extraction fails/not needed.
     """
@@ -339,7 +339,7 @@ async def _fetch_cart(
     store_client: Any,
     session_service: Any,
 ) -> Dict[str, Any]:
-    """Return cart dict: prefer cart_context → live store → Redis cache → empty."""
+    """Return cart dict: prefer cart_context â†’ live store â†’ Redis cache â†’ empty."""
     if cart_context and isinstance(cart_context, dict) and cart_context.get("items"):
         return cart_context
     try:
@@ -351,10 +351,10 @@ async def _fetch_cart(
         cart = await session_service.get_cart(tenant_id, session_id)
         if cart and not cart.get("is_empty", True):
             return cart
-        return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
+        return {"is_empty": True, "items": [], "total": "â‚¹0", "item_count": 0}
 
 
-# ── Main entry point ──────────────────────────────────────────────────────────
+# â”€â”€ Main entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def ask_brain(
     *,
@@ -370,7 +370,7 @@ async def ask_brain(
     db_session_factory: Any = None,
 ) -> Dict[str, Any]:
     """
-    Full brain decision pipeline — shared by AgentOrchestrator and both voice pipelines.
+    Full brain decision pipeline â€” shared by AgentOrchestrator and both voice pipelines.
 
     Returns a dict with keys:
       session_id, text, response_text, speech_text, language,
@@ -385,13 +385,13 @@ async def ask_brain(
     tenant_id = str(store_context.get("tenant_id") or DEV_TENANT_ID)
 
     # Reinforce RLS scoping for the agent's OWN db sessions (e.g. hybrid_search opens
-    # its own AsyncSessionLocal). Only when a REAL tenant id is present — never the
+    # its own AsyncSessionLocal). Only when a REAL tenant id is present â€” never the
     # dev sentinel, which matches no DB rows and would hide the whole catalog.
     _real_tid = store_context.get("tenant_id")
     if _real_tid:
         set_request_tenant(str(_real_tid))
 
-    # Per-turn trace — one structured line per turn so latency/route/cache are
+    # Per-turn trace â€” one structured line per turn so latency/route/cache are
     # observable. Without this the same input looks fast/slow/silent for no
     # visible reason (the "unpredictable" complaint).
     turn_id = uuid.uuid4().hex[:8]
@@ -399,16 +399,16 @@ async def ask_brain(
     degraded = False
 
     logger.info("")
-    logger.info("╔══════════════════════════════════════════════════════════╗")
-    logger.info("║ [TRACE] ask_brain ENTER  turn=%s  session=%s  ║", turn_id, session_id)
-    logger.info("╚══════════════════════════════════════════════════════════╝")
+    logger.info("â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—")
+    logger.info("â•‘ [TRACE] ask_brain ENTER  turn=%s  session=%s  â•‘", turn_id, session_id)
+    logger.info("â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•")
     logger.info("[TRACE] tenant=%s lang=%s", tenant_id, language)
     logger.info("[TRACE] RAW user_message: %s", user_message)
     logger.info("[TRACE] store_context: %s", json.dumps(store_context, default=str))
     logger.info("[TRACE] page_context: %s", json.dumps(page_context, default=str))
     logger.info("[TRACE] cart_context: %s", json.dumps(cart_context, default=str) if cart_context else "None")
 
-    # ── Step 1: Input sanitisation + guardrail ────────────────────────────────
+    # â”€â”€ Step 1: Input sanitisation + guardrail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     cleaned_message = sanitize_text(user_message or "", max_len=500)
     try:
         cleaned_message = check_input(cleaned_message)
@@ -425,7 +425,7 @@ async def ask_brain(
 
     logger.info("[TRACE] Step1 input_guardrail: sanitized=%s", bool(cleaned_message))
 
-    # ── Step 2: Parallel pre-processing ──────────────────────────────────────
+    # â”€â”€ Step 2: Parallel pre-processing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     detected_lang = detect_language(cleaned_message)
 
     gather_results = await asyncio.gather(
@@ -469,8 +469,8 @@ async def ask_brain(
     logger.info("[TRACE] Step2 session: history=%d turns last_products=%d names=%s",
         len(history), len(last_products or []), _names if _names else "[]")
 
-    # ── Step 3: Language resolution (with English-decay so a stray non-English
-    # transcript can't lock the session forever) ──────────────────────────────
+    # â”€â”€ Step 3: Language resolution (with English-decay so a stray non-English
+    # transcript can't lock the session forever) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     prev_lang = session_meta.get("language", "en") if isinstance(session_meta, dict) else "en"
     prev_streak = session_meta.get("en_streak", 0) if isinstance(session_meta, dict) else 0
     lang, en_streak = _resolve_language(detected_lang, prev_lang, prev_streak)
@@ -482,7 +482,7 @@ async def ask_brain(
         intent_result.intent, intent_result.confidence, intent_result.via,
         lang, len(history), len(last_products), session_id)
 
-    # ── Step 4: Cart fetch ────────────────────────────────────────────────────
+    # â”€â”€ Step 4: Cart fetch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     cart = await _fetch_cart(tenant_id, session_id, cart_context, store_client, session_service)
     logger.info("[FLOW] brain step4 cart items=%d total=%s session=%s",
         cart.get("item_count") or cart.get("count") or 0,
@@ -497,14 +497,14 @@ async def ask_brain(
     cart_for_prompt = {
         "is_empty": (int(cart.get("item_count") or cart.get("count") or 0) == 0),
         "item_count": int(cart.get("item_count") or cart.get("count") or 0),
-        "total": str(cart.get("total") or "₹0"),
+        "total": str(cart.get("total") or "â‚¹0"),
         "items": cart.get("items") or [],
     }
 
     result: Optional[Dict[str, Any]] = None
     lower_msg = cleaned_message.lower()
 
-    # ── Step 5: Intent routing ────────────────────────────────────────────────
+    # â”€â”€ Step 5: Intent routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     logger.info("[FLOW] brain step5 intent_routing ENTER intent=%s session=%s", intent_result.intent, session_id)
     if intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
         result = off_topic_response(lang)
@@ -512,13 +512,13 @@ async def ask_brain(
     elif intent_result.intent == CHITCHAT and intent_result.confidence >= 0.75:
         # A bare "yes/ok/sure" right after the assistant ASKED a question/offer is a
         # continuation, not cold-start chitchat. Don't short-circuit to the canned
-        # greeting — fall through so the LLM (which gets the history) can act on the
-        # offer ("Want me to search the home page?" → "yes" → it searches).
+        # greeting â€” fall through so the LLM (which gets the history) can act on the
+        # offer ("Want me to search the home page?" â†’ "yes" â†’ it searches).
         # Likewise, any SHORT reply mid-conversation (a name/number/phone the classifier
-        # mislabels as CHITCHAT) is an answer to the last turn — let the LLM continue
+        # mislabels as CHITCHAT) is an answer to the last turn â€” let the LLM continue
         # with history instead of resetting to a greeting. Empty history still greets.
         if _is_affirmative_followup(cleaned_message, history) or _is_continuation_reply(cleaned_message, history):
-            pass  # result stays None → LLM path handles it with conversation history
+            pass  # result stays None â†’ LLM path handles it with conversation history
         else:
             result = chitchat_response(lang, session_id)
 
@@ -541,9 +541,9 @@ async def ask_brain(
         except Exception as exc:
             logger.warning("Fast-intent pre-LLM failed: %s", exc)
 
-    # ── Store-not-connected guard ─────────────────────────────────────────────
+    # â”€â”€ Store-not-connected guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # If this tenant has no usable Shopify token (domain present but Storefront AND
-    # Admin tokens empty — e.g. install never finished), every product path will
+    # Admin tokens empty â€” e.g. install never finished), every product path will
     # fail. Say so plainly instead of letting the LLM invent products. Fires only
     # for product-related requests; chit-chat / store-info still work.
     if (
@@ -555,16 +555,16 @@ async def ask_brain(
         )
     ):
         logger.warning(
-            "Store not connected (no usable token) — returning not-connected reply for tenant=%s",
+            "Store not connected (no usable token) â€” returning not-connected reply for tenant=%s",
             store_context.get("tenant_id"),
         )
         result = _not_connected_result(lang)
 
-    # ── Retrieval pre-fetch (for search / detail / inventory) ─────────────────
+    # â”€â”€ Retrieval pre-fetch (for search / detail / inventory) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # retrieval_ran: True only when the DB call completed without exception.
-    # retrieval_found: True when the call ran AND returned ≥1 product.
+    # retrieval_found: True when the call ran AND returned â‰¥1 product.
     # We distinguish the two so that a DB/Redis outage does NOT fire the hard
-    # stop — the LLM should still get a chance using session history.
+    # stop â€” the LLM should still get a chance using session history.
     retrieval_ran = False
     retrieval_found = False
     _search_query = cleaned_message  # default: use cleaned_message
@@ -577,7 +577,7 @@ async def ask_brain(
             if extracted:
                 _search_query = extracted
                 logger.info(
-                    "Extracted search query: '%s' ← original: %.80s",
+                    "Extracted search query: '%s' â† original: %.80s",
                     _search_query, cleaned_message,
                 )
         try:
@@ -588,7 +588,7 @@ async def ask_brain(
                 redis=redis,
                 db_session_factory=db_session_factory,
             )
-            retrieval_ran = True  # call completed — result may be empty list
+            retrieval_ran = True  # call completed â€” result may be empty list
             if retrieval_results:
                 retrieval_found = True
                 last_products = [
@@ -615,17 +615,17 @@ async def ask_brain(
                     intent_result.intent, _search_query[:40],
                 )
                 # A NEW search that found nothing must NOT leave the previous
-                # query's products in context — the LLM would offer them as if
+                # query's products in context â€” the LLM would offer them as if
                 # they matched (a hallucination vector). Clear stale products so
                 # the hard stop below fires deterministically.
                 if intent_result.intent == SEARCH:
                     last_products = []
         except Exception as exc:
             logger.warning("Retrieval pre-fetch failed (non-fatal): %s", exc)
-            # retrieval_ran stays False — hard stop must NOT fire on infra errors
+            # retrieval_ran stays False â€” hard stop must NOT fire on infra errors
 
     # Hard stop: retrieval ran successfully, confirmed zero results, and the
-    # session has no prior products to fall back on → return the deterministic
+    # session has no prior products to fall back on â†’ return the deterministic
     # "no products" message instead of letting the LLM free-form (and invent).
     # Exception: ONLY truly generic browse queries ("what do you have", "what do
     # you sell") pass through so the LLM can list everything. A query naming a
@@ -637,7 +637,7 @@ async def ask_brain(
         and not last_products
         and not _is_generic_browse(cleaned_message)
     ):
-        # Heavy-typo / keyboard-mash input ("asdfgh", "zxcvbnm") → warm "didn't
+        # Heavy-typo / keyboard-mash input ("asdfgh", "zxcvbnm") â†’ warm "didn't
         # catch that" reply asking to rephrase, instead of a blank "no products".
         # A query with any real word ("gshk watch") is handled by search, not here.
         if _looks_unintelligible(cleaned_message):
@@ -648,18 +648,18 @@ async def ask_brain(
             result = _no_products_result(lang)
     else:
         if retrieval_found:
-            logger.info("[TRACE] Step5 hard_stop: SKIP — retrieval found %d products", len(last_products))
+            logger.info("[TRACE] Step5 hard_stop: SKIP â€” retrieval found %d products", len(last_products))
         elif retrieval_ran:
-            logger.info("[TRACE] Step5 hard_stop: SKIP — generic browse or session has %d old products", len(last_products))
+            logger.info("[TRACE] Step5 hard_stop: SKIP â€” generic browse or session has %d old products", len(last_products))
 
-    # ── Fast specific handlers (pre-LLM, keyword + intent matched) ───────────
+    # â”€â”€ Fast specific handlers (pre-LLM, keyword + intent matched) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # These deterministic handlers short-circuit the LLM for well-defined
     # patterns where a direct store API call gives the right answer.
     if result is None:
         _order_kw = ("my order", "order status", "track my", "where is my order", "order number", "order tracking")
         _compare_kw = ("compare", " vs ", " versus ", "difference between", "which is better", "which one is")
         _buy_kw = ("i want to buy", "i want to get", "buy me", "get me a", "i'd like to buy", "i'll take", "purchase a")
-        _add_kw = ("add to cart", "add it to cart", "put in cart", "add one", "add two", "add three", "add to bag", "take that", "take this", "that one", "this one", "that product", "this product", "take it")
+        _add_kw = ("add to cart", "add it to cart", "put in cart", "add one", "add two", "add three", "add to bag")
 
         if any(kw in lower_msg for kw in _order_kw):
             try:
@@ -688,7 +688,7 @@ async def ask_brain(
             except Exception as exc:
                 logger.warning("handle_availability failed: %s", exc)
 
-        if result is None and any(kw in lower_msg for kw in _add_kw):
+        if result is None and (any(kw in lower_msg for kw in _add_kw) or intent_result.intent == CART_ACTION):
             try:
                 result = await handle_add_to_cart(
                     cleaned_message, lower_msg, session_id, last_products, lang,
@@ -708,7 +708,7 @@ async def ask_brain(
 
     logger.info("[FLOW] brain step5 result_pre_llm=%s session=%s", "cached" if result else "None", session_id)
 
-    # ── Primary: LLM agent ────────────────────────────────────────────────────
+    # â”€â”€ Primary: LLM agent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _llm_resp = None
 
     if result is None and ANY_LLM_AVAILABLE:
@@ -722,17 +722,17 @@ async def ask_brain(
             (cart_for_prompt or {}).get("item_count", 0),
             lang)
         try:
-            # Retrieval errored (infra down) + no session history → LLM has nothing
+            # Retrieval errored (infra down) + no session history â†’ LLM has nothing
             # grounded. Override store_catalog to mandate a live tool call instead of
             # guessing. The string flows into catalog_section of the system prompt via
-            # build_system_prompt — no new parameters needed.
+            # build_system_prompt â€” no new parameters needed.
             if (
                 not retrieval_ran
                 and not last_products
                 and intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY)
             ):
                 logger.warning(
-                    "Retrieval unavailable and no session products — "
+                    "Retrieval unavailable and no session products â€” "
                     "mandating live API tool call: session=%s intent=%s",
                     session_id, intent_result.intent,
                 )
@@ -773,7 +773,7 @@ async def ask_brain(
     else:
         logger.info("[TRACE] Step6 llm_agent: skipped or overridden by fast path")
 
-    # ── Fallback 1: fast-intent ───────────────────────────────────────────────
+    # â”€â”€ Fallback 1: fast-intent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if result is None:
         degraded = True
         logger.info("[FLOW] brain fallback1 fast_intent ENTER session=%s", session_id)
@@ -787,7 +787,7 @@ async def ask_brain(
         except Exception as exc:
             logger.warning("[turn %s] Fast-intent fallback failed: %s", turn_id, exc)
 
-    # ── Fallback 2: product discovery ────────────────────────────────────────
+    # â”€â”€ Fallback 2: product discovery â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if result is None:
         logger.info("[FLOW] brain fallback2 product_discovery ENTER session=%s", session_id)
         try:
@@ -803,7 +803,7 @@ async def ask_brain(
         result = _help_fallback_result(lang)
         logger.info("[FLOW] brain fallback3 help_fallback session=%s", session_id)
 
-    # ── Step 6: Post-processing ───────────────────────────────────────────────
+    # â”€â”€ Step 6: Post-processing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     response_text = str(
         result.get("response_text") or "I can help with products, cart, and checkout."
     ).strip()
@@ -813,9 +813,9 @@ async def ask_brain(
         else result.get("actions", [])
     )
 
-    # ── Live Shopping Navigator ───────────────────────────────────────────────
+    # â”€â”€ Live Shopping Navigator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Drive the real storefront to match the answer (search page / product page /
-    # cart). Additive — inline cards still render; the widget's live_navigation
+    # cart). Additive â€” inline cards still render; the widget's live_navigation
     # flag decides whether to actually navigate. Never breaks a turn.
     try:
         append_live_navigation(
@@ -845,7 +845,7 @@ async def ask_brain(
     logger.info("[TRACE] Step6 post_process: raw='%.150s' caps=%d actions=%d",
         response_text[:150], len(response_text), len(ui_actions))
 
-    # ── Step 7: Output guardrail ──────────────────────────────────────────────
+    # â”€â”€ Step 7: Output guardrail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     retrieved_ids: Set[str] = set()
     retrieved_prices: Set[str] = set()
     retrieved_names: Set[str] = set()
@@ -859,7 +859,7 @@ async def ask_brain(
         # P1-9: also ground against products from MEMORY (session last_products +
         # facts last_product_*), so a memory-only answer (no fresh search this turn)
         # is still validated instead of skipped. Tokens feed retrieved_names (model
-        # check); whole names feed retrieved_full_names (digit-free fuzzy) — kept apart.
+        # check); whole names feed retrieved_full_names (digit-free fuzzy) â€” kept apart.
         def _add_mem_name(nm: Any) -> None:
             nm = str(nm or "").strip().lower()
             if not nm:
@@ -908,13 +908,13 @@ async def ask_brain(
             user_query=cleaned_message,
         )
     except OutputValidationError:
-        # Unexpected: allow_retry=False means check_output never raises — this
+        # Unexpected: allow_retry=False means check_output never raises â€” this
         # branch is a safety net only. Logged inside check_output already.
         pass
     except Exception as exc:
         logger.debug("Output guardrail skipped: %s", exc)
 
-    # ── Step 8: Schema validation ─────────────────────────────────────────────
+    # â”€â”€ Step 8: Schema validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try:
         validated = AgentResponse.model_validate({
             "response_text": response_text,
@@ -940,7 +940,7 @@ async def ask_brain(
     logger.info("[TRACE] Step8 final: last_products=%d route=%s",
         len(last_products or []), result.get("llm_route", "unknown") if result else "none")
 
-    # ── Step 9: Session persistence + telemetry ───────────────────────────────
+    # â”€â”€ Step 9: Session persistence + telemetry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     updated_history = (history if isinstance(history, list) else [])[-28:]
     updated_history.extend([
         {"role": "user", "content": cleaned_message},
@@ -967,7 +967,7 @@ async def ask_brain(
 
     try:
         cart_value = float(
-            str(cart.get("total") or "0").replace("₹", "").replace(",", "").strip() or "0"
+            str(cart.get("total") or "0").replace("â‚¹", "").replace(",", "").strip() or "0"
         )
         checkout_reached = any(
             a.get("type") in ("redirect_checkout", "redirect_checkout_with_address")
@@ -986,7 +986,7 @@ async def ask_brain(
     except Exception as exc:
         logger.debug("BetaLogger record failed (non-critical): %s", exc)
 
-    # ── Per-turn trace — ONE structured line per turn ─────────────────────────
+    # â”€â”€ Per-turn trace â€” ONE structured line per turn â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     elapsed_ms = (time.monotonic() - t_start) * 1000
     logger.info(
         "[turn %s] intent=%s via=%s lang=%s route=%s retrieval=%s tools=%d "
@@ -1016,7 +1016,7 @@ async def ask_brain(
     }
 
 
-# ── Private response builders ─────────────────────────────────────────────────
+# â”€â”€ Private response builders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _help_fallback_result(lang: str) -> Dict[str, Any]:
     """Language-aware last-resort response when every handler tier returned None."""
@@ -1056,7 +1056,7 @@ def _no_products_result(lang: str) -> Dict[str, Any]:
 
 
 def _not_connected_result(lang: str) -> Dict[str, Any]:
-    """Deterministic reply when the store has no usable Shopify token — so Aria says
+    """Deterministic reply when the store has no usable Shopify token â€” so Aria says
     the store isn't connected instead of letting the LLM hallucinate products."""
     _texts = {
         "en": "This store isn't fully connected yet, so I can't load live products right now. (Store owner: please re-install Speako to finish setup.)",
@@ -1086,13 +1086,13 @@ _GIBBERISH_STOP = {
 
 def _word_is_gibberish(w: str) -> bool:
     """Heuristic: a single token looks like keyboard-mash / heavy typo, not a word.
-    Conservative — only fires on clearly unpronounceable strings."""
+    Conservative â€” only fires on clearly unpronounceable strings."""
     if len(w) < 4 or not w.isalpha():
         return False  # short tokens & anything with digits/hyphens are NOT judged
     vowels = sum(1 for ch in w if ch in "aeiou")
     if vowels == 0:
-        return True  # no vowel in a 4+ letter run → "gshk", "zxcv", "qwrt"
-    # A long consonant run (≥5) reads as mashing even with a stray vowel.
+        return True  # no vowel in a 4+ letter run â†’ "gshk", "zxcv", "qwrt"
+    # A long consonant run (â‰¥5) reads as mashing even with a stray vowel.
     run = 0
     for ch in w:
         run = run + 1 if ch not in "aeiou" else 0
@@ -1102,7 +1102,7 @@ def _word_is_gibberish(w: str) -> bool:
 
 
 def _looks_unintelligible(query: str) -> bool:
-    """True only when EVERY content token looks like gibberish — so "gshk watch"
+    """True only when EVERY content token looks like gibberish â€” so "gshk watch"
     (one real word) is NOT flagged, but "asdfgh zxcvb" is. Used to reply warmly
     asking the user to rephrase instead of a blank "no products"."""
     tokens = [
@@ -1117,13 +1117,13 @@ def _looks_unintelligible(query: str) -> bool:
 def _unintelligible_result(lang: str) -> Dict[str, Any]:
     """Warm 'didn't catch that' reply for unreadable / heavy-typo input."""
     _texts = {
-        "en": "Hmm, I didn't quite catch that 😅 — could you tell me the product, brand, or type you're after? You can also try spelling it again.",
-        "hi": "Hmm, mujhe theek se samajh nahi aaya 😅 — aap kaunsa product, brand ya type dhundh rahe hain? Aap dobara likh kar bhi try kar sakte hain.",
-        "ml": "Hmm, enikku athu shariyayi manassilayilla 😅 — ningal ethu product, brand, allengil type aanu thedunnathu? Veendum type cheythu nokkaam.",
-        "ta": "Hmm, enakku sariyaa puriyala 😅 — neenga endha product, brand, illa type thedureenga? Marubadiyum type panni paarkalaam.",
-        "te": "Hmm, naaku sariga ardham kaaledu 😅 — meeru e product, brand, leda type kosam chusthunnaru? Malli type chesi try cheyandi.",
-        "bn": "Hmm, thik bujhte parlam na 😅 — apni kon product, brand ba type khujchen? Aabar likhe try korte paren.",
-        "kn": "Hmm, sariyaagi arthavaagalilla 😅 — neevu yaava product, brand, athava type hudukuttiddeera? Matte type maadi nodi.",
+        "en": "Hmm, I didn't quite catch that ðŸ˜… â€” could you tell me the product, brand, or type you're after? You can also try spelling it again.",
+        "hi": "Hmm, mujhe theek se samajh nahi aaya ðŸ˜… â€” aap kaunsa product, brand ya type dhundh rahe hain? Aap dobara likh kar bhi try kar sakte hain.",
+        "ml": "Hmm, enikku athu shariyayi manassilayilla ðŸ˜… â€” ningal ethu product, brand, allengil type aanu thedunnathu? Veendum type cheythu nokkaam.",
+        "ta": "Hmm, enakku sariyaa puriyala ðŸ˜… â€” neenga endha product, brand, illa type thedureenga? Marubadiyum type panni paarkalaam.",
+        "te": "Hmm, naaku sariga ardham kaaledu ðŸ˜… â€” meeru e product, brand, leda type kosam chusthunnaru? Malli type chesi try cheyandi.",
+        "bn": "Hmm, thik bujhte parlam na ðŸ˜… â€” apni kon product, brand ba type khujchen? Aabar likhe try korte paren.",
+        "kn": "Hmm, sariyaagi arthavaagalilla ðŸ˜… â€” neevu yaava product, brand, athava type hudukuttiddeera? Matte type maadi nodi.",
     }
     return {
         "response_text": _texts.get(lang, _texts["en"]),

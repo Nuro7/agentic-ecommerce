@@ -1,4 +1,4 @@
-﻿"""Shared async helper for Celery tasks.
+"""Shared async helper for Celery tasks.
 
 Every Celery task that needs to run async code calls ``run_async(coro)``
 instead of ``asyncio.run(coro)``.

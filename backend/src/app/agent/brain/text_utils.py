@@ -6,7 +6,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
-# ── Live Shopping Navigator URL helpers (pure, no I/O) ───────────────────────
+# â”€â”€ Live Shopping Navigator URL helpers (pure, no I/O) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # The assistant drives the real storefront: search page / product page / cart.
 # Base URL comes from the widget (store_context["url"]); paths are the
 # platform's universal conventions; product URLs are synced permalinks.
@@ -49,11 +49,11 @@ def append_live_navigation(
 ) -> None:
     """Append ONE `redirect` ui_action matching this turn's answer (in place).
 
-    Priority: add_to_cart → cart page; a single shown product with a permalink
-    → its product page; any shown products → the storefront search page with the
+    Priority: add_to_cart â†’ cart page; a single shown product with a permalink
+    â†’ its product page; any shown products â†’ the storefront search page with the
     normalized spoken query. Skips when a redirect/checkout action is already
     present, when the target equals the page the customer is on, or when no
-    target URL can be built. Additive only — inline cards always still render;
+    target URL can be built. Additive only â€” inline cards always still render;
     the widget's live_navigation flag decides whether to actually navigate.
     """
     if not isinstance(ui_actions, list):
@@ -105,7 +105,7 @@ def append_live_navigation(
         elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower_query):
             target_index = 2
         elif re.search(r"\b(that|this)\s*(one|product|item)?(?:\s*(?:please|thanks|thank\s*you))*\s*$", lower_query) or lower_query in ("take that", "take this", "that one", "this one", "that product", "this product"):
-            # Anaphoric reference — pick the last explicitly shown product, else the first
+            # Anaphoric reference â€” pick the last explicitly shown product, else the first
             target_index = 0
 
         if target_index is not None and len(last_products) > target_index:
@@ -136,14 +136,14 @@ def append_live_navigation(
     if not products:
         return
 
-    # Exactly one product with a permalink → its page
+    # Exactly one product with a permalink â†’ its page
     if len(products) == 1:
         purl = product_page_url(products[0])
         if purl:
             _push(purl, "product")
             return
 
-    # Multiple products shown → redirect to the storefront search page
+    # Multiple products shown â†’ redirect to the storefront search page
     # with a normalized (conversational filler removed) query.
     nav_query = normalize_discovery_query(query) if isinstance(products, list) and len(products) > 1 else query
     if nav_query:
@@ -153,7 +153,7 @@ def append_live_navigation(
             return
 
 
-# ── Query normalisation ───────────────────────────────────────────────────────
+# â”€â”€ Query normalisation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def normalize_discovery_query(message: str) -> str:
     # Strip apostrophes so contractions (i'll, i'm, etc.) don't interfere with \b
@@ -182,8 +182,8 @@ def normalize_discovery_query(message: str) -> str:
         " ", cleaned
     )
     cleaned = re.sub(r"\b(?:under|below|less\s+than|above|over|more\s+than|upto|up\s+to)\s+\d+(?:\.\d+)?\b", " ", cleaned)
-    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?)\s*\d+(?:\.\d+)?\b", " ", cleaned)
-    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?)\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|â‚¹|â‚¬|Â£|dollars?|rupees?|pounds?|euros?)\s*\d+(?:\.\d+)?\b", " ", cleaned)
+    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*(?:rs|inr|usd|\$|â‚¹|â‚¬|Â£|dollars?|rupees?|pounds?|euros?)\b", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -193,7 +193,7 @@ def normalize_availability_query(message: str) -> str:
 
 
 def extract_add_query(message: str) -> str:
-    cleaned = re.sub(r"\b(add|to|cart|please|qty|quantity|size\s*[a-z0-9.-]+|color\s*[a-z-]+|my|the|in|into|take|that|this|one|product|item)\b", " ", message.lower())
+    cleaned = re.sub(r"\b(add|to|cart|please|qty|quantity|size\s*[a-z0-9.-]+|color\s*[a-z-]+|my|the|in|into)\b", " ", message.lower())
     cleaned = re.sub(r"[\"']", " ", cleaned)
     cleaned = re.sub(r"\b\d+\b", " ", cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
@@ -215,7 +215,7 @@ def split_compare_terms(message: str) -> List[str]:
     return out[:3]
 
 
-# ── Extraction helpers ────────────────────────────────────────────────────────
+# â”€â”€ Extraction helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def extract_budget(lower: str) -> Tuple[Optional[float], Optional[float]]:
     max_match = re.search(r"(?:under|below|less than|upto|up to)\s*(\d+(?:\.\d+)?)", lower)
@@ -279,7 +279,7 @@ def speech_digits_to_ascii(text: str) -> str:
     }
     for word, digit in digit_words.items():
         value = re.sub(rf"\b{word}\b", digit, value)
-    value = value.translate(str.maketrans("०१२३४५६७८९", "0123456789"))
+    value = value.translate(str.maketrans("à¥¦à¥§à¥¨à¥©à¥ªà¥«à¥¬à¥­à¥®à¥¯", "0123456789"))
     return value
 
 
@@ -307,7 +307,7 @@ def normalize_india_state(text: str) -> str:
     return raw
 
 
-# ── Type-safe coercions ───────────────────────────────────────────────────────
+# â”€â”€ Type-safe coercions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def safe_int(value: Any, default: int = 0) -> int:
     try:
@@ -334,7 +334,7 @@ def safe_float(value: Any) -> Optional[float]:
         return None
 
 
-# ── Intent detection ──────────────────────────────────────────────────────────
+# â”€â”€ Intent detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def should_use_llm(message: str) -> bool:
     message_lower = message.lower()
@@ -389,10 +389,10 @@ def has_cart_view_intent(lower: str) -> bool:
     ]) or lower.strip() == "cart"
 
 
-# "go to cart" / "take me to the cart" / "open the cart page" → NAVIGATE the
+# "go to cart" / "take me to the cart" / "open the cart page" â†’ NAVIGATE the
 # storefront to the real cart page (not just render it inline). Kept separate
 # from has_cart_view_intent so "show my cart" still renders inline. This must be
-# checked in the brain's fast-intent gate (core.py) too — otherwise a classifier
+# checked in the brain's fast-intent gate (core.py) too â€” otherwise a classifier
 # that mislabels "go to the cart" as SEARCH sends it to product retrieval and the
 # LLM hallucinates ("I can't access the cart") instead of navigating.
 _CART_NAV_RE = re.compile(
@@ -490,7 +490,7 @@ def has_payment_intent(lower: str) -> bool:
     return any(t in lower for t in tokens)
 
 
-# ── Response building ─────────────────────────────────────────────────────────
+# â”€â”€ Response building â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def with_actions_alias(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(payload, dict):
@@ -506,7 +506,7 @@ def normalize_cart_payload(cart: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "is_empty": item_count == 0,
         "item_count": item_count,
-        "total": str(cart.get("total") or "₹0"),
+        "total": str(cart.get("total") or "â‚¹0"),
         "items": cart.get("items") or [],
     }
 
@@ -544,7 +544,7 @@ def pick_best_product_match(query: str, rows: List[Dict[str, Any]]) -> Dict[str,
     return best
 
 
-# ── LLM response text processing ─────────────────────────────────────────────
+# â”€â”€ LLM response text processing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def extract_next_suggestions(text: str) -> Tuple[List[str], str]:
     """Extract NEXT: suggestion line from LLM response."""
@@ -604,7 +604,7 @@ def summarize_actions_for_voice(actions: List[Dict[str, Any]]) -> str:
                 return f"That exact size or color isn't available for {name}. I can show you what options are available."
             if inventory.get("in_stock"):
                 qty = inventory.get("stock_quantity")
-                qty_text = f" — only {qty} left" if isinstance(qty, int) and qty > 0 else ""
+                qty_text = f" â€” only {qty} left" if isinstance(qty, int) and qty > 0 else ""
                 return f"{name} is in stock{qty_text}. Want me to add it to your cart?"
             return f"{name} is currently out of stock. Want me to show similar options?"
         if action_type == "show_variants":
@@ -616,7 +616,7 @@ def summarize_actions_for_voice(actions: List[Dict[str, Any]]) -> str:
         if action_type == "show_cart":
             cart = payload.get("cart", {}) if isinstance(payload.get("cart"), dict) else {}
             count = int(cart.get("item_count") or cart.get("count") or 0)
-            total = str(cart.get("total") or "₹0")
+            total = str(cart.get("total") or "â‚¹0")
             return f"Your cart has {count} items. Total is {total}."
         if action_type == "show_orders":
             return "I found your recent order details."
@@ -631,14 +631,14 @@ def summarize_actions_for_voice(actions: List[Dict[str, Any]]) -> str:
             if products:
                 name = str(products[0].get("name") or "")
                 price = str(products[0].get("price") or "")
-                price_text = f", ₹{price}" if price else ""
-                return f"{name}{price_text}. Take a look — let me know which one you like."
+                price_text = f", â‚¹{price}" if price else ""
+                return f"{name}{price_text}. Take a look â€” let me know which one you like."
             return "Couldn't find a match. Try a different product name or budget?"
 
     return "I completed that request. Tell me what you want to do next."
 
 
-# ── Inline function call extractor ────────────────────────────────────────────
+# â”€â”€ Inline function call extractor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _KNOWN_TOOLS = frozenset({
     "search_products", "get_product_details", "check_inventory",

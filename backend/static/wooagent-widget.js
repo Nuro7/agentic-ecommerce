@@ -1,4 +1,4 @@
-(function () {
+﻿(function () {
   'use strict';
 
   const CFG = window.wooagent_config || {
@@ -1740,8 +1740,9 @@
         current_page: {
           url: location.href,
           title: document.title,
-          product_id: detectProductId(),
-          product_name: detectProductName()
+          product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
+          product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
+          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null
         }
       });
 
@@ -2215,8 +2216,9 @@
         current_page: {
           url: location.href,
           title: document.title,
-          product_id: detectProductId(),
-          product_name: detectProductName()
+          product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
+          product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
+          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null
         }
       };
 
@@ -2810,7 +2812,6 @@
     // Matches: "add to cart", "add this to cart", "put it in cart", "buy this", etc.
     if (/(add|put)\s+(?:(?:this|it|that)\s+)?(to|in)\s+(?:my\s+)?(cart|bag)$/i.test(t) ||
         /^buy\s+(?:this|it|that)$/i.test(t) ||
-        /^(?:take|get|grab)\s+(?:this(?:\s+one)?|it|that(?:\s+one)?)$/i.test(t)) {
       const last = S.lastShownProduct;
       console.log('[WooAgent A2C] Local command matched:', t, 'lastShownProduct:', last);
       if (!last || !last.id) {
@@ -4066,8 +4067,9 @@
             page_context: {
               url: location.href,
               title: document.title,
-              product_id: typeof detectProductId === 'function' ? detectProductId() : null,
-              product_name: typeof detectProductName === 'function' ? detectProductName() : null,
+              product_id: typeof detectProductId === 'function' ? detectProductId() : (S.currentPageProduct ? S.currentPageProduct.id : null),
+              product_name: typeof detectProductName === 'function' ? detectProductName() : (S.currentPageProduct ? S.currentPageProduct.name : null),
+              product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
               interrupted_flow: interruptedFlow
             },
             cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
@@ -5384,10 +5386,36 @@
     }
   }
 
+
+  // -- Page context tracking: detect product pages on URL change --------------
+  let _lastTrackedUrl = "";
+  function initPageTracking() {
+    function detectPageProduct() {
+      if (location.href === _lastTrackedUrl) return;
+      _lastTrackedUrl = location.href;
+      const m = location.pathname.match(/\/products\/([^/?#]+)/);
+      if (!m) { S.currentPageProduct = null; return; }
+      fetch("/products/" + encodeURIComponent(m[1]) + ".js")
+        .then(function(r) { return r.json(); })
+        .then(function(p) {
+          S.currentPageProduct = { id: p.id, name: p.title, handle: p.handle, url: location.href };
+        })
+        .catch(function() {});
+    }
+    detectPageProduct();
+    var origPushState = history.pushState;
+    history.pushState = function() {
+      origPushState.apply(this, arguments);
+      detectPageProduct();
+    };
+    window.addEventListener("popstate", detectPageProduct);
+  }
+
   // Seed the real cart (badge + snapshot, no chat card) on load so the first
   // message's cart_context already reflects the customer's actual cart.
   if (IS_SHOPIFY) {
     fetchCartShopify(true).catch(() => {});
+    initPageTracking();
   }
 
   if (isCheckoutPage()) {

@@ -665,14 +665,7 @@ async def _resolve_product_for_add(
         except (TypeError, ValueError):
             return None
 
-    _anaphoric = ("add it", "add this", "add first", "yes add", "add one", "take that", "take this", "take it", "that one", "this one", "that product", "this product", "that item", "this item")
-    if any(token in lower for token in _anaphoric):
-        if last_products:
-            pid = _get_pid(last_products[0])
-            if pid:
-                detail = await store_client.get_product_details(pid)
-                return {"id": detail.get("id"), "name": detail.get("name", "Product"), "permalink": detail.get("permalink", "")}
-
+    # 1. Explicit product_id in text
     product_id_match = re.search(r"product\s*id\s*(\d+)", lower)
     if product_id_match:
         pid = int(product_id_match.group(1))
@@ -680,16 +673,21 @@ async def _resolve_product_for_add(
         if detail.get("id"):
             return {"id": detail.get("id"), "name": detail.get("name", "Product"), "permalink": detail.get("permalink", "")}
 
+    # 2. Try search — if query resolves to a product, use it
     query = extract_add_query(message)
     if query:
         matches = await store_client.search_products(query=query, in_stock_only=False, limit=6)
         if matches:
-            return pick_best_product_match(query, matches)
+            best = pick_best_product_match(query, matches)
+            if best and best.get("id"):
+                return best
 
+    # 3. No search match + last_products exists = anaphoric reference (any language)
     if last_products:
         pid = _get_pid(last_products[0])
         if pid:
             detail = await store_client.get_product_details(pid)
-            return {"id": detail.get("id"), "name": detail.get("name", "Product"), "permalink": detail.get("permalink", "")}
+            if detail.get("id"):
+                return {"id": detail.get("id"), "name": detail.get("name", "Product"), "permalink": detail.get("permalink", "")}
 
     return None

@@ -2,8 +2,8 @@
 Shopify implementation of BaseStoreClient.
 
 Uses two Shopify APIs:
-  - Storefront GraphQL API  → products, collections, cart operations
-  - Admin REST API          → orders, price rules/discounts, shop info
+  - Storefront GraphQL API  â†’ products, collections, cart operations
+  - Admin REST API          â†’ orders, price rules/discounts, shop info
 
 Required env vars:
   SHOPIFY_STORE_DOMAIN       e.g.  "mystore.myshopify.com"
@@ -32,10 +32,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_VERSION = "2024-01"
 
 
-# ── Tiny GraphQL helpers ───────────────────────────────────────────────────────
+# â”€â”€ Tiny GraphQL helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _gid_to_int(gid: str) -> int:
-    """Convert 'gid://shopify/Product/12345' → 12345."""
+    """Convert 'gid://shopify/Product/12345' â†’ 12345."""
     try:
         return int(str(gid).rsplit("/", 1)[-1])
     except Exception:
@@ -62,8 +62,8 @@ def _safe_float(value: Any) -> float:
 
 
 def _is_subsequence(a: str, b: str) -> bool:
-    """True if every char of `a` appears in `b` in order — handles dropped letters
-    so an abbreviation matches the full word ("gshk" ⊂ "gshock")."""
+    """True if every char of `a` appears in `b` in order â€” handles dropped letters
+    so an abbreviation matches the full word ("gshk" âŠ‚ "gshock")."""
     pos = 0
     for ch in b:
         if pos < len(a) and a[pos] == ch:
@@ -75,14 +75,14 @@ def _token_word_match(t: str, w: str) -> int:
     """Typo-tolerant match score between a query token and a product word.
     2 = substring (strong), 1 = subsequence/fuzzy (typo/abbrev), 0 = no match."""
     # Guard trivial short words ("g" from "G-Shock") matching any token that merely
-    # contains that letter — require ≥3 chars on the substring path.
+    # contains that letter â€” require â‰¥3 chars on the substring path.
     if len(t) >= 3 and len(w) >= 3 and (t in w or w in t):
         return 2
     if len(t) >= 4 and len(w) >= 4:
         if _is_subsequence(t, w) or _is_subsequence(w, t):
             return 1
         if difflib.SequenceMatcher(None, t, w).ratio() >= 0.75:
-            return 1  # transpositions/typos: "gshook"/"gshcok" ≈ "gshock"
+            return 1  # transpositions/typos: "gshook"/"gshcok" â‰ˆ "gshock"
     return 0
 
 
@@ -128,17 +128,17 @@ class ShopifyClient(BaseStoreClient):
 
     @property
     def has_credentials(self) -> bool:
-        """True when this client can actually reach Shopify — a domain plus at least
+        """True when this client can actually reach Shopify â€” a domain plus at least
         one usable token (Storefront OR Admin). False means the store isn't connected
         yet, so callers should say so instead of attempting (and faking) a search."""
         return bool(self.store_domain and (self.storefront_token or self.admin_token))
 
-    # ── Lifecycle ──────────────────────────────────────────────────────────────
+    # â”€â”€ Lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def close(self) -> None:
         await self._http.aclose()
 
-    # ── Internal HTTP helpers ──────────────────────────────────────────────────
+    # â”€â”€ Internal HTTP helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def _storefront(self, query: str, variables: Optional[Dict] = None) -> Dict[str, Any]:
         """Execute a Storefront GraphQL query."""
@@ -221,7 +221,7 @@ class ShopifyClient(BaseStoreClient):
             raise RuntimeError(f"Shopify Admin GraphQL error: {body['errors']}")
         return body.get("data", {})
 
-    # ── Redis cache helpers ────────────────────────────────────────────────────
+    # â”€â”€ Redis cache helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def _cache_get(self, key: str) -> Optional[Any]:
         if not self.redis:
@@ -245,7 +245,7 @@ class ShopifyClient(BaseStoreClient):
         except Exception:
             pass
 
-    # ── Cart ID persistence (session_id → Shopify cartId) ─────────────────────
+    # â”€â”€ Cart ID persistence (session_id â†’ Shopify cartId) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def _get_cart_id(self, session_id: str) -> Optional[str]:
         if not self.redis:
@@ -263,7 +263,7 @@ class ShopifyClient(BaseStoreClient):
         except Exception:
             pass
 
-    # ── Product normalization ──────────────────────────────────────────────────
+    # â”€â”€ Product normalization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _normalize_product_node(self, node: Dict[str, Any]) -> Dict[str, Any]:
         variants = node.get("variants", {}).get("edges", [])
@@ -344,7 +344,7 @@ class ShopifyClient(BaseStoreClient):
         _normalize_product_node (so downstream consumers are identical).
 
         NOTE: Admin API Product has NO compareAtPriceRange and Admin ProductVariant
-        has no availableForSale — both are Storefront-only. We derive sale price from
+        has no availableForSale â€” both are Storefront-only. We derive sale price from
         variant compareAtPrice and stock from inventoryQuantity instead.
         """
         pr = (node.get("priceRangeV2") or {}).get("minVariantPrice", {}) or {}
@@ -414,16 +414,16 @@ class ShopifyClient(BaseStoreClient):
         if not self.admin_token:
             logger.warning(
                 "Admin product fallback SKIPPED: no admin_token for %s "
-                "(tenant has no Shopify Admin token — reinstall via OAuth).",
+                "(tenant has no Shopify Admin token â€” reinstall via OAuth).",
                 self.store_domain or "?",
             )
             return []
         # Build the Shopify query. CRITICAL: pass the search terms so Shopify returns
-        # RELEVANT products — NOT just the first N alphabetical (which on a big catalog
-        # are all "A…" names, so "C…asio G-Shock" never gets fetched). Shopify ANDs
+        # RELEVANT products â€” NOT just the first N alphabetical (which on a big catalog
+        # are all "Aâ€¦" names, so "Câ€¦asio G-Shock" never gets fetched). Shopify ANDs
         # bare terms, so we OR the significant tokens; bare terms hit the default
         # fields (title/product_type/vendor/tag/sku), so "casio"/"watches" match every
-        # Casio G-Shock. No query → browse all active.
+        # Casio G-Shock. No query â†’ browse all active.
         stop = {
             "what", "are", "the", "you", "your", "have", "has", "want", "need",
             "show", "all", "any", "and", "for", "can", "will", "with", "this",
@@ -473,8 +473,8 @@ class ShopifyClient(BaseStoreClient):
         if products is None:
             return []
         # Typo path: a SEARCH whose (misspelled) terms matched nothing in Shopify's
-        # exact search — fetch a browse page so the FUZZY ranker below can still find
-        # it ("gshook"→"g-shock"). Shopify has no fuzzy search, so we match locally.
+        # exact search â€” fetch a browse page so the FUZZY ranker below can still find
+        # it ("gshook"â†’"g-shock"). Shopify has no fuzzy search, so we match locally.
         if terms and not products:
             products = await _fetch("status:active", "TITLE", 150) or []
         fetched = len(products)
@@ -499,8 +499,8 @@ class ShopifyClient(BaseStoreClient):
                 )
                 words = set(word_list)
                 # Adjacent-word joins so an abbreviation spanning a word boundary
-                # matches: "G-Shock" → words {g, shock} miss "gshk", but the join
-                # "gshock" makes "gshk" ⊂ "gshock" (and "gshook"/"gshcok" ≈ "gshock").
+                # matches: "G-Shock" â†’ words {g, shock} miss "gshk", but the join
+                # "gshock" makes "gshk" âŠ‚ "gshock" (and "gshook"/"gshcok" â‰ˆ "gshock").
                 words.update(
                     word_list[i] + word_list[i + 1] for i in range(len(word_list) - 1)
                 )
@@ -513,7 +513,7 @@ class ShopifyClient(BaseStoreClient):
                             best = m
                         if best == 2:
                             break
-                    s += best  # substring=2, fuzzy/subsequence=1 → exact ranks first
+                    s += best  # substring=2, fuzzy/subsequence=1 â†’ exact ranks first
                 return s
             ranked = sorted(((p, _score(p)) for p in products), key=lambda x: x[1], reverse=True)
             # If the query matched something, return those; otherwise empty so the
@@ -535,7 +535,7 @@ class ShopifyClient(BaseStoreClient):
         )
         return result
 
-    # ── Products ───────────────────────────────────────────────────────────────
+    # â”€â”€ Products â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def search_products(
         self,
@@ -611,7 +611,7 @@ class ShopifyClient(BaseStoreClient):
             # Storefront token missing/revoked (e.g. from an uninstalled app) or
             # products not published to the Storefront channel. Fall through to the
             # Admin API, which sees ALL products with the app's Admin token.
-            logger.warning("Shopify Storefront search failed (%s) — trying Admin API", exc)
+            logger.warning("Shopify Storefront search failed (%s) â€” trying Admin API", exc)
 
         if not products and self.admin_token:
             products = await self._admin_search_products(
@@ -620,7 +620,7 @@ class ShopifyClient(BaseStoreClient):
             )
 
         if products:
-            await self._cache_set(cache_key, products, ttl=1800)
+            await self._cache_set(cache_key, products, ttl=300)
         return products
 
     async def fetch_all_products_storefront(
@@ -767,7 +767,7 @@ class ShopifyClient(BaseStoreClient):
                 "related_products": [],
                 "reviews_summary": {},
             }
-            await self._cache_set(cache_key, result, ttl=3600)
+            await self._cache_set(cache_key, result, ttl=300)
             return result
         except Exception as exc:
             logger.error("Shopify get_product_details failed for %s: %s", product_id, exc)
@@ -914,7 +914,7 @@ class ShopifyClient(BaseStoreClient):
             logger.error("Shopify get_categories failed: %s", exc)
             return []
 
-    # ── Cart ───────────────────────────────────────────────────────────────────
+    # â”€â”€ Cart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _normalize_cart(self, cart_node: Dict[str, Any]) -> Dict[str, Any]:
         lines = cart_node.get("lines", {}).get("edges", [])
@@ -1244,7 +1244,7 @@ class ShopifyClient(BaseStoreClient):
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    # ── Discounts ──────────────────────────────────────────────────────────────
+    # â”€â”€ Discounts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def apply_coupon(self, *, session_id: str, coupon_code: str) -> Dict[str, Any]:
         code = str(coupon_code or "").strip().upper()
@@ -1308,7 +1308,7 @@ class ShopifyClient(BaseStoreClient):
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
             # Compute savings from rule fields only (no API calls). The per-rule
-            # discount_codes lookup is the N+1 — defer it and fetch only for the
+            # discount_codes lookup is the N+1 â€” defer it and fetch only for the
             # best candidates, early-exiting on the first with a usable code.
             candidates = []
             for rule in price_rules:
@@ -1348,7 +1348,7 @@ class ShopifyClient(BaseStoreClient):
                 except Exception:
                     code = ""
                 if code:
-                    # candidates are sorted by savings desc → first with a code is best
+                    # candidates are sorted by savings desc â†’ first with a code is best
                     best = {
                         "code": code,
                         "type": "percent" if c["value_type"] == "percentage" else "fixed_cart",
@@ -1379,7 +1379,7 @@ class ShopifyClient(BaseStoreClient):
             logger.warning("get_best_coupon failed: %s", exc)
             return {"success": False, "found": False, "error": str(exc)}
 
-    # ── Orders ─────────────────────────────────────────────────────────────────
+    # â”€â”€ Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def get_orders(
         self,
@@ -1427,7 +1427,7 @@ class ShopifyClient(BaseStoreClient):
             logger.error("Shopify get_orders failed: %s", exc)
             return []
 
-    # ── Reviews ────────────────────────────────────────────────────────────────
+    # â”€â”€ Reviews â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def get_reviews(self, product_id: int) -> Dict[str, Any]:
         reviews_endpoint = os.getenv("SHOPIFY_REVIEWS_ENDPOINT", "")
@@ -1465,7 +1465,7 @@ class ShopifyClient(BaseStoreClient):
             "message": "Review submission requires a Shopify reviews app (e.g., Judge.me). Please leave your review on the product page.",
         }
 
-    # ── Store info ─────────────────────────────────────────────────────────────
+    # â”€â”€ Store info â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def get_store_info(self) -> Dict[str, Any]:
         cache_key = "store:info"
@@ -1573,7 +1573,7 @@ class ShopifyClient(BaseStoreClient):
                 "error": str(exc),
             }
 
-    # ── Cache warm-up ──────────────────────────────────────────────────────────
+    # â”€â”€ Cache warm-up â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     async def pre_warm(self) -> None:
         try:
@@ -1587,7 +1587,7 @@ class ShopifyClient(BaseStoreClient):
         except Exception as exc:
             logger.debug("Shopify pre-warm error: %s", exc)
 
-    # ── WooCommerce-compatible helpers (called by orchestrator) ───────────────
+    # â”€â”€ WooCommerce-compatible helpers (called by orchestrator) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @staticmethod
     def _attributes_to_variation_map(_attributes: Any) -> Dict[str, str]:
