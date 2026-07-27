@@ -1737,6 +1737,7 @@
         session_id: S.sessionId,
         store_name: CFG.store_name,
         language: S.language,
+        cart_context: S.cartSnapshot || null,
         current_page: {
           url: location.href,
           title: document.title,

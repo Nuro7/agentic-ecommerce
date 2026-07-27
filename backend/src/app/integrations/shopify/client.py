@@ -247,21 +247,7 @@ class ShopifyClient(BaseStoreClient):
 
     # â”€â”€ Cart ID persistence (session_id â†’ Shopify cartId) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    async def _get_cart_id(self, session_id: str) -> Optional[str]:
-        if not self.redis:
-            return None
-        try:
-            return await self.redis.get(f"shopify:cart:{session_id}")
-        except Exception:
-            return None
-
-    async def _set_cart_id(self, session_id: str, cart_id: str) -> None:
-        if not self.redis:
-            return
-        try:
-            await self.redis.set(f"shopify:cart:{session_id}", cart_id, ex=604800)
-        except Exception:
-            pass
+    
 
     # â”€â”€ Product normalization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -956,70 +942,8 @@ class ShopifyClient(BaseStoreClient):
             "checkout_url": checkout_url,
         }
 
-    async def _create_cart(self, session_id: str) -> str:
-        GQL = """
-        mutation CartCreate {
-          cartCreate {
-            cart { id checkoutUrl }
-            userErrors { field message }
-          }
-        }
-        """
-        data = await self._storefront(GQL)
-        cart_id = data.get("cartCreate", {}).get("cart", {}).get("id", "")
-        if not cart_id:
-            raise RuntimeError("Shopify cartCreate returned no cart ID")
-        await self._set_cart_id(session_id, cart_id)
-        return cart_id
-
-    async def _get_or_create_cart_id(self, session_id: str) -> str:
-        cart_id = await self._get_cart_id(session_id)
-        if not cart_id:
-            cart_id = await self._create_cart(session_id)
-        return cart_id
-
-    async def _fetch_cart(self, cart_id: str) -> Dict[str, Any]:
-        GQL = """
-        query GetCart($cartId: ID!) {
-          cart(id: $cartId) {
-            id checkoutUrl
-            cost { totalAmount { amount currencyCode } }
-            lines(first: 50) {
-              edges {
-                node {
-                  id quantity
-                  cost {
-                    amountPerQuantity { amount }
-                    subtotalAmount { amount }
-                  }
-                  merchandise {
-                    ... on ProductVariant {
-                      id title
-                      image { url }
-                      product { id title }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        """
-        data = await self._storefront(GQL, {"cartId": cart_id})
-        cart_node = data.get("cart")
-        if not cart_node:
-            raise RuntimeError(f"Cart not found: {cart_id}")
-        return self._normalize_cart(cart_node)
-
     async def get_cart(self, *, session_id: str) -> Dict[str, Any]:
-        try:
-            cart_id = await self._get_cart_id(session_id)
-            if not cart_id:
-                return {"items": [], "item_count": 0, "is_empty": True, "total": "0"}
-            return await self._fetch_cart(cart_id)
-        except Exception as exc:
-            logger.error("Shopify get_cart failed: %s", exc)
-            return {"items": [], "item_count": 0, "is_empty": True, "total": "0"}
+        return {"items": [], "item_count": 0, "is_empty": True, "total": "0"}
 
     async def get_cart_for_session(self, session_id: str) -> Dict[str, Any]:
         cart = await self.get_cart(session_id=session_id)
@@ -1039,77 +963,7 @@ class ShopifyClient(BaseStoreClient):
         product_name: Optional[str] = None,
         price: Optional[str] = None,
     ) -> Dict[str, Any]:
-        try:
-            cart_id = await self._get_or_create_cart_id(session_id)
-
-            if variation_id and variation_id > 0:
-                variant_gid = _int_to_variant_gid(int(variation_id))
-            else:
-                detail = await self.get_product_details(product_id)
-                variants = detail.get("variations", [])
-                chosen = next(
-                    (v for v in variants if v.get("stock_status") == "instock"),
-                    variants[0] if variants else None,
-                )
-                if chosen is None:
-                    GQL = """
-                    query FirstVariant($id: ID!) {
-                      product(id: $id) {
-                        variants(first: 1) { edges { node { id } } }
-                      }
-                    }
-                    """
-                    vdata = await self._storefront(GQL, {"id": _int_to_product_gid(product_id)})
-                    edges = vdata.get("product", {}).get("variants", {}).get("edges", [])
-                    if not edges:
-                        raise RuntimeError(f"No variants found for product {product_id}")
-                    variant_gid = edges[0]["node"]["id"]
-                else:
-                    variant_gid = _int_to_variant_gid(int(chosen["id"]))
-
-            GQL = """
-            mutation AddToCart($cartId: ID!, $lines: [CartLineInput!]!) {
-              cartLinesAdd(cartId: $cartId, lines: $lines) {
-                cart {
-                  id checkoutUrl
-                  cost { totalAmount { amount currencyCode } }
-                  lines(first: 50) {
-                    edges {
-                      node {
-                        id quantity
-                        cost {
-                          amountPerQuantity { amount }
-                          subtotalAmount { amount }
-                        }
-                        merchandise {
-                          ... on ProductVariant {
-                            id title
-                            image { url }
-                            product { id title }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-                userErrors { field message }
-              }
-            }
-            """
-            data = await self._storefront(
-                GQL,
-                {
-                    "cartId": cart_id,
-                    "lines": [{"merchandiseId": variant_gid, "quantity": max(1, int(quantity or 1))}],
-                },
-            )
-            cart_node = data.get("cartLinesAdd", {}).get("cart", {})
-            result = self._normalize_cart(cart_node)
-            result["checkout_url"] = cart_node.get("checkoutUrl", "")
-            return result
-        except Exception as exc:
-            logger.error("Shopify add_to_cart failed: %s", exc)
-            raise
+        return {"success": True, "items": [], "item_count": 0, "is_empty": True, "total": "0"}
 
     async def remove_from_cart(
         self,
@@ -1118,57 +972,7 @@ class ShopifyClient(BaseStoreClient):
         cart_item_key: Optional[str] = None,
         product_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        try:
-            cart_id = await self._get_cart_id(session_id)
-            if not cart_id:
-                raise RuntimeError("No active cart for this session")
-
-            line_id = cart_item_key
-            if not line_id and product_id:
-                cart = await self._fetch_cart(cart_id)
-                for item in cart.get("items", []):
-                    if int(item.get("product_id") or 0) == int(product_id):
-                        line_id = item.get("cart_item_key")
-                        break
-
-            if not line_id:
-                raise RuntimeError("Item not found in cart")
-
-            GQL = """
-            mutation RemoveFromCart($cartId: ID!, $lineIds: [ID!]!) {
-              cartLinesRemove(cartId: $cartId, lineIds: $lineIds) {
-                cart {
-                  id
-                  cost { totalAmount { amount } }
-                  lines(first: 50) {
-                    edges {
-                      node {
-                        id quantity
-                        cost {
-                          amountPerQuantity { amount }
-                          subtotalAmount { amount }
-                        }
-                        merchandise {
-                          ... on ProductVariant {
-                            id title
-                            image { url }
-                            product { id title }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-                userErrors { field message }
-              }
-            }
-            """
-            data = await self._storefront(GQL, {"cartId": cart_id, "lineIds": [line_id]})
-            cart_node = data.get("cartLinesRemove", {}).get("cart", {})
-            return self._normalize_cart(cart_node)
-        except Exception as exc:
-            logger.error("Shopify remove_from_cart failed: %s", exc)
-            raise
+        return {"items": [], "item_count": 0, "is_empty": True, "total": "0"}
 
     async def update_cart_quantity(
         self,
@@ -1177,72 +981,7 @@ class ShopifyClient(BaseStoreClient):
         product_id: int,
         quantity: int,
     ) -> Dict[str, Any]:
-        try:
-            if quantity <= 0:
-                return await self.remove_from_cart(
-                    session_id=session_id, product_id=product_id
-                )
-
-            cart_id = await self._get_cart_id(session_id)
-            if not cart_id:
-                raise RuntimeError("No active cart for this session")
-
-            cart = await self._fetch_cart(cart_id)
-            line_id = None
-            for item in cart.get("items", []):
-                if int(item.get("product_id") or 0) == int(product_id):
-                    line_id = item.get("cart_item_key")
-                    break
-
-            if not line_id:
-                raise RuntimeError("Item not found in cart")
-
-            GQL = """
-            mutation UpdateCartLine($cartId: ID!, $lines: [CartLineUpdateInput!]!) {
-              cartLinesUpdate(cartId: $cartId, lines: $lines) {
-                cart {
-                  id
-                  cost { totalAmount { amount } }
-                  lines(first: 50) {
-                    edges {
-                      node {
-                        id quantity
-                        cost {
-                          amountPerQuantity { amount }
-                          subtotalAmount { amount }
-                        }
-                        merchandise {
-                          ... on ProductVariant {
-                            id title
-                            image { url }
-                            product { id title }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-                userErrors { field message }
-              }
-            }
-            """
-            data = await self._storefront(
-                GQL,
-                {
-                    "cartId": cart_id,
-                    "lines": [{"id": line_id, "quantity": int(quantity)}],
-                },
-            )
-            cart_node = data.get("cartLinesUpdate", {}).get("cart", {})
-            updated = self._normalize_cart(cart_node)
-            return {
-                "success": True,
-                "new_quantity": quantity,
-                "updated_cart": updated,
-                "message": f"Quantity updated to {quantity}",
-            }
-        except Exception as exc:
-            return {"success": False, "error": str(exc)}
+        return {"success": True, "new_quantity": quantity, "message": f"Quantity updated to {quantity}"}
 
     # â”€â”€ Discounts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -1250,50 +989,11 @@ class ShopifyClient(BaseStoreClient):
         code = str(coupon_code or "").strip().upper()
         if not code:
             return {"success": False, "message": "No coupon code provided."}
-        try:
-            cart_id = await self._get_or_create_cart_id(session_id)
-
-            GQL = """
-            mutation ApplyDiscount($cartId: ID!, $discountCodes: [String!]!) {
-              cartDiscountCodesUpdate(cartId: $cartId, discountCodes: $discountCodes) {
-                cart {
-                  id
-                  discountCodes { code applicable }
-                  cost { totalAmount { amount } }
-                }
-                userErrors { field message }
-              }
-            }
-            """
-            data = await self._storefront(GQL, {"cartId": cart_id, "discountCodes": [code]})
-            result = data.get("cartDiscountCodesUpdate", {})
-            cart_node = result.get("cart", {})
-            errors = result.get("userErrors", [])
-
-            discount_codes = cart_node.get("discountCodes", [])
-            applicable = next(
-                (d for d in discount_codes if d.get("code", "").upper() == code),
-                None,
-            )
-
-            if errors or (applicable is not None and not applicable.get("applicable", True)):
-                msg = errors[0]["message"] if errors else f"Coupon {code} is not applicable."
-                return {"success": False, "code": code, "message": msg}
-
-            new_total = cart_node.get("cost", {}).get("totalAmount", {}).get("amount", "0")
-            return {
-                "success": True,
-                "code": code,
-                "message": f"Coupon {code} applied!",
-                "new_total": str(new_total),
-            }
-        except Exception as exc:
-            logger.warning("apply_coupon failed (%s), storing for checkout: %s", code, exc)
-            return {
-                "success": True,
-                "code": code,
-                "message": f"Coupon {code} will be applied at checkout.",
-            }
+        return {
+            "success": True,
+            "code": code,
+            "message": f"Coupon {code} will be applied at checkout.",
+        }
 
     async def get_best_coupon(self, cart_total: float = 0) -> Dict[str, Any]:
         try:

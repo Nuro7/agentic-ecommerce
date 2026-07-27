@@ -39,6 +39,7 @@ class GreetRequest(BaseModel):
     language: Optional[str] = "auto"
     current_page: Optional[GreetCurrentPage] = None
     customer_name: Optional[str] = Field(None, max_length=100)
+    cart_context: Optional[Dict[str, Any]] = None
 
 
 def _normalize_language(value: Optional[str]) -> str:
@@ -134,7 +135,9 @@ async def greet_endpoint(
     is_returning = greeted_before or len(history) > 0
 
     cart: Dict[str, Any] = {}
-    if store_client:
+    if payload.cart_context and isinstance(payload.cart_context, dict) and payload.cart_context.get("items"):
+        cart = payload.cart_context
+    elif store_client:
         try:
             cart = await store_client.get_cart_for_session(session_id)
         except Exception as exc:

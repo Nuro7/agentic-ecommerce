@@ -339,19 +339,15 @@ async def _fetch_cart(
     store_client: Any,
     session_service: Any,
 ) -> Dict[str, Any]:
-    """Return cart dict: prefer cart_context â†’ live store â†’ Redis cache â†’ empty."""
     if cart_context and isinstance(cart_context, dict) and cart_context.get("items"):
         return cart_context
     try:
-        cart = await store_client.get_live_cart(session_id=session_id)
-        await session_service.save_cart(tenant_id, session_id, cart)
-        return cart
-    except Exception as exc:
-        logger.warning("Live cart fetch failed, using cache: %s", exc)
         cart = await session_service.get_cart(tenant_id, session_id)
         if cart and not cart.get("is_empty", True):
             return cart
-        return {"is_empty": True, "items": [], "total": "â‚¹0", "item_count": 0}
+        return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
+    except Exception:
+        return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
 
 
 # â”€â”€ Main entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

@@ -47,14 +47,12 @@ async def safe_get_cart(
     session_service: Any,
 ) -> Dict[str, Any]:
     try:
-        cart = await store_client.get_live_cart(session_id=session_id)
-        await session_service.save_cart(tenant_id, session_id, cart)
-        return cart
-    except Exception as e:
-        logger.warning("Live cart fetch failed, using cache: %s", e)
         cart = await session_service.get_cart(tenant_id, session_id)
         if cart and not cart.get("is_empty", True):
             return cart
+        return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
+    except Exception as e:
+        logger.warning("Cart cache fetch failed: %s", e)
         return {"is_empty": True, "items": [], "total": "₹0", "item_count": 0}
 
 
