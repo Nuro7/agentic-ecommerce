@@ -1733,11 +1733,15 @@
     }
     setStatus('Connecting...');
     try {
+      for (let i = 0; i < 5; i++) {
+        if (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') break;
+        await new Promise(r => setTimeout(r, 100));
+      }
       const r = await api('/greet', {
         session_id: S.sessionId,
         store_name: CFG.store_name,
         language: S.language,
-        cart_context: S.cartSnapshot || null,
+        cart_context: (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') ? S.cartSnapshot : null,
         current_page: {
           url: location.href,
           title: document.title,

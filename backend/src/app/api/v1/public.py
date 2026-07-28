@@ -135,7 +135,7 @@ async def greet_endpoint(
     is_returning = greeted_before or len(history) > 0
 
     cart: Dict[str, Any] = {}
-    if payload.cart_context and isinstance(payload.cart_context, dict) and payload.cart_context.get("items"):
+    if payload.cart_context and isinstance(payload.cart_context, dict) and payload.cart_context.get("items") is not None:
         cart = payload.cart_context
     elif store_client:
         try:

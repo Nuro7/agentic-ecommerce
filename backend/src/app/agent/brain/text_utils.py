@@ -71,6 +71,8 @@ def append_live_navigation(
             payload["query"] = nav_query
         ui_actions.append({"type": "redirect", "payload": payload})
 
+    if any(a.get("type") == "add_to_cart" for a in (ui_actions or [])):
+        return
     # 0. Check explicit conversational page navigation intent
     lower_query = str(query or "").strip().lower()
 
@@ -88,7 +90,7 @@ def append_live_navigation(
         return
 
     # Checkout Page Navigation
-    if re.search(r"\b(checkout|go to checkout|proceed to checkout|take me to checkout|pay|buy now)\b", lower_query):
+    if re.search(r"\b(checkout|go to checkout|proceed to checkout|take me to checkout)\b", lower_query):
         checkout_url = str(ctx.get("checkout_url") or "").strip()
         if not checkout_url and base_url:
             checkout_url = base_url.rstrip("/") + "/checkout"
