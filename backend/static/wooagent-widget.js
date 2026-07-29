@@ -2364,11 +2364,10 @@
       }
 
       case 'add_to_cart':
-        const variationId = act.payload && act.payload.variation_id ? parseInt(act.payload.variation_id, 10) : 0;
+        const variationId = act.payload ? parseInt(act.payload.variant_id || act.payload.variation_id, 10) || 0 : 0;
         const productId = act.payload && act.payload.product_id ? parseInt(act.payload.product_id, 10) : 0;
         const quantity = Math.max(1, parseInt(act.payload.quantity, 10) || 1);
         
-        // For products with variants, use variation_id; for simple products, use product_id
         const addId = variationId > 0 ? variationId : productId;
         
         if (addId > 0) {
@@ -2425,6 +2424,35 @@
           }
         }
         break;
+
+      case 'mutate_cart': {
+        const mc = act.payload || {};
+        const mcKey = String(mc.cart_item_key || mc.key || '');
+        const mcQty = parseInt(mc.quantity, 10);
+        if (mcKey && Number.isInteger(mcQty) && mcQty >= 0) {
+          try {
+            if (IS_SHOPIFY) {
+              const res = await fetch('/cart/change.js', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ id: mcKey, quantity: mcQty }),
+              });
+              if (!res.ok) throw new Error('mutate failed (' + res.status + ')');
+              await fetchCartShopify();
+            } else {
+              const endpoint = String(CFG.rest_url || '').replace(/\/$/, '') + '/cart/update';
+              const body = { session_id: S.sessionId, cart_item_key: mcKey, quantity: mcQty, nonce: CFG.nonce || '' };
+              const res = await fetch(endpoint, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+              if (!res.ok) throw new Error('mutate failed (' + res.status + ')');
+            }
+            if (mcQty === 0) showToast('🗑️ Removed from cart'); else showToast('✅ Quantity updated');
+          } catch (error) {
+            showToast('Could not update cart.');
+          }
+        }
+        break;
+      }
 
       case 'cart_updated': {
         const c = act.payload || {};
@@ -2656,6 +2684,34 @@
         _pendingNavigation = performRedirect;
         if (!S.speaking && !a2aIsPlaying) {
           setTimeout(performRedirect, p.delay_ms || 800);
+        }
+        break;
+      }
+
+      case 'highlight_card': {
+        const hc = act.payload || {};
+        const idx = parseInt(hc.index, 10);
+        const cards = document.querySelectorAll('.speako-product-card, [data-product-card], .product-card, .product-item');
+        if (Number.isInteger(idx) && idx >= 0 && idx < cards.length) {
+          const target = cards[idx];
+          cards.forEach(c => c.classList.remove('speako-highlighted', 'is-selected'));
+          target.classList.add('speako-highlighted', 'is-selected');
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          showToast(`Showing option #${idx + 1}`);
+        }
+        break;
+      }
+
+      case 'scroll_to': {
+        const st = act.payload || {};
+        const sel = st.selector || '';
+        if (sel) {
+          const el = document.querySelector(sel);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('speako-highlighted');
+            setTimeout(() => el.classList.remove('speako-highlighted'), 3000);
+          }
         }
         break;
       }

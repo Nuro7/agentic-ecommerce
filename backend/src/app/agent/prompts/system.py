@@ -127,6 +127,17 @@ Examples:
   "show me what you have" → query="", browse mode
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NAVIGATION — call trigger_store_event to navigate the customer
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When the customer asks to go to a specific page, use trigger_store_event with the event name and url:
+- "go to profile" / "my profile" / "account" → event="speako:navigate", detail={{"url": "/account", "reason": "profile"}}
+- "my orders" / "order history" → event="speako:navigate", detail={{"url": "/account/orders", "reason": "orders"}}
+- "home" / "homepage" → event="speako:navigate", detail={{"url": "/", "reason": "home"}}
+- "cart" / "my cart" → event="speako:navigate", detail={{"url": "/cart", "reason": "cart"}}
+- "checkout" → event="speako:navigate", detail={{"url": "/checkout", "reason": "checkout"}}
+- "search for [X]" → event="speako:navigate", detail={{"url": "/search?q=[X]", "reason": "search"}}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TOOLS YOU HAVE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - search_products(query, category, min_price, max_price, in_stock_only, on_sale, limit)

@@ -79,6 +79,23 @@ def append_live_navigation(
     # 0. Check explicit conversational page navigation intent
     lower_query = str(query or "").strip().lower()
 
+    # Profile / Account Page Navigation
+    if re.search(r"\b(go to profile|my profile|my account|account settings|view profile|account)\b", lower_query):
+        _push((base_url.rstrip("/") if base_url else "") + "/account", "profile")
+        return
+
+    # Orders Page Navigation
+    if re.search(r"\b(my orders|order history|past orders|my purchases|view orders)\b", lower_query):
+        _push((base_url.rstrip("/") if base_url else "") + "/account/orders", "orders")
+        return
+
+    # Search Page Navigation
+    search_match = re.search(r"\b(search for|search\b|look for|find\b)\s+(.+?)(?:\s*please|\s*thanks|\s*$)", lower_query)
+    if search_match:
+        sq = search_match.group(2).strip().replace(" ", "+")
+        _push((base_url.rstrip("/") if base_url else "") + f"/search?q={sq}", "search")
+        return
+
     # Home Page Navigation
     if re.search(r"\b(home|homepage|home page|go to home|take me to home|go to the homepage|go to homepage)\b", lower_query):
         _push(base_url or "/", "home")
