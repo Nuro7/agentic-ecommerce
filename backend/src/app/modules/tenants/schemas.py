@@ -131,4 +131,19 @@ class TenantOut(BaseModel):
     woocommerce_store_url: Optional[str] = None
     custom_api_base_url: Optional[str] = None
 
+    # Per-tenant store config
+    currency_symbol: Optional[str] = None
+    shipping_policy: Optional[str] = None
+    returns_policy: Optional[str] = None
+    payment_methods: Optional[str] = None
+    about_text: Optional[str] = None
+
+    # Per-tenant AI config
+    support_email: Optional[str] = None
+    support_phone: Optional[str] = None
+    business_hours: Optional[str] = None
+    ai_personality: Optional[str] = None
+    greeting_message: Optional[str] = None
+    logo_url: Optional[str] = None
+
     model_config = {"from_attributes": True}

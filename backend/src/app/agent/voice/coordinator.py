@@ -225,7 +225,15 @@ class VoiceTurnCoordinator:
             except Exception:
                 pass
 
-            # Forward UI actions to client
+            # Return response text to the provider context FIRST (so speech and text align)
+            if call_id and name:
+                await self.provider.send_tool_response(call_id, name, response_text)
+            else:
+                # Text-only text turn - send transcript first
+                if response_text:
+                    await self.safe_send_text(json.dumps({"type": "transcript", "text": response_text}))
+            
+            # Then send UI actions (after speech/text starts)
             for action in ui_actions:
                 if action and action.get("type") not in (None, "noop"):
                     await self.safe_send_text(json.dumps({"type": "ui_action", "action": action}))
@@ -234,15 +242,9 @@ class VoiceTurnCoordinator:
             suggestions = result.get("suggested_replies") or []
             if suggestions:
                 await self.safe_send_text(json.dumps({"type": "suggestions", "items": suggestions}))
-
-            # Return response text to the provider context
-            if call_id and name:
-                await self.provider.send_tool_response(call_id, name, response_text)
-            else:
-                # Text-only text turn
-                if response_text:
-                    await self.safe_send_text(json.dumps({"type": "transcript", "text": response_text}))
-                
+            
+            # Turn complete for text-only
+            if not (call_id and name):
                 await self.safe_send_text(json.dumps({"type": "turn_complete"}))
 
         except asyncio.TimeoutError:

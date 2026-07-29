@@ -174,12 +174,20 @@ async def _sync_async(tenant_id_filter: Optional[str] = None) -> dict:
                 store_client = _build_client_for_tenant(tenant)
                 adapter = _adapter_for_platform(tenant.platform)
 
-                upserted, skipped = await _sync_tenant(
-                    db=db,
-                    store_client=store_client,
-                    adapter=adapter,
-                    tenant=tenant,
-                )
+                try:
+                    upserted, skipped = await asyncio.wait_for(
+                        _sync_tenant(
+                            db=db, store_client=store_client,
+                            adapter=adapter, tenant=tenant,
+                        ),
+                        timeout=60.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Sync timeout for tenant=%s platform=%s — skipping",
+                        tenant.id, getattr(tenant, "platform", "?"),
+                    )
+                    continue
                 total_upserted += upserted
                 total_skipped += skipped
                 tenants_processed += 1

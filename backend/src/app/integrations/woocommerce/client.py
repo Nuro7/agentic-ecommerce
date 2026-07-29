@@ -39,7 +39,7 @@ class WooCommerceClient(BaseStoreClient):
         self.redis = redis_client
 
         self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(6.5, connect=2.0),
+            timeout=httpx.Timeout(15.0, connect=5.0),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
             verify=False,           # LocalWP uses a self-signed cert not trusted by the container
             follow_redirects=True,  # handle any http→https redirects gracefully

@@ -2,16 +2,13 @@
 
 Call:  results = await hybrid_search(tenant_id, query, redis, store_client)
 
-Simplified pipeline (BM25/vector/RRF bypassed — store API is the primary path):
+Pipeline:
   L0  normalize(query)              →  NormalizedQuery   (~0.5ms)
   L1  l1_get(cache_key)            →  hit? return early  (~3ms)
-  →   store_client.search_products(query)  live API      (~200-500ms)
+  L3  l3_search (BM25 + vector + RRF)  cached DB search  (~20-50ms)
+  →   store_client.search_products(query)  live API fallback  (~200-500ms)
   →   l1_set (write-through cache)
   →   return list[SearchResult]
-
-BM25/tsvector, pgvector, and RRF reranker code is kept in the repo but not
-connected in this function. The store's native search API returns fresher,
-more relevant results for natural-language shopping queries.
 """
 from __future__ import annotations
 
@@ -24,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .normalizer import normalize, NormalizedQuery
 from .cache import l1_get, l1_set
 from .reranker import SearchResult
+from .hybrid_search import l3_search
 from ...integrations.adapters import ShopifyAdapter, WooAdapter, CustomAdapter
 
 logger = logging.getLogger(__name__)
@@ -49,7 +47,7 @@ async def hybrid_search(
         tenant_id:    Multi-tenant isolation key.
         query:        Raw user query string.
         redis:        aioredis client (None → skip L1/L2).
-        db:           AsyncSession (None → skip L3 DB search).
+        db:           AsyncSession (None → skip L3 DB search, use live API).
         store_client: BaseStoreClient (used as live fallback when cache empty).
         min_price:    Optional price floor (overrides query-extracted value).
         max_price:    Optional price ceiling (overrides query-extracted value).
@@ -91,14 +89,31 @@ async def hybrid_search(
         )
         return results
 
-    # ── Live API (primary) — call the store's native search directly.
-    # BM25/tsvector, pgvector, and RRF reranker code exists in the repo but is
-    # BYPASSED here because the store's own API returns fresher, more relevant
-    # results for natural-language queries. The L0 normalizer still runs to
-    # strip noise and extract price filters.
+    # ── L3: Cached DB search (BM25 + Vector + RRF) — PRIMARY when DB available ──
     results: list[SearchResult] = []
+    if db is not None:
+        try:
+            bm25_results, vec_results = await l3_search(db, tenant_id, nq)
+            # l3_search returns (bm25_list, vec_list); RRF reranking is done inline
+            # Merge and deduplicate by platform_id, preferring higher-ranked
+            seen = set()
+            merged = []
+            for r in bm25_results + vec_results:
+                if r.platform_id not in seen:
+                    seen.add(r.platform_id)
+                    merged.append(r)
+            results = merged[:limit]
+            logger.info(
+                "Search L3 HIT  tenant=%s query='%s'  n=%d  (%.1fms)",
+                tenant_id, nq.clean[:40], len(results),
+                (time.monotonic() - t0) * 1000,
+            )
+        except Exception as exc:
+            logger.warning("L3 search failed, falling back to live API: %s", exc)
+            results = []
 
-    if store_client is not None:
+    # ── Live API fallback (or primary when no DB session) ──────────────────────
+    if not results and store_client is not None:
         try:
             raw = await store_client.search_products(
                 query=nq.clean or "",

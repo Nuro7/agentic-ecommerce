@@ -1056,6 +1056,44 @@ def _no_products_result(lang: str) -> Dict[str, Any]:
     }
 
 
+_KNOWN_BRANDS = {
+    "nike", "adidas", "puma", "reebok", "bata", "liberty", "khadim's", "khadims",
+    "red tape", "redtape", "metro", "hush puppies", "lee cooper", "woodland",
+    "sparx", "asian", "campus", "lancer", "flite", "paragon", "relaxo",
+    "reebok", "skechers", "fila", "gucci", "prada", "zara", "h&m", "levi's",
+    "levis", "wrangler", "tommy hilfiger", "calvin klein", "diesel", "biba",
+    "soch", "fabindia", "w", "van heusen", "arrow", "peter england", "jockey",
+    "allen solly", "ucb", "mufti", "blackberry's", "denim", "pepe jeans",
+    "roadster", "hrx", "netplay", "stanley", "crocs",
+}
+
+
+def _extract_mentioned_brands(text: str) -> Set[str]:
+    """Return known brand names found in the user's query (case-insensitive)."""
+    lower = text.lower()
+    found: Set[str] = set()
+    for brand in _KNOWN_BRANDS:
+        if brand in lower:
+            found.add(brand)
+    return found
+
+
+def _brand_not_available_result(lang: str, brand: str) -> Dict[str, Any]:
+    """Deterministic response when the user asks for a specific brand we don't carry."""
+    _texts = {
+        "en": f"Sorry, we don't carry {brand.title()} in this store. Would you like to see similar products from other brands?",
+        "hi": f"Maaf karein, is store mein {brand.title()} available nahi hai. Kya aap doosre brands ke similar products dekhna chahenge?",
+        "ml": f"Kshamikkatte, ee store-il {brand.title()} products illa. Mattu brand samaanam kaanano?",
+        "ta": f"Manningu, indha kadai-la {brand.title()} products illai. Vera brand-la similar pathukkalamaa?",
+    }
+    text = _texts.get(lang, _texts["en"])
+    return {
+        "response_text": text,
+        "ui_actions": [],
+        "suggested_replies": ["Show other brands", "Show all products", "Browse categories"],
+    }
+
+
 def _not_connected_result(lang: str) -> Dict[str, Any]:
     """Deterministic reply when the store has no usable Shopify token â€” so Aria says
     the store isn't connected instead of letting the LLM hallucinate products."""

@@ -7,6 +7,8 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from .text_utils import safe_int, safe_optional_int, safe_float, normalize_discovery_query
+from ...retrieval.search import hybrid_search
+from ...core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -68,14 +70,39 @@ async def execute_tool_call(
         requested_limit = safe_int(tool_args.get("limit"), default_limit)
         limit = max(1, min(requested_limit, 8))
         in_stock_only = bool(tool_args.get("in_stock_only", False))
-        products = await store_client.search_products(
-            query=query,
-            category_slug=tool_args.get("category"),
-            min_price=safe_float(tool_args.get("min_price")),
-            max_price=safe_float(tool_args.get("max_price")),
-            in_stock_only=in_stock_only,
-            limit=limit,
-        )
+        
+        # Use hybrid_search (L3: BM25 + vector + RRF) instead of live store API
+        # This provides stemming, fuzzy matching, and semantic search
+        async with AsyncSessionLocal() as db:
+            search_results = await hybrid_search(
+                tenant_id=tenant_id,
+                query=query,
+                redis=None,  # Redis passed from orchestrator if needed
+                db=db,
+                store_client=store_client,
+                min_price=safe_float(tool_args.get("min_price")),
+                max_price=safe_float(tool_args.get("max_price")),
+                in_stock_only=in_stock_only,
+                limit=limit,
+            )
+        
+        # Convert SearchResult objects to dict format expected by rest of code
+        products = []
+        for r in search_results:
+            products.append({
+                "id": r.platform_id,
+                "name": r.name,
+                "description": r.description,
+                "price": r.price,
+                "currency": r.currency,
+                "image_url": r.image_url,
+                "in_stock": r.in_stock,
+                "category_slug": r.category_slug,
+                "tags": r.tags,
+                "permalink": r.permalink,
+                "short_description": r.description[:200] if r.description else "",
+            })
+        
         brand_filtered: List[Dict[str, Any]] = []
         if brand and products:
             bl = brand.lower()
@@ -87,45 +114,6 @@ async def execute_tool_call(
             brand_found = len(brand_filtered) > 0
         else:
             brand_found = True
-        if not products and raw_query:
-            words = query.split()
-            # Multi-word query returned nothing — strip words progressively
-            if len(words) > 1:
-                for i in range(1, len(words)):
-                    shorter = " ".join(words[i:])
-                    products = await store_client.search_products(
-                        query=shorter, in_stock_only=in_stock_only, limit=limit,
-                    )
-                    if products:
-                        break
-            # Single-word query or progressive fallback failed → show all
-            if not products and len(words) <= 1:
-                products = await store_client.search_products(
-                    query="",
-                    category_slug=tool_args.get("category"),
-                    min_price=safe_float(tool_args.get("min_price")),
-                    max_price=safe_float(tool_args.get("max_price")),
-                    in_stock_only=False,
-                    limit=min(limit, 8),
-                )
-                brand_found = False
-        if query and products:
-            query_words = [w for w in query.lower().split() if len(w) > 2]
-
-            def _relevance(p: dict) -> int:
-                name_lower = str(p.get("name") or "").lower()
-                desc_lower = str(p.get("short_description") or p.get("description") or "").lower()
-                return sum(2 for w in query_words if w in name_lower) + sum(1 for w in query_words if w in desc_lower)
-
-            products_sorted = sorted(products, key=_relevance, reverse=True)
-            best_score = _relevance(products_sorted[0]) if products_sorted else 0
-            if best_score > 0:
-                relevant = [p for p in products_sorted if _relevance(p) > 0]
-                if len(query_words) >= 2:
-                    exact = [p for p in relevant if all(w in str(p.get("name") or "").lower() for w in query_words)]
-                    products = exact if exact else relevant
-                else:
-                    products = relevant
 
         actions.append({"type": "show_products", "payload": {"products": products}})
         product_ids = [p.get("id") for p in products if p.get("id")]
@@ -199,9 +187,10 @@ async def execute_tool_call(
         return {"inventory": inventory, "response_hint": hint}, actions, [product_id], None
 
     if tool_name == "get_cart":
-        safe_cart = cart_context if isinstance(cart_context, dict) else {}
-        actions.append({"type": "show_cart", "payload": {"cart": _normalize_cart(safe_cart)}})
-        return {"cart": safe_cart}, actions, [], None
+        # Fetch LIVE cart from storefront API instead of using stale cart_context
+        live_cart = await store_client.get_cart(session_id=session_id)
+        actions.append({"type": "show_cart", "payload": {"cart": _normalize_cart(live_cart)}})
+        return {"cart": live_cart}, actions, [], None
 
     if tool_name == "add_to_cart":
         product_id = safe_int(tool_args.get("product_id"), 0)

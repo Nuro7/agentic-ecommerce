@@ -56,11 +56,6 @@ class PipelineRouter:
         Logs every pipeline start, failure, and fallback so operators can see which
         model is active per session.
         """
-        if not voice_enabled:
-            logger.info("[pipeline] Text-only session (voice disabled): session=%s", session_id)
-            await self._run_text_fallback(websocket, session_id, store_client, tenant_id)
-            return
-
         provider_choice = (settings.voice_provider or "openai").lower().strip()
 
         # ── Helper: try a single provider, return True on success ─────────────

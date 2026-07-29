@@ -2364,15 +2364,22 @@
       }
 
       case 'add_to_cart':
-        if (act.payload && act.payload.variation_id) {
-          console.log('[WooAgent A2C] Native AJAX add for Variant ID:', act.payload.variation_id);
+        const variationId = act.payload && act.payload.variation_id ? parseInt(act.payload.variation_id, 10) : 0;
+        const productId = act.payload && act.payload.product_id ? parseInt(act.payload.product_id, 10) : 0;
+        const quantity = Math.max(1, parseInt(act.payload.quantity, 10) || 1);
+        
+        // For products with variants, use variation_id; for simple products, use product_id
+        const addId = variationId > 0 ? variationId : productId;
+        
+        if (addId > 0) {
+          console.log('[WooAgent A2C] Native AJAX add:', { productId, variationId, quantity, addId });
           try {
             const addRes = await fetch('/cart/add.js', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
               body: JSON.stringify({
-                id: parseInt(act.payload.variation_id, 10),
-                quantity: Math.max(1, parseInt(act.payload.quantity, 10) || 1),
+                id: addId,
+                quantity: quantity,
               }),
             });
             if (!addRes.ok) {

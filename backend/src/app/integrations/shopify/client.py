@@ -118,7 +118,7 @@ class ShopifyClient(BaseStoreClient):
         )
 
         self._http = httpx.AsyncClient(
-            timeout=httpx.Timeout(8.0, connect=3.0),
+            timeout=httpx.Timeout(15.0, connect=5.0),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
             follow_redirects=True,
         )

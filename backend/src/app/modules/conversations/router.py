@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from .service import ConversationService
-from .schemas import ChatRequest, ChatResponse, MessageOut
+from .schemas import ChatRequest, ChatResponse, MessageOut, ConversationOut
 from ...core.database import get_db
 from ..billing.dependencies import enforce_conversation_quota
 from ..billing.service import BillingService
@@ -44,3 +44,14 @@ async def get_history(
     db: AsyncSession = Depends(get_db),
 ):
     return await ConversationService(db).get_history(tenant.id, session_id)
+
+
+@router.get("/", response_model=list[ConversationOut])
+async def list_conversations(
+    request: Request,
+    skip: int = 0,
+    limit: int = 50,
+    tenant=Depends(get_authenticated_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    return await ConversationService(db).list_conversations(tenant.id, skip=skip, limit=limit)

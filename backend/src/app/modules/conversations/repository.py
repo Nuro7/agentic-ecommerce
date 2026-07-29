@@ -51,3 +51,13 @@ class ConversationRepository:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def list_all(self, tenant_id: str, skip: int = 0, limit: int = 50) -> list[Conversation]:
+        result = await self.db.execute(
+            select(Conversation)
+            .where(Conversation.tenant_id == tenant_id)
+            .order_by(Conversation.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+        return list(result.scalars().all())

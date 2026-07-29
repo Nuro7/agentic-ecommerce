@@ -61,3 +61,6 @@ class ConversationService:
     async def get_history(self, tenant_id: str, session_id: str) -> list:
         conv = await self.repo.get_or_create(tenant_id, session_id)
         return await self.repo.get_history(conv.id)
+
+    async def list_conversations(self, tenant_id: str, skip: int = 0, limit: int = 50) -> list:
+        return await self.repo.list_all(tenant_id, skip=skip, limit=limit)

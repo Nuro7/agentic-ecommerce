@@ -29,6 +29,8 @@ from .text_utils import (
     has_cart_nav_intent,
     has_remove_intent,
 )
+from ...retrieval.search import hybrid_search
+from ...core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +253,7 @@ async def handle_product_discovery(
     message: str,
     lower: str,
     language: str,
+    tenant_id: str = "_dev",
     *,
     store_client: Any,
 ) -> Dict[str, Any]:
@@ -262,19 +265,70 @@ async def handle_product_discovery(
     ])
     limit = 24 if wants_all or not query else 8
     in_stock_only = False if wants_all or not query else ("out of stock" not in lower)
-    products = await store_client.search_products(
-        query=query, min_price=min_price, max_price=max_price,
-        in_stock_only=in_stock_only, limit=limit,
-    )
+    
+    # Use hybrid_search (L3: BM25 + vector + RRF) instead of live store API
+    async with AsyncSessionLocal() as db:
+        search_results = await hybrid_search(
+            tenant_id=tenant_id,
+            query=query,
+            redis=None,
+            db=db,
+            store_client=store_client,
+            min_price=min_price,
+            max_price=max_price,
+            in_stock_only=in_stock_only,
+            limit=limit,
+        )
+    
+    # Convert SearchResult objects to dict format
+    products = []
+    for r in search_results:
+        products.append({
+            "id": r.platform_id,
+            "name": r.name,
+            "description": r.description,
+            "price": r.price,
+            "currency": r.currency,
+            "image_url": r.image_url,
+            "in_stock": r.in_stock,
+            "category_slug": r.category_slug,
+            "tags": r.tags,
+            "permalink": r.permalink,
+            "short_description": r.description[:200] if r.description else "",
+        })
+    
     if not products and query and not wants_all:
         words = query.split()
         if len(words) > 1:
             for i in range(1, len(words)):
                 shorter = " ".join(words[i:])
-                products = await store_client.search_products(
-                    query=shorter, min_price=min_price, max_price=max_price,
-                    in_stock_only=in_stock_only, limit=limit,
-                )
+                async with AsyncSessionLocal() as db:
+                    search_results = await hybrid_search(
+                        tenant_id=tenant_id,
+                        query=shorter,
+                        redis=None,
+                        db=db,
+                        store_client=store_client,
+                        min_price=min_price,
+                        max_price=max_price,
+                        in_stock_only=in_stock_only,
+                        limit=limit,
+                    )
+                products = []
+                for r in search_results:
+                    products.append({
+                        "id": r.platform_id,
+                        "name": r.name,
+                        "description": r.description,
+                        "price": r.price,
+                        "currency": r.currency,
+                        "image_url": r.image_url,
+                        "in_stock": r.in_stock,
+                        "category_slug": r.category_slug,
+                        "tags": r.tags,
+                        "permalink": r.permalink,
+                        "short_description": r.description[:200] if r.description else "",
+                    })
                 if products:
                     break
     if not products and query and not wants_all:
@@ -284,10 +338,33 @@ async def handle_product_discovery(
             "suggested_replies": ["Show all products", "Browse categories", "Show my cart"],
         })
     if not products:
-        products = await store_client.search_products(
-            query="", min_price=min_price, max_price=max_price,
-            in_stock_only=False, limit=24,
-        )
+        async with AsyncSessionLocal() as db:
+            search_results = await hybrid_search(
+                tenant_id=tenant_id,
+                query="",
+                redis=None,
+                db=db,
+                store_client=store_client,
+                min_price=min_price,
+                max_price=max_price,
+                in_stock_only=False,
+                limit=24,
+            )
+        products = []
+        for r in search_results:
+            products.append({
+                "id": r.platform_id,
+                "name": r.name,
+                "description": r.description,
+                "price": r.price,
+                "currency": r.currency,
+                "image_url": r.image_url,
+                "in_stock": r.in_stock,
+                "category_slug": r.category_slug,
+                "tags": r.tags,
+                "permalink": r.permalink,
+                "short_description": r.description[:200] if r.description else "",
+            })
     if not products:
         return with_actions_alias({
             "response_text": say(language, "no_products"),
@@ -295,6 +372,7 @@ async def handle_product_discovery(
             "suggested_replies": ["Show products", "Show my cart"],
         })
 
+    products.sort(key=lambda p: (p.get("in_stock", False), 0), reverse=True)
     best = pick_best_product_match(lower, products)
     if best and best in products:
         products.remove(best)
@@ -309,15 +387,49 @@ async def handle_product_discovery(
 
     if is_sold_out:
         alt_query = str(products[0].get("name") or query or "")
-        alternatives = await store_client.search_products(
-            query=alt_query, in_stock_only=True, limit=4,
-        )
+        async with AsyncSessionLocal() as db:
+            search_results = await hybrid_search(
+                tenant_id=tenant_id,
+                query=alt_query,
+                redis=None,
+                db=db,
+                store_client=store_client,
+                min_price=min_price,
+                max_price=max_price,
+                in_stock_only=True,
+                limit=4,
+            )
+        alternatives = []
+        for r in search_results:
+            alternatives.append({
+                "id": r.platform_id,
+                "name": r.name,
+                "description": r.description,
+                "price": r.price,
+                "currency": r.currency,
+                "image_url": r.image_url,
+                "in_stock": r.in_stock,
+                "category_slug": r.category_slug,
+                "tags": r.tags,
+                "permalink": r.permalink,
+                "short_description": r.description[:200] if r.description else "",
+            })
         if alternatives:
             response = f"{name} is currently out of stock. Here are some similar options that are available:"
             actions = [
                 {"type": "show_products", "payload": {"products": products}},
                 {"type": "show_products", "payload": {"products": alternatives}},
             ]
+            first_in_stock = next((p for p in alternatives if p.get("in_stock")), alternatives[0] if alternatives else None)
+            if first_in_stock and first_in_stock.get("id"):
+                actions.append({
+                    "type": "add_to_cart",
+                    "payload": {
+                        "product_id": int(first_in_stock["id"]),
+                        "variation_id": int(first_in_stock.get("variation_id") or first_in_stock["id"]),
+                        "quantity": 1,
+                    }
+                })
             suggested = ["Show options", "Add to cart", "Show my cart"]
             last_ids = [p.get("id") for p in (products + alternatives) if p.get("id")]
         else:
@@ -328,6 +440,16 @@ async def handle_product_discovery(
     else:
         response = f"{name}{price_text} — want me to show the size and color options?"
         actions = [{"type": "show_products", "payload": {"products": products}}]
+        first_in_stock = next((p for p in products if p.get("in_stock")), products[0] if products else None)
+        if first_in_stock and first_in_stock.get("id"):
+            actions.append({
+                "type": "add_to_cart",
+                "payload": {
+                    "product_id": int(first_in_stock["id"]),
+                    "variation_id": int(first_in_stock.get("variation_id") or first_in_stock["id"]),
+                    "quantity": 1,
+                }
+            })
         suggested = ["Show options", "Add to cart", "Show my cart"]
         last_ids = [p.get("id") for p in products if p.get("id")]
 
@@ -355,10 +477,35 @@ async def handle_buy_intent(
     if not query:
         return None
 
-    products = await store_client.search_products(query=query, in_stock_only=False, limit=4)
+    async with AsyncSessionLocal() as db:
+        search_results = await hybrid_search(
+            tenant_id=tenant_id,
+            query=query,
+            redis=None,
+            db=db,
+            store_client=store_client,
+            in_stock_only=False,
+            limit=4,
+        )
+    products = []
+    for r in search_results:
+        products.append({
+            "id": r.platform_id,
+            "name": r.name,
+            "description": r.description,
+            "price": r.price,
+            "currency": r.currency,
+            "image_url": r.image_url,
+            "in_stock": r.in_stock,
+            "category_slug": r.category_slug,
+            "tags": r.tags,
+            "permalink": r.permalink,
+            "short_description": r.description[:200] if r.description else "",
+        })
     if not products:
         return None
 
+    products.sort(key=lambda p: (p.get("in_stock", False), 0), reverse=True)
     product = pick_best_product_match(query, products) or products[0]
     product_id = product.get("id")
     name = product.get("name", "")
@@ -390,8 +537,33 @@ async def handle_availability(
 
     product: Optional[Dict[str, Any]] = None
     if query:
-        rows = await store_client.search_products(query=query, in_stock_only=False, limit=6)
+        async with AsyncSessionLocal() as db:
+            search_results = await hybrid_search(
+                tenant_id=tenant_id,
+                query=query,
+                redis=None,
+                db=db,
+                store_client=store_client,
+                in_stock_only=False,
+                limit=6,
+            )
+        rows = []
+        for r in search_results:
+            rows.append({
+                "id": r.platform_id,
+                "name": r.name,
+                "description": r.description,
+                "price": r.price,
+                "currency": r.currency,
+                "image_url": r.image_url,
+                "in_stock": r.in_stock,
+                "category_slug": r.category_slug,
+                "tags": r.tags,
+                "permalink": r.permalink,
+                "short_description": r.description[:200] if r.description else "",
+            })
         if rows:
+            rows.sort(key=lambda p: (p.get("in_stock", False), 0), reverse=True)
             product = pick_best_product_match(query, rows)
     elif last_products:
         _lp0 = last_products[0]
@@ -430,7 +602,31 @@ async def handle_availability(
     }]
 
     if not is_in_stock:
-        similar = await store_client.search_products(query=str(product.get("name") or ""), in_stock_only=True, limit=4)
+        async with AsyncSessionLocal() as db:
+            search_results = await hybrid_search(
+                tenant_id=tenant_id,
+                query=str(product.get("name") or ""),
+                redis=None,
+                db=db,
+                store_client=store_client,
+                in_stock_only=True,
+                limit=4,
+            )
+        similar = []
+        for r in search_results:
+            similar.append({
+                "id": r.platform_id,
+                "name": r.name,
+                "description": r.description,
+                "price": r.price,
+                "currency": r.currency,
+                "image_url": r.image_url,
+                "in_stock": r.in_stock,
+                "category_slug": r.category_slug,
+                "tags": r.tags,
+                "permalink": r.permalink,
+                "short_description": r.description[:200] if r.description else "",
+            })
         if similar:
             actions.append({"type": "show_products", "payload": {"products": similar}})
 
@@ -452,22 +648,32 @@ async def handle_compare(
     language: str,
     *,
     store_client: Any,
+    tenant_id: str = "_dev",
 ) -> Optional[Dict[str, Any]]:
     terms = split_compare_terms(message)
     items: List[Dict[str, Any]] = []
 
     for term in terms:
-        rows = await store_client.search_products(query=term, in_stock_only=False, limit=1)
-        if rows:
-            row = rows[0]
+        async with AsyncSessionLocal() as db:
+            search_results = await hybrid_search(
+                tenant_id=tenant_id,
+                query=term,
+                redis=None,
+                db=db,
+                store_client=store_client,
+                in_stock_only=False,
+                limit=1,
+            )
+        if search_results:
+            r = search_results[0]
             items.append({
-                "id": row.get("id"),
-                "name": row.get("name"),
-                "price": row.get("price"),
-                "sale_price": row.get("sale_price"),
-                "in_stock": in_stock(row),
-                "image_url": row.get("image_url") or (row.get("images", [{}])[0].get("src") if row.get("images") else ""),
-                "permalink": row.get("permalink", ""),
+                "id": r.platform_id,
+                "name": r.name,
+                "price": r.price,
+                "sale_price": "",
+                "in_stock": r.in_stock,
+                "image_url": r.image_url or "",
+                "permalink": r.permalink or "",
             })
 
     if len(items) < 2 and len(last_products) >= 2:
@@ -479,7 +685,7 @@ async def handle_compare(
                 "price": detail.get("price"),
                 "sale_price": "",
                 "in_stock": in_stock(detail),
-                "image_url": detail.get("image_url") or (detail.get("images", [{}])[0].get("src") if detail.get("images") else ""),
+                "image_url": detail.get("image_url") or "",
                 "permalink": detail.get("permalink", ""),
             })
 
