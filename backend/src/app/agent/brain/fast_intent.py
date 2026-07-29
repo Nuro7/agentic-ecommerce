@@ -547,15 +547,19 @@ async def handle_add_to_cart(
     message: str,
     lower: str,
     session_id: str,
-    last_products: List[Any],
+    active_recommendations: List[Any],
     language: str,
+    page_context: Optional[Dict[str, Any]] = None,
     *,
     store_client: Any,
 ) -> Optional[Dict[str, Any]]:
-    qty = extract_quantity(lower)
-    size, color = extract_size_color(lower)
-
-    product = await _resolve_product_for_add(message, lower, last_products, store_client=store_client)
+    product = await _resolve_product_for_add(
+        message=message,
+        lower=lower,
+        active_recommendations=active_recommendations,
+        page_context=page_context or {},
+        store_client=store_client,
+    )
     if not product or not product.get("id"):
         return with_actions_alias({
             "response_text": say(language, "ask_add_which"),
@@ -563,130 +567,30 @@ async def handle_add_to_cart(
             "suggested_replies": ["Show products"],
         })
 
-    variation_id = 0
-    variation_data: Dict[str, Any] = {}
-    attributes: Optional[Dict[str, str]] = None
-    if size or color:
-        attributes = {}
-        if size:
-            attributes["size"] = size
-        if color:
-            attributes["color"] = color
-
-    if attributes:
-        inventory = await store_client.check_inventory(product_id=int(product["id"]), attributes=attributes)
-        variation_id = int(inventory.get("variation_id") or 0)
-        if hasattr(store_client, "_attributes_to_variation_map"):
-            variation_data = store_client._attributes_to_variation_map(inventory.get("attributes", []))
-        if not inventory.get("in_stock"):
-            alternatives = await store_client.search_products(query=str(product.get("name") or ""), in_stock_only=True, limit=4)
-            actions = [{"type": "show_availability", "payload": {"product": product, "inventory": inventory, "attributes": attributes or {}}}]
-            if alternatives:
-                actions.append({"type": "show_products", "payload": {"products": alternatives}})
-            return with_actions_alias({
-                "response_text": say(language, "out_of_stock", name=product.get("name", "Product"), size=size or ""),
-                "ui_actions": actions,
-                "suggested_replies": ["Show alternatives"],
-                "last_products": [p.get("id") for p in alternatives if p.get("id")],
-            })
-        if qty <= 0 or qty == 1:
-            if not re.search(r'\b(\d+)\s*(piece|pcs|qty|quantity|units?|nos?|number)?\b', lower):
-                product_name = product.get("name", "Product")
-                size_label = f" size {size}" if size else ""
-                color_label = f" {color}" if color else ""
-                return with_actions_alias({
-                    "response_text": f"Great choice!{color_label}{size_label} — How many {product_name} would you like to add?",
-                    "ui_actions": [],
-                    "suggested_replies": ["1", "2", "3"],
-                    "last_products": [product.get("id")],
-                    "_pending_add": {
-                        "product_id": int(product["id"]),
-                        "variation_id": variation_id,
-                        "variation": variation_data,
-                    },
-                })
-
-    if not attributes:
-        detail = await store_client.get_product_details(product_id=int(product["id"]))
-        variations = await store_client.find_variants(product_id=int(product["id"]))
-        if variations and variations.get("variations"):
-            return with_actions_alias({
-                "response_text": f"Please select the specific options for {product.get('name', 'this product')} to add it to your cart.",
-                "ui_actions": [{"type": "show_variants", "payload": {"product": detail, "variations": variations.get("variations", [])}}],
-                "suggested_replies": ["Show details", "Cancel"],
-                "last_products": [product.get("id")],
-            })
-        if qty <= 0 or qty == 1:
-            if not re.search(r'\b(\d+)\s*(piece|pcs|qty|quantity|units?|nos?|number)?\b', lower):
-                return with_actions_alias({
-                    "response_text": f"How many {product.get('name', 'items')} would you like to add to your cart?",
-                    "ui_actions": [],
-                    "suggested_replies": ["1", "2", "3"],
-                    "last_products": [product.get("id")],
-                })
-
-    final_qty = max(1, qty)
-
-    # Execute add-to-cart server-side (Shopify: Storefront GraphQL cartLinesAdd;
-    # WooCommerce: REST API). Returns full cart snapshot with checkoutUrl.
-    try:
-        cart_result = await store_client.add_to_cart(
-            session_id=session_id,
-            product_id=int(product["id"]),
-            variation_id=variation_id,
-            quantity=final_qty,
-            variation=variation_data,
-            product_name=product.get("name", ""),
-            price=product.get("price", ""),
-        )
-        cart_snapshot = {k: v for k, v in cart_result.items() if k != "success"}
-        checkout_url = cart_result.get("checkout_url", "")
-        item_count = int(cart_result.get("item_count", final_qty))
-    except Exception as exc:
-        logger.warning("Server-side add_to_cart failed, returning client action: %s", exc)
-        _handle = product.get("handle") or ""
-        if not _handle:
-            _m = re.search(r"/products/([^/?#]+)", product.get("permalink", ""))
-            if _m:
-                _handle = _m.group(1)
-        return with_actions_alias({
-            "response_text": say(language, "added_to_cart", name=product.get("name", "Product"), qty=final_qty),
-            "ui_actions": [{
-                "type": "add_to_cart",
-                "payload": {
-                    "product_id": int(product["id"]),
-                    "variation_id": variation_id,
-                    "variation": variation_data,
-                    "quantity": final_qty,
-                    "permalink": product.get("permalink", ""),
-                    "handle": _handle,
-                },
-            }],
-            "suggested_replies": ["Add another item", "View cart", "Proceed to checkout"],
-            "last_products": [product.get("id")],
-        })
+    variant_id = product.get("variant_id") or product.get("id")
 
     return with_actions_alias({
-        "response_text": say(language, "added_to_cart", name=product.get("name", "Product"), qty=final_qty),
+        "response_text": f"Adding the {product.get('name', 'item')} to your cart right now.",
         "ui_actions": [{
-            "type": "cart_updated",
+            "type": "add_to_cart",
             "payload": {
-                "cart": cart_snapshot,
-                "item_count": item_count,
                 "product_id": int(product["id"]),
-                "checkout_url": checkout_url,
+                "variation_id": int(variant_id),
+                "quantity": 1,
+                "permalink": product.get("permalink", ""),
+                "handle": product.get("handle", ""),
             },
         }],
         "suggested_replies": ["Add another item", "View cart", "Proceed to checkout"],
         "last_products": [product.get("id")],
-        "cart_snapshot": cart_snapshot,
     })
 
 
 async def _resolve_product_for_add(
     message: str,
     lower: str,
-    last_products: List[Any],
+    active_recommendations: List[Any],
+    page_context: Optional[Dict[str, Any]] = None,
     *,
     store_client: Any,
 ) -> Optional[Dict[str, Any]]:
@@ -697,7 +601,44 @@ async def _resolve_product_for_add(
         except (TypeError, ValueError):
             return None
 
-    # 1. Explicit product_id in text
+    page_context = page_context or {}
+
+    # 1. Resolve ordinal reference ("first", "second", "third")
+    target_index = None
+    if re.search(r"\b(first|1st|number one|no 1|no\. 1)\b", lower):
+        target_index = 0
+    elif re.search(r"\b(second|2nd|number two|no 2|no\. 2)\b", lower):
+        target_index = 1
+    elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower):
+        target_index = 2
+
+    if target_index is not None and active_recommendations and len(active_recommendations) > target_index:
+        recommended_item = active_recommendations[target_index]
+        if isinstance(recommended_item, dict) and recommended_item.get("id"):
+            return recommended_item
+
+    # 2. Resolve anaphoric reference ("add this", "get it", "add to cart")
+    if re.search(r"\b(this|that|it|product|shoe|item)\b", lower):
+        current_pid = page_context.get("product_id")
+        if current_pid:
+            try:
+                detail = await store_client.get_product_details(int(current_pid))
+                if detail and detail.get("id"):
+                    return {
+                        "id": detail.get("id"),
+                        "name": detail.get("name", "Product"),
+                        "permalink": detail.get("permalink", ""),
+                        "variant_id": detail.get("variation_id") or detail.get("id"),
+                    }
+            except Exception as e:
+                logger.error("Failed fetching context product for pid %s: %s", current_pid, e)
+
+        if active_recommendations:
+            first_rec = active_recommendations[0]
+            if isinstance(first_rec, dict) and first_rec.get("id"):
+                return first_rec
+
+    # 3. Explicit product_id in text
     product_id_match = re.search(r"product\s*id\s*(\d+)", lower)
     if product_id_match:
         pid = int(product_id_match.group(1))
@@ -705,7 +646,7 @@ async def _resolve_product_for_add(
         if detail.get("id"):
             return {"id": detail.get("id"), "name": detail.get("name", "Product"), "permalink": detail.get("permalink", "")}
 
-    # 2. Try search — if query resolves to a product, use it
+    # 4. Try search — if query resolves to a product, use it
     query = extract_add_query(message)
     if query:
         matches = await store_client.search_products(query=query, in_stock_only=False, limit=6)
@@ -714,9 +655,9 @@ async def _resolve_product_for_add(
             if best and best.get("id"):
                 return best
 
-    # 3. No search match + last_products exists = anaphoric reference (any language)
-    if last_products:
-        pid = _get_pid(last_products[0])
+    # 5. Fallback to first recommendation
+    if active_recommendations:
+        pid = _get_pid(active_recommendations[0])
         if pid:
             detail = await store_client.get_product_details(pid)
             if detail.get("id"):

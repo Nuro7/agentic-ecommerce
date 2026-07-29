@@ -2364,19 +2364,38 @@
       }
 
       case 'add_to_cart':
-        // Server-side cart management (FIX 5): backend already executed the
-        // Shopify Storefront GraphQL cartLinesAdd or WooCommerce REST add.
-        // Frontend just updates badge/toast — no more client-side AJAX to /cart/add.js.
-        if (act.payload && act.payload.product_id) {
-          if (S._localAddHandled && (Date.now() - S._localAddHandled) < 5000) {
-            const same = Number(act.payload.product_id) === Number((S.lastShownProduct || {}).id);
-            if (same) { S._localAddHandled = 0; break; }
-          }
-          // If server-side already returned cart data via cart_updated, this is a
-          // fallback path from a legacy payload — use addToCartDispatch as before.
-          console.log('[WooAgent A2C] Legacy client-side add dispatched:', act.payload);
+        if (act.payload && act.payload.variation_id) {
+          console.log('[WooAgent A2C] Native AJAX add for Variant ID:', act.payload.variation_id);
           try {
-            await addToCartDispatch(act.payload);
+            const addRes = await fetch('/cart/add.js', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({
+                id: parseInt(act.payload.variation_id, 10),
+                quantity: Math.max(1, parseInt(act.payload.quantity, 10) || 1),
+              }),
+            });
+            if (!addRes.ok) {
+              let errMsg = 'Add to cart failed';
+              try { const e = await addRes.json(); errMsg = e.description || e.message || errMsg; } catch (_) {}
+              throw new Error(errMsg);
+            }
+            showToast('Added to cart!');
+            const cartRes = await fetch('/cart.js');
+            if (cartRes.ok) {
+              const cart = await cartRes.json();
+              updateBadge(cart.item_count || 0);
+              S.cartSnapshot = cart;
+              try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cart)); } catch (e) {}
+            }
+            const cartDrawer = document.querySelector('cart-drawer') || document.querySelector('cart-drawer-component') || document.querySelector('[data-cart-drawer]');
+            if (cartDrawer) {
+              const openEvent = new CustomEvent('cart:build', { detail: { cart: S.cartSnapshot } });
+              document.dispatchEvent(openEvent);
+              if (typeof cartDrawer.open === 'boolean') cartDrawer.open = true;
+            }
+            const drawerEl = document.querySelector('.cart-drawer');
+            if (drawerEl) drawerEl.classList.add('active');
           } catch (error) {
             const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
             console.error('[WooAgent A2C] add-to-cart failed:', message);
@@ -3963,6 +3982,10 @@
   let a2aWsToken          = '';     // [4] Short-lived HMAC token for WS auth
   let a2aTokenFetchedAt   = 0;      // [4] Epoch ms when token was last fetched
   let a2aTokenSessionId   = '';     // [4] session_id the cached token was minted for
+  // Micro-handshake gate: block mic capture until server acknowledges page context.
+  // Prevents PDP hallucination race (T_audio ~100ms vs T_handshake ~300ms).
+  let _a2aContextAcknowledged = false;
+
   // Streaming transcript accumulator — chunks from Gemini arrive word-by-word;
   // we append into one bubble and only finalise it on turn_complete / barge-in.
   let _a2aStreamBubble    = null;   // current live DOM element being updated
@@ -4048,6 +4071,10 @@
       a2aReconnectCount = 0;  // [2] reset counter on successful connection
       _a2aStreamBubble  = null;
       _a2aStreamText    = '';
+      _a2aContextAcknowledged = false;
+
+      // Block VAD/speech capture until server acknowledges page context handshake.
+      // Prevents PDP hallucination race (T_audio ~100ms vs T_handshake ~300ms).
 
       // Send initial page_update control frame so the backend Turn Coordinator
       // knows the current URL, cart, and any interrupted flow context.
@@ -4069,17 +4096,32 @@
             }
           } catch (e) { }
 
+          const pageContextPayload = {
+            url: location.href,
+            title: document.title,
+            page_type: (window.Shopify && window.Shopify.analytics && window.Shopify.analytics.meta && window.Shopify.analytics.meta.page && window.Shopify.analytics.meta.page.pageType) || (detectProductId() ? 'product' : 'other'),
+            product_id: typeof detectProductId === 'function' ? detectProductId() : (S.currentPageProduct ? S.currentPageProduct.id : null),
+            product_name: typeof detectProductName === 'function' ? detectProductName() : (S.currentPageProduct ? S.currentPageProduct.name : null),
+            product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+            interrupted_flow: interruptedFlow
+          };
+
           ws.send(JSON.stringify({
             type: 'page_update',
-            page_context: {
-              url: location.href,
-              title: document.title,
-              product_id: typeof detectProductId === 'function' ? detectProductId() : (S.currentPageProduct ? S.currentPageProduct.id : null),
-              product_name: typeof detectProductName === 'function' ? detectProductName() : (S.currentPageProduct ? S.currentPageProduct.name : null),
-              product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
-              interrupted_flow: interruptedFlow
-            },
+            page_context: pageContextPayload,
             cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
+          }));
+
+          // Micro-handshake: server must acknowledge before we start mic
+          ws.send(JSON.stringify({
+            type: 'client.page_context_update',
+            payload: {
+              url: pageContextPayload.url,
+              path: location.pathname,
+              page_type: pageContextPayload.page_type,
+              product_id: pageContextPayload.product_id,
+              product_name: pageContextPayload.product_name,
+            }
           }));
         }
       } catch (e) {
@@ -4089,8 +4131,8 @@
       if (startMic) {
         isLiveMode = true;
         orb.classList.add('live');
-        orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-        _a2aStartCapture();
+        orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Syncing…</strong>';
+        // Capture starts only after session.context_acknowledged is received
       } else {
         orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Ready</strong>';
       }
@@ -4113,6 +4155,15 @@
 
           if (msg.type === 'ui_action' && msg.action) {
             processAction(msg.action).catch(e => console.warn('[WooAgent A2A] ui_action failed:', msg.action?.type, e));
+          }
+
+          // ── [FIX 3] Micro-handshake: server acknowledged page context → safe to open mic ──
+          if (msg.type === 'session.context_acknowledged') {
+            _a2aContextAcknowledged = true;
+            if (isLiveMode && !a2aStream) {
+              orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
+              _a2aStartCapture();
+            }
           }
 
           // ── [1] Barge-in: backend detected user interruption ──────────

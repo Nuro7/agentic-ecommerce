@@ -50,6 +50,7 @@ async def execute_tool_call(
     tenant_id: str,
     store_client: Any,
     session_service: Any,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
     """Dispatch a single tool call and return (result, ui_actions, product_ids, customer_email)."""
     logger.info("[FLOW] tool_dispatch ENTER tool=%s args=%s session=%s", tool_name, json.dumps(tool_args, default=str)[:120], session_id)
@@ -357,6 +358,15 @@ async def execute_tool_call(
             actions=actions,
         )
 
+    if tool_name == "request_human_support":
+        customer_email = str(tool_args.get("customer_email", "")).strip().lower()
+        return await _request_human_support(
+            store_client=store_client,
+            customer_email=customer_email,
+            conversation_history=conversation_history,
+            actions=actions,
+        )
+
     if tool_name == "get_store_info":
         info = await store_client.get_store_policies()
         return {"store_info": info}, actions, [], None
@@ -453,11 +463,14 @@ async def _apply_conversational_discount(
     actions: List[Dict[str, Any]],
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
     from ...services.promotions import generate_and_apply_discount
+    campaign = {
+        "campaign_id": campaign_id,
+        "discount_percentage": discount_percentage,
+    }
     result = await generate_and_apply_discount(
         store_client=store_client,
         session_id=session_id,
-        campaign_id=campaign_id,
-        discount_percentage=discount_percentage,
+        campaign=campaign,
     )
     if result.get("success"):
         actions.append({
@@ -468,6 +481,30 @@ async def _apply_conversational_discount(
             },
         })
     return result, actions, [], None
+
+
+async def _request_human_support(
+    *,
+    store_client: Any,
+    customer_email: str,
+    conversation_history: Optional[List[Dict[str, Any]]],
+    actions: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
+    from ...services.ticketing import escalate_and_sync_shopify_ticket
+    ticket_result = await escalate_and_sync_shopify_ticket(
+        customer_email=customer_email,
+        conversation_history=conversation_history or [],
+        store_client=store_client,
+    )
+    if ticket_result.get("status") == "success":
+        actions.append({
+            "type": "show_ticket",
+            "payload": {
+                "ticket_id": ticket_result["ticket_id"],
+                "message": f"Support ticket {ticket_result['ticket_id']} created. A human agent will follow up shortly.",
+            },
+        })
+    return ticket_result, actions, [], customer_email or None
 
 
 def _normalize_cart(cart: Dict[str, Any]) -> Dict[str, Any]:
@@ -699,6 +736,23 @@ def tool_schema() -> List[Dict[str, Any]]:
                         },
                     },
                     "required": ["campaign_id", "discount_percentage"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "request_human_support",
+                "description": "Escalate to a human support agent. Call this only when the customer explicitly demands to speak to a human, is highly frustrated, or asks for a manager. Creates a support ticket and notifies the team.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "customer_email": {
+                            "type": "string",
+                            "description": "Customer's email address for the support ticket.",
+                        },
+                    },
+                    "required": ["customer_email"],
                 },
             },
         },

@@ -1,27 +1,51 @@
+import os
+import uuid
 import json
 import logging
-import uuid
 from typing import Any, Dict, List, Optional
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
-GORGIAS_WEBHOOK_URL = None
+TICKET_NAMESPACE = "speako"
+TICKET_STATUS_KEY = "ticket_status"
+TICKET_ID_KEY = "last_ticket_id"
 
 
-def _compile_transcript(conversation_history: List[Dict[str, Any]]) -> str:
-    """Compile conversation history into a human-readable transcript string."""
-    transcript_lines: List[str] = []
+async def _resolve_shopify_customer_id(
+    store_client: Any,
+    customer_email: str,
+) -> Optional[str]:
+    """Look up Shopify Customer GID by email via Admin API."""
+    if not store_client or not customer_email:
+        return None
+    try:
+        gql = """
+        query GetCustomerByEmail($email: String!) {
+          customers(first: 1, query: "email:%s") {
+            edges { node { id } }
+          }
+        }
+        """ % customer_email
+        data = await store_client._admin_graphql(gql)
+        edges = data.get("customers", {}).get("edges", [])
+        if edges:
+            return edges[0]["node"]["id"]
+    except Exception as exc:
+        logger.warning("Could not resolve Shopify customer ID for %s: %s", customer_email, exc)
+    return None
+
+
+def _build_transcript(conversation_history: List[Dict[str, Any]]) -> str:
+    """Format conversation_history into a human-readable chat transcript."""
+    lines: List[str] = []
     for turn in conversation_history:
-        role_raw = turn.get("role", "")
+        role = turn.get("role", "unknown")
         content = turn.get("content", "")
-        if role_raw == "user":
-            label = "Shopper"
-        elif role_raw == "assistant":
-            label = "Assistant (Speako)"
-        else:
-            label = role_raw.capitalize()
-        transcript_lines.append(f"{label}: {content}")
-    return "\n".join(transcript_lines)
+        label = "Shopper" if role == "user" else "Assistant (Speako)"
+        lines.append(f"{label}: {content}")
+    return "\n".join(lines)
 
 
 async def escalate_and_sync_shopify_ticket(
@@ -29,82 +53,115 @@ async def escalate_and_sync_shopify_ticket(
     conversation_history: List[Dict[str, Any]],
     store_client: Any,
     shopify_customer_id: Optional[str] = None,
-    gorgias_webhook_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Creates an external helpdesk ticket (Gorgias-compatible payload)
-    and writes status trackers directly back to Shopify Customer Metafields.
-
-    Args:
-        customer_email: The customer's email address.
-        conversation_history: Full list of conversation turns.
-        store_client: The store client (ShopifyClient) for Admin mutation.
-        shopify_customer_id: Shopify Customer GID (gid://shopify/Customer/...).
-        gorgias_webhook_url: Override for Gorgias webhook endpoint.
-
-    Returns:
-        Dict with status and ticket_id.
+    """Create a helpdesk ticket (Gorgias-compatible), return ticket ID,
+    and write status metafields to the Shopify customer profile.
     """
     ticket_id = f"SPEC-{uuid.uuid4().hex[:6].upper()}"
+    transcript = _build_transcript(conversation_history)
 
-    formatted_transcript = _compile_transcript(conversation_history)
-
-    gorgias_payload = {
-        "customer": {"email": customer_email},
-        "messages": [
-            {
-                "from": {"type": "customer", "email": customer_email},
-                "body": "Conversation escalated from Speako Voice Assistant",
-                "channel": "chat",
-                "via": "api",
-            },
-            {
-                "from": {"type": "assistant", "name": "Speako"},
-                "body": formatted_transcript,
-                "channel": "chat",
-                "via": "api",
-            },
-        ],
-        "channel": "chat",
-        "status": "open",
-        "subject": "Speako Voice Assistant Support Escalation",
-        "via": "api",
-        "external_id": ticket_id,
-        "source": "speako-voice-assistant",
-        "tags": ["speako", "voice-escalation"],
-    }
-
-    webhook_url = gorgias_webhook_url or GORGIAS_WEBHOOK_URL
-    if webhook_url:
+    gorgias_webhook = os.getenv("GORGIAS_WEBHOOK_URL", "").strip()
+    if gorgias_webhook:
+        gorgias_payload = {
+            "customer": {"email": customer_email},
+            "messages": [
+                {
+                    "text": transcript,
+                    "channel": "chat",
+                    "source": "api",
+                }
+            ],
+            "channel": "chat",
+            "status": "open",
+            "subject": "Speako Voice Assistant Support Escalation",
+            "via": "api",
+            "external_id": ticket_id,
+        }
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
-                    webhook_url,
+                    gorgias_webhook,
                     json=gorgias_payload,
                     headers={"Content-Type": "application/json"},
                 )
-                resp.raise_for_status()
+                if resp.is_success:
+                    logger.info("Gorgias ticket %s created successfully", ticket_id)
+                else:
+                    logger.warning(
+                        "Gorgias webhook returned %s for ticket %s",
+                        resp.status_code, ticket_id,
+                    )
+        except Exception as exc:
+            logger.warning("Gorgias webhook post failed for ticket %s: %s", ticket_id, exc)
+
+    resolved_id: Optional[str] = shopify_customer_id
+    if not resolved_id and customer_email:
+        resolved_id = await _resolve_shopify_customer_id(store_client, customer_email)
+
+    if resolved_id and store_client:
+        try:
+            existing_tags = await _get_customer_tags(store_client, resolved_id)
+            all_tags = list(set(existing_tags + ["voice-support-open", "escalated-from-speako"]))
+
+            gql = """
+            mutation updateCustomerMetafields($input: CustomerInput!) {
+              customerUpdate(input: $input) {
+                customer { id tags }
+                userErrors { field message }
+              }
+            }
+            """
+            variables = {
+                "input": {
+                    "id": resolved_id,
+                    "tags": all_tags,
+                    "metafields": [
+                        {
+                            "namespace": TICKET_NAMESPACE,
+                            "key": TICKET_ID_KEY,
+                            "value": ticket_id,
+                            "type": "single_line_text_field",
+                        },
+                        {
+                            "namespace": TICKET_NAMESPACE,
+                            "key": TICKET_STATUS_KEY,
+                            "value": "open",
+                            "type": "single_line_text_field",
+                        },
+                    ],
+                }
+            }
+            data = await store_client._admin_graphql(gql, variables)
+            errors = data.get("customerUpdate", {}).get("userErrors", [])
+            if errors:
+                logger.warning("Shopify customer metafield update errors: %s", errors)
+            else:
                 logger.info(
-                    "Gorgias ticket created: %s (status=%d)",
-                    ticket_id, resp.status_code,
+                    "Wrote ticket %s metafields to Shopify customer %s",
+                    ticket_id, resolved_id,
                 )
         except Exception as exc:
-            logger.warning("Failed to post ticket to Gorgias webhook: %s", exc)
+            logger.warning("Shopify metafield write failed for ticket %s: %s", ticket_id, exc)
 
-    if shopify_customer_id and store_client:
-        try:
-            await store_client.update_customer_ticket_metafields(
-                customer_id=shopify_customer_id,
-                ticket_id=ticket_id,
-                ticket_status="open",
-                tags_to_add=["voice-support-open", "active-ticket"],
-            )
-            logger.info(
-                "Shopify customer metafields updated for %s: ticket=%s",
-                shopify_customer_id, ticket_id,
-            )
-        except Exception as exc:
-            logger.warning("Failed to update Shopify customer metafields: %s", exc)
+    return {"status": "success", "ticket_id": ticket_id, "transcript": transcript}
 
-    return {"status": "success", "ticket_id": ticket_id}
+
+async def _get_customer_tags(store_client: Any, customer_gid: str) -> List[str]:
+    """Fetch existing tags from a Shopify customer profile."""
+    try:
+        gql = """
+        query GetCustomerTags($id: ID!) {
+          customer(id: $id) {
+            tags
+          }
+        }
+        """
+        data = await store_client._admin_graphql(gql, {"id": customer_gid})
+        raw = data.get("customer", {}).get("tags")
+        if isinstance(raw, list):
+            return [str(t) for t in raw]
+        if isinstance(raw, str):
+            return [t.strip() for t in raw.split(",") if t.strip()]
+    except Exception:
+        pass
+    return []

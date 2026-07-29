@@ -1,150 +1,220 @@
-import json
-import logging
 import uuid
+import os
+import logging
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+CAMPAIGN_NAMESPACE = "speako"
+CAMPAIGN_METAKEY = "campaigns"
+
+
+async def load_active_campaigns(store_client: Any) -> List[Dict[str, Any]]:
+    """Read active campaign rules from Shopify Shop Metafields.
+    Returns a list of campaign dicts, or empty list on any error.
+    """
+    if not store_client:
+        return []
+    try:
+        gql = """
+        query GetShopCampaigns {
+          shop {
+            metafields(namespace: "%s", first: 10) {
+              edges {
+                node {
+                  key
+                  value
+                }
+              }
+            }
+          }
+        }
+        """ % CAMPAIGN_NAMESPACE
+        data = await store_client._admin_graphql(gql)
+        edges = (
+            data.get("shop", {})
+            .get("metafields", {})
+            .get("edges", [])
+        )
+        for edge in edges:
+            node = edge.get("node", {})
+            if node.get("key") == CAMPAIGN_METAKEY:
+                raw = node.get("value", "[]")
+                campaigns = _safe_json_loads(raw, [])
+                if isinstance(campaigns, list):
+                    logger.info("Loaded %d campaign rules from shop metafields", len(campaigns))
+                    return campaigns
+        logger.debug("No speako.campaigns metafield found on shop")
+        return []
+    except Exception as exc:
+        logger.warning("Failed to load campaigns from metafields: %s", exc)
+        return []
+
+
+def _safe_json_loads(raw: str, default: Any = None) -> Any:
+    try:
+        import json
+        return json.loads(raw)
+    except Exception:
+        return default
 
 
 def rerank_and_annotate_promotions(
     products: List[Dict[str, Any]],
     active_campaigns: List[Dict[str, Any]],
-    w_promo_default: float = 1.5,
     w_margin_default: float = 1.3,
 ) -> List[Dict[str, Any]]:
-    """
-    Reranks search results based on active merchant campaigns and margin definitions.
-    Injects campaign data into the product dictionary so the LLM knows what to pitch.
-
-    S_final = S_base * w_promo * w_margin
-
-    `products` should have a "relevance_score" key (default 1.0).
-    `active_campaigns` is a list of campaign dicts from Shopify Shop Metafields.
+    """Rerank products by S_final = S_base * w_promo * w_margin.
+    Annotate items matching a campaign with promo flags.
     """
     scored: List[Dict[str, Any]] = []
-
     for prod in products:
-        tags = prod.get("tags", "")
-        if isinstance(tags, list):
-            tag_list = [str(t).lower() for t in tags]
-        elif isinstance(tags, str):
-            tag_list = [t.strip().lower() for t in tags.split(",")]
-        else:
-            tag_list = []
+        tags = prod.get("tags", [])
+        if not isinstance(tags, list):
+            tags = []
+        tags_lower = [str(t).lower() for t in tags]
 
         base_score = float(prod.get("relevance_score", 1.0))
-
         w_promo = 1.0
         active_campaign: Optional[Dict[str, Any]] = None
 
         for campaign in active_campaigns:
-            target_tag = (campaign.get("target_tag") or "").strip().lower()
-            if target_tag and target_tag in tag_list:
-                w_promo = w_promo_default
+            target_tag = (campaign.get("target_tag") or "").lower()
+            if target_tag and target_tag in tags_lower:
+                w_promo = 1.5
                 active_campaign = campaign
                 break
 
-        w_margin = float(prod.get("margin_weight", 1.0))
-        if w_margin < 1.0:
-            w_margin = w_margin_default
+        is_high_margin = bool(prod.get("is_high_margin", False))
+        w_margin = w_margin_default if is_high_margin else 1.0
 
         final_score = base_score * w_promo * w_margin
         prod["_rerank_score"] = final_score
 
         if active_campaign:
             prod["is_promo_item"] = True
-            prod["promo_badge"] = "🔥 Limited Clearance Offer"
+            prod["promo_badge"] = "\U0001f525 Limited Clearance Offer"
             prod["campaign_id"] = active_campaign.get("campaign_id")
             prod["discount_percentage"] = active_campaign.get("discount_percentage")
             prod["pitch_hook"] = active_campaign.get("pitch_hook")
-            prod["discount_type"] = active_campaign.get("discount_type", "percentage")
 
         scored.append(prod)
 
-    scored.sort(key=lambda x: x.get("_rerank_score", 1.0), reverse=True)
+    scored.sort(key=lambda x: float(x.get("_rerank_score", 1.0)), reverse=True)
     return scored
 
 
-def parse_shop_metafield_campaigns(raw_json: Optional[str]) -> List[Dict[str, Any]]:
-    """
-    Parse the campaigns JSON from a Shopify Shop Metafield.
-    Returns a list of campaign dicts, or empty list on failure.
-    Expected metafield namespace: 'speako', key: 'campaigns'.
-    """
-    if not raw_json:
-        return []
-    try:
-        data = json.loads(raw_json)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            campaigns = data.get("campaigns") or data.get("rules") or []
-            return campaigns if isinstance(campaigns, list) else [data]
-    except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("Failed to parse campaign metafield JSON: %s", exc)
-    return []
-
-
 async def generate_and_apply_discount(
-    *,
-    store_client: Any,
     session_id: str,
-    campaign_id: str,
-    discount_percentage: float,
-    shopify_cart_id: Optional[str] = None,
+    store_client: Any,
+    campaign: Dict[str, Any],
+    customer_email: Optional[str] = None,
+    cart_total: Optional[float] = None,
 ) -> Dict[str, Any]:
+    """Generate a single-use discount code (Admin API) and apply it to the
+    active cart (Storefront API). Returns the coupon code + updated cart.
     """
-    Generates a single-use discount code via Shopify Admin API
-    and applies it to the customer's active cart via Storefront API.
-
-    Steps:
-      1. Call discountCodeBasicCreate (Admin GraphQL)
-      2. Call cartDiscountCodesUpdate (Storefront GraphQL)
-
-    Returns dict with success status, code, and message.
-    """
-    if not store_client:
-        return {"success": False, "message": "No store client available"}
-
-    code = f"SPEAKO-{uuid.uuid4().hex[:8].upper()}"
-
     try:
-        result = await store_client.create_discount_code(
-            code=code,
-            discount_percentage=discount_percentage,
-            campaign_id=campaign_id,
-        )
-        if not result.get("success"):
-            return result
-    except Exception as exc:
-        logger.warning("Failed to create discount code: %s", exc)
-        return {"success": False, "message": f"Failed to create discount: {exc}"}
+        code = f"SPEAKO-{uuid.uuid4().hex[:8].upper()}"
+        discount_pct = float(campaign.get("discount_percentage", 10))
 
-    cart_id = shopify_cart_id
-    if not cart_id:
-        try:
-            cart_id = await store_client._get_cart_id(session_id)
-        except Exception:
-            pass
-
-    if cart_id:
-        try:
-            await store_client.apply_discount_to_cart(
-                cart_id=cart_id,
-                discount_code=code,
-            )
-        except Exception as exc:
-            logger.warning("Failed to apply discount to cart: %s", exc)
-            return {
-                "success": True,
+        gql = """
+        mutation discountCodeBasicCreate($input: DiscountCodeBasicInput!) {
+          discountCodeBasicCreate(input: $input) {
+            codeDiscountNode {
+              codeDiscount {
+                ... on DiscountCodeBasic {
+                  codes(first: 5) {
+                    edges { node { code } }
+                  }
+                }
+              }
+            }
+            userErrors { field message }
+          }
+        }
+        """
+        variables = {
+            "input": {
                 "code": code,
-                "message": f"Discount {code} created but could not auto-apply to cart. Please enter it at checkout.",
-                "auto_applied": False,
+                "usageLimit": 1,
+                "appliesOnOneTimePurchase": True,
+                "customerSelection": {"all": True},
+                "appliesOnSubscription": False,
+                "combineWith": {
+                    "orderDiscountApplications": True,
+                    "productDiscounts": True,
+                    "shippingDiscounts": True,
+                },
+                "startsAt": "2024-01-01T00:00:00Z",
+                "endsAt": None,
+                "minimumRequirement": {"quantity": {"greaterThanOrEqualTo": 1}},
+                "value": {
+                    "percentage": discount_pct / 100.0,
+                },
+            }
+        }
+        if customer_email:
+            variables["input"]["customerSelection"] = {
+                "customers": [{"email": customer_email}]
             }
 
-    return {
-        "success": True,
-        "code": code,
-        "message": f"Discount of {discount_percentage}% applied! Your code is {code}. It has been applied to your cart.",
-        "auto_applied": bool(cart_id),
-    }
+        admin_data = await store_client._admin_graphql(gql, variables)
+        errors = admin_data.get("discountCodeBasicCreate", {}).get("userErrors", [])
+        if errors:
+            logger.warning("Discount creation failed: %s", errors)
+            return {"success": False, "message": f"Discount creation failed: {errors}"}
+
+        logger.info("Generated discount code %s via Admin API", code)
+
+        cart_id = await store_client._get_cart_id(session_id)
+        if cart_id:
+            sf_gql = """
+            mutation CartDiscountCodesUpdate($cartId: ID!, $discountCodes: [String!]!) {
+              cartDiscountCodesUpdate(cartId: $cartId, discountCodes: $discountCodes) {
+                cart { id checkoutUrl
+                  cost { totalAmount { amount currencyCode } }
+                  lines(first: 50) { edges { node {
+                    id quantity
+                    merchandise { ... on ProductVariant { id title product { id title } image { url } } }
+                    cost { amountPerQuantity { amount } subtotalAmount { amount } }
+                  } } }
+                }
+                userErrors { field message }
+              }
+            }
+            """
+            sf_data = await store_client._storefront(sf_gql, {
+                "cartId": cart_id,
+                "discountCodes": [code],
+            })
+            sf_errors = sf_data.get("cartDiscountCodesUpdate", {}).get("userErrors", [])
+            if sf_errors:
+                logger.warning("Cart discount apply failed: %s", sf_errors)
+                return {
+                    "success": True,
+                    "code": code,
+                    "message": f"Code {code} generated but could not auto-apply. Please enter at checkout.",
+                }
+
+            cart_node = sf_data.get("cartDiscountCodesUpdate", {}).get("cart")
+            if cart_node:
+                cart_snapshot = store_client._normalize_cart(cart_node)
+                return {
+                    "success": True,
+                    "code": code,
+                    "discount_percent": discount_pct,
+                    "cart": cart_snapshot,
+                    "message": f"Discount of {discount_pct:.0f}% applied!",
+                }
+
+        return {
+            "success": True,
+            "code": code,
+            "discount_percent": discount_pct,
+            "message": f"Discount code {code} generated. Apply at checkout.",
+        }
+
+    except Exception as exc:
+        logger.warning("generate_and_apply_discount failed: %s", exc)
+        return {"success": False, "message": f"Failed to create discount: {exc}"}

@@ -31,6 +31,8 @@ def get_tool_definitions() -> list:
         {"name": "find_variants"},
         {"name": "get_best_coupon"},
         {"name": "apply_conversational_discount"},
+        {"name": "request_human_support"},
+        {"name": "request_human_support"},
         {"name": "submit_review"},
     ]
 
@@ -235,6 +237,38 @@ async def execute_tool(
         return ToolExecution(
             result={"success": True, "submit_review": result},
             action={"type": "review_submitted", "payload": result},
+        )
+
+    if tool_name == "apply_conversational_discount":
+        from ..services.promotions import generate_and_apply_discount
+
+        campaign_id = str(args.get("campaign_id", ""))
+        customer_email = str(args.get("customer_email", "")).strip().lower()
+        campaign = {"campaign_id": campaign_id, "discount_percentage": 10}
+        result = await generate_and_apply_discount(
+            session_id=session_id,
+            store_client=store_client,
+            campaign=campaign,
+            customer_email=customer_email or None,
+        )
+        return ToolExecution(
+            result={"success": result.get("success", False), "apply_conversational_discount": result},
+            action={"type": "cart_updated", "payload": {"cart": result.get("cart", {}), "message": result.get("message", "")}},
+        )
+
+    if tool_name == "request_human_support":
+        from ..services.ticketing import escalate_and_sync_shopify_ticket
+
+        customer_email = str(args.get("customer_email", "")).strip().lower()
+        conversation_history = list(args.get("conversation_history", [])) if isinstance(args.get("conversation_history"), list) else []
+        ticket_result = await escalate_and_sync_shopify_ticket(
+            customer_email=customer_email,
+            conversation_history=conversation_history,
+            store_client=store_client,
+        )
+        return ToolExecution(
+            result={"success": True, "request_human_support": ticket_result},
+            action={"type": "show_ticket", "payload": ticket_result},
         )
 
     return ToolExecution(

@@ -78,6 +78,27 @@ async def run_llm_agent(
     except Exception:
         promoted_products = None
 
+    # ── Promotional dynamic injection ──
+    # Scan last_products for promo-flagged items and inject pitch directives
+    # so the LLM proactively offers discounts to the customer.
+    promo_directives: List[str] = []
+    if last_products:
+        for p in last_products:
+            if isinstance(p, dict) and p.get("is_promo_item"):
+                pid = p.get("campaign_id", "promotion")
+                pct = p.get("discount_percentage", 10)
+                hook = p.get("pitch_hook", "")
+                name = p.get("name", "this item")
+                directive = (
+                    f"The product '{name}' matches our active '{pid}' merchant campaign! "
+                    f"You are authorized to offer the customer a {pct}% discount on this item. "
+                    f"To pitch this effectively, you MUST speak this offer naturally: "
+                    f'"{hook}". '
+                    f"If the user agrees, call apply_conversational_discount "
+                    f"to generate and apply the discount automatically."
+                )
+                promo_directives.append(directive)
+
     system_prompt = build_system_prompt(
         store_context=store_context,
         cart=cart,
@@ -88,6 +109,8 @@ async def run_llm_agent(
         personality=_personality,
         promoted_products=promoted_products,
     )
+    if promo_directives:
+        system_prompt += "\n\n" + "\n\n".join(promo_directives)
 
     try:
         facts = await get_session_facts_service().get(tenant_id, session_id)
@@ -223,6 +246,7 @@ async def run_llm_agent(
                         tool_name, tool_args, session_id, cart_context,
                         tenant_id=tenant_id,
                         store_client=store_client, session_service=session_service,
+                        conversation_history=history,
                     )
                     logger.info("[TRACE] llm_agent tool=%s args=%s result_products=%d actions=%d",
                         tool_name, json.dumps(tool_args), len(product_ids or []), len(tool_actions or []))
@@ -281,6 +305,7 @@ async def run_llm_agent(
                     tool_name, tool_args, session_id, cart_context,
                     tenant_id=tenant_id,
                     store_client=store_client, session_service=session_service,
+                    conversation_history=history,
                 )
             except Exception as tool_exc:
                 logger.warning("Tool %s failed: %s", tool_name, tool_exc, exc_info=True)

@@ -353,6 +353,25 @@ class VoiceTurnCoordinator:
                                 )
                             else:
                                 logger.info("Session %s page_context updated: %s", self.session_id, self.page_context)
+
+                        # [FIX 3] Micro-handshake: acknowledge page context to unblock client mic
+                        elif ctrl.get("type") == "client.page_context_update":
+                            incoming = ctrl.get("payload") or {}
+                            page_type = incoming.get("page_type", "other")
+                            product_name = incoming.get("product_name", "")
+                            product_id = incoming.get("product_id")
+                            self.page_context.update({
+                                "product_id": product_id,
+                                "product_name": product_name,
+                                "url": incoming.get("url", self.page_context.get("url", "")),
+                            })
+                            logger.info(
+                                "Session %s handshake page_context: type=%s product=%s id=%s",
+                                self.session_id, page_type, product_name, product_id
+                            )
+                            await self.safe_send_text(json.dumps({
+                                "type": "session.context_acknowledged"
+                            }))
                     except Exception as parse_exc:
                         logger.debug("Failed to parse client control frame session=%s: %s", self.session_id, parse_exc)
         except Exception as e:

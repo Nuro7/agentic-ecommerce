@@ -53,6 +53,49 @@ def resample_pcm16_16k_to_24k(data: bytes) -> bytes:
     return struct.pack(f"<{target_len}h", *out_samples)
 
 
+async def _rehydrate_model_session(
+    session_id: str,
+    tenant_id: str,
+    provider: OpenAIVoiceProvider,
+    session_service: Any,
+) -> None:
+    """
+    Inject past conversation turns from Redis into the OpenAI Realtime session
+    so the model remembers context across page transitions.
+    """
+    if not hasattr(session_service, 'get_session'):
+        return
+    try:
+        session_data = await session_service.get_session(tenant_id, session_id)
+    except Exception:
+        session_data = None
+
+    if not session_data:
+        logger.info("No previous session data to rehydrate for %s", session_id)
+        return
+
+    history = session_data.get("conversation_history", []) if isinstance(session_data, dict) else []
+    if not history:
+        logger.info("No conversation history to rehydrate for %s", session_id)
+        return
+
+    logger.info("Rehydrating %d turns for session %s", len(history), session_id)
+    for turn in history:
+        role = "user" if turn.get("role") == "user" else "assistant"
+        content = turn.get("content", "")
+        if not content:
+            continue
+        await provider._send_safe(json.dumps({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": role,
+                "content": [{"type": "input_text", "text": content}],
+            }
+        }))
+    logger.info("Rehydration complete for session %s", session_id)
+
+
 class OpenAIVoiceProvider(BaseVoiceProvider):
     """
     Voice provider wrapping the OpenAI Realtime API using gpt-realtime-2.1 (GA).
@@ -320,6 +363,12 @@ class OpenAIVoiceProvider(BaseVoiceProvider):
 
         if not session_ready:
             raise RuntimeError("Timeout waiting for session.updated")
+
+        # [FIX 2] Rehydrate model session with past conversation turns from Redis
+        try:
+            await _rehydrate_model_session(session_id, tenant_id, self, self.session_service)
+        except Exception as rehydrate_exc:
+            logger.warning("Session rehydration failed (non-fatal) session=%s: %s", session_id, rehydrate_exc)
 
         # Now prepend pre-handshake events back to the event queue
         new_queue = asyncio.Queue()

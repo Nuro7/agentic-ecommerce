@@ -610,14 +610,21 @@ async def ask_brain(
 
                 # Promotion re-ranking: inject campaign metadata into products
                 try:
-                    active_campaigns = await store_client.get_active_campaigns()
+                    from ..services.promotions import (
+                        load_active_campaigns,
+                        rerank_and_annotate_promotions,
+                    )
+                    active_campaigns = await load_active_campaigns(store_client)
                     if active_campaigns:
                         last_products = rerank_and_annotate_promotions(
                             last_products, active_campaigns,
                         )
                         active_recommendations = last_products
+                        logger.info("[PROMO] Re-ranked %d products with %d campaigns, %d promoted",
+                                     len(last_products), len(active_campaigns),
+                                     sum(1 for p in last_products if p.get("is_promo_item")))
                 except Exception as prom_exc:
-                    logger.debug("Promotion re-ranking skipped: %s", prom_exc)
+                    logger.info("[PROMO] Promotion re-ranking skipped: %s", prom_exc)
 
                 logger.info(
                     "[TRACE] Step5 retrieval: found=%d query='%s' products=%s",
@@ -686,7 +693,8 @@ async def ask_brain(
         if result is None and intent_result.intent == CART_ACTION:
             try:
                 result = await handle_add_to_cart(
-                    cleaned_message, lower_msg, session_id, last_products, lang,
+                    cleaned_message, lower_msg, session_id, active_recommendations, lang,
+                    page_context=page_context,
                     store_client=store_client,
                 )
             except Exception as exc:
