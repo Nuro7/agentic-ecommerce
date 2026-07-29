@@ -7,7 +7,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from .text_utils import safe_int, safe_optional_int, safe_float, normalize_discovery_query
-from ...retrieval.search import hybrid_search
+from ..retrieval.search import hybrid_search
 from ...core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)

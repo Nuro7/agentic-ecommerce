@@ -29,7 +29,7 @@ from .text_utils import (
     has_cart_nav_intent,
     has_remove_intent,
 )
-from ...retrieval.search import hybrid_search
+from ..retrieval.search import hybrid_search
 from ...core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
