@@ -420,13 +420,11 @@ class WebhookService:
                 "raw_value": str(raw_price),
             }
 
-        # ── Resolve stock — default None (unknown), NOT True ─────────────────
-        # Defaulting to True would bake in hallucination: the LLM would claim
-        # "in stock" for products whose actual availability is unknown.
-        # _parse_stock() handles strings like "no"/"false" correctly — plain
-        # bool() would treat any non-empty string as True (bug).
+        # ── Resolve stock — default True so products without explicit stock
+        # metadata are treated as available rather than excluded from search.
         in_stock_raw = _resolve_field(product, _STOCK_ALIASES, None)
-        in_stock = _parse_stock(in_stock_raw)
+        parsed = _parse_stock(in_stock_raw)
+        in_stock = True if parsed is None else parsed
 
         # ── Tags ─────────────────────────────────────────────────────────────
         tags = _resolve_field(product, ("tags",), "")

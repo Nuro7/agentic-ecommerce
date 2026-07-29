@@ -365,11 +365,19 @@ async def test_store_connection(data: TestConnectionRequest) -> TestConnectionRe
         products = await store_client.search_products(
             query="", limit=1, in_stock_only=False,
         )
+        n = len(products)
+        if platform == "custom_api" and n == 0:
+            return TestConnectionResponse(
+                ok=False,
+                platform=platform,
+                products_found=0,
+                message="Connection failed: custom_api returned 0 products — check base URL and API key, and ensure products have been ingested via /ingest.",
+            )
         return TestConnectionResponse(
             ok=True,
             platform=platform,
-            products_found=len(products),
-            message=f"Connection successful. Found {len(products)} product(s).",
+            products_found=n,
+            message=f"Connection successful. Found {n} product(s).",
         )
 
     except HTTPException:
