@@ -3,8 +3,6 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
-import httpx
-
 logger = logging.getLogger(__name__)
 
 GORGIAS_WEBHOOK_URL = None
@@ -79,6 +77,7 @@ async def escalate_and_sync_shopify_ticket(
     webhook_url = gorgias_webhook_url or GORGIAS_WEBHOOK_URL
     if webhook_url:
         try:
+            import httpx
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
                     webhook_url,
