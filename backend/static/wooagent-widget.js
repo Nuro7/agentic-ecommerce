@@ -2505,6 +2505,40 @@
         // No addBubble here — would duplicate LLM's response
         break;
 
+      case 'apply_discount_code':
+        if (act.payload && act.payload.code && IS_SHOPIFY) {
+          const code = String(act.payload.code).trim();
+          try {
+            const res = await fetch('/cart/update.js', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ discount: code }),
+            });
+            if (res.ok) {
+              showToast(`✅ Discount ${code} applied!`);
+              await fetchCartShopify();
+              const cartDrawer = document.querySelector('cart-drawer') || document.querySelector('cart-drawer-component') || document.querySelector('[data-cart-drawer]');
+              if (cartDrawer) {
+                const openEvent = new CustomEvent('cart:build', { detail: { cart: S.cartSnapshot } });
+                document.dispatchEvent(openEvent);
+                if (typeof cartDrawer.open === 'boolean') cartDrawer.open = true;
+              }
+              const drawerEl = document.querySelector('.cart-drawer');
+              if (drawerEl) drawerEl.classList.add('active');
+            } else {
+              let errMsg = 'Failed to apply discount';
+              try { const e = await res.json(); errMsg = e.description || e.message || errMsg; } catch (_) {}
+              showToast(errMsg);
+            }
+          } catch (error) {
+            showToast('Could not apply discount code.');
+          }
+        } else if (act.payload && act.payload.code) {
+          showToast(`✅ Coupon ${act.payload.code} applied at checkout!`);
+        }
+        break;
+
       case 'coupon_applied':
         showToast(`🏷️ ${act.payload.code} applied — ${act.payload.discount}`);
         break;
@@ -2985,6 +3019,13 @@
       let msg = 'Add to cart failed';
       try { const e = await res.json(); msg = e.description || e.message || msg; } catch (_) {}
       console.error('[WooAgent A2C] addToCartShopify: HTTP', res.status, msg);
+      if (res.status === 422 && geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
+        showToast(`❌ ${msg}`);
+        geminiSocket.send(JSON.stringify({
+          type: 'client.cart_error',
+          payload: { error: msg, variant_id: variantId, product_id: payload.product_id },
+        }));
+      }
       throw new Error(msg);
     }
     console.log('[WooAgent A2C] addToCartShopify: POST succeeded, refreshing cart');

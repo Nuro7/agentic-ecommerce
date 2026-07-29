@@ -455,6 +455,17 @@ class PipelineA:
                                         if ctrl.get("cart_context") is not None:
                                             session_cart["value"] = ctrl.get("cart_context")
                                         logger.info("Pipeline A page_context updated: %s", session_page_context["value"])
+                                    elif ctrl.get("type") == "client.cart_error":
+                                        err_payload = ctrl.get("payload", {})
+                                        err_msg = err_payload.get("error", "Could not add item to cart")
+                                        logger.info("Cart error from widget: %s", err_msg)
+                                        await self._handle_text_turn(
+                                            websocket, session_id,
+                                            f"[System: cart error — {err_msg}. Apologize to the customer and recommend alternative or similar products they might like.]",
+                                            "en", session_cart["value"], store_client,
+                                            tenant_id,
+                                            page_context=session_page_context["value"],
+                                        )
                                 except (json.JSONDecodeError, KeyError):
                                     pass
 

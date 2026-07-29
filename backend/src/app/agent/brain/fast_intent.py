@@ -569,8 +569,42 @@ async def handle_add_to_cart(
 
     variant_id = product.get("variant_id") or product.get("id")
 
+    try:
+        detail = await store_client.get_product_details(int(product["id"]))
+    except Exception:
+        detail = {}
+
+    if detail and detail.get("variants") and len(detail["variants"]) > 1:
+        options = detail.get("options", [])
+        all_values = []
+        for o in options:
+            vals = o.get("values", []) if isinstance(o, dict) else []
+            all_values.extend(v.lower() for v in vals)
+        has_size = any(o.get("name", "").lower() in ("size", "waist", "inseam") for o in options)
+        has_color = any(o.get("name", "").lower() in ("color", "colour", "finish") for o in options)
+        mentioned = False
+        for val in all_values:
+            if val in lower:
+                mentioned = True
+                break
+        if not mentioned:
+            if has_size and re.search(r"\b(small|medium|large|x[sl]?|s\b|m\b|l\b|xl|xxl)\b", lower):
+                mentioned = True
+            if not mentioned and has_color and re.search(r"\b(red|blue|black|white|green|pink|purple|gray|grey|gold|silver|navy|brown|beige)\b", lower):
+                mentioned = True
+        if not mentioned:
+            options_text = ", ".join(
+                f"{o.get('name', 'Option')}: {' / '.join(o.get('values', []))}"
+                for o in options
+            )
+            return with_actions_alias({
+                "response_text": say(language, "ask_variation", name=product.get("name", "product"), options=options_text),
+                "ui_actions": [],
+                "suggested_replies": ["Show me the options", "Add the first variant"],
+            })
+
     return with_actions_alias({
-        "response_text": f"Adding the {product.get('name', 'item')} to your cart right now.",
+        "response_text": say(language, "added_to_cart", name=product.get("name", "item"), qty="1"),
         "ui_actions": [{
             "type": "add_to_cart",
             "payload": {

@@ -81,16 +81,18 @@ async def _rehydrate_model_session(
 
     logger.info("Rehydrating %d turns for session %s", len(history), session_id)
     for turn in history:
-        role = "user" if turn.get("role") == "user" else "assistant"
+        is_user = turn.get("role") == "user"
+        role = "user" if is_user else "assistant"
         content = turn.get("content", "")
         if not content:
             continue
+        content_type = "input_text" if is_user else "output_text"
         await provider._send_safe(json.dumps({
             "type": "conversation.item.create",
             "item": {
                 "type": "message",
                 "role": role,
-                "content": [{"type": "input_text", "text": content}],
+                "content": [{"type": content_type, "text": content}],
             }
         }))
     logger.info("Rehydration complete for session %s", session_id)

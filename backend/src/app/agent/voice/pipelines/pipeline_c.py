@@ -94,15 +94,19 @@ class PipelineC:
                 except json.JSONDecodeError:
                     continue
 
-                if ctrl.get("type") == "page_update":
+                if ctrl.get("type") == "client.cart_error":
+                    err_payload = ctrl.get("payload", {})
+                    err_msg = err_payload.get("error", "Could not add item to cart")
+                    query = f"I tried to add a product to the cart but the store says: {err_msg}. Please apologize and recommend alternatives."
+                    language = "en"
+                elif ctrl.get("type") == "page_update":
                     self._page_context = ctrl.get("page_context") or {}
                     continue
-
-                if ctrl.get("type") != "text_input" or not ctrl.get("text"):
+                elif ctrl.get("type") != "text_input" or not ctrl.get("text"):
                     continue
-
-                query    = ctrl["text"].strip()
-                language = ctrl.get("language", "en")
+                else:
+                    query    = ctrl["text"].strip()
+                    language = ctrl.get("language", "en")
 
                 if not query:
                     continue
