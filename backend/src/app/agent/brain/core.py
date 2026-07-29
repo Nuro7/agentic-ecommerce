@@ -737,6 +737,7 @@ async def ask_brain(
                 )
             else:
                 store_catalog = await _get_store_catalog(tenant_id, store_client)
+            is_search_intent = intent_result and intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY)
             result = await run_llm_agent(
                 tenant_id=tenant_id,
                 session_id=session_id,
@@ -752,6 +753,7 @@ async def ask_brain(
                 store_client=store_client,
                 session_service=session_service,
                 redis=redis,
+                force_first_tool=is_search_intent,
             )
             _llm_resp = result
         except Exception as exc:

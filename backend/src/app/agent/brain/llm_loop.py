@@ -49,6 +49,7 @@ async def run_llm_agent(
     store_client: Any,
     session_service: Any,
     redis: Any = None,
+    force_first_tool: bool = False,
 ) -> Optional[Dict[str, Any]]:
     logger.info("[TRACE] llm_agent ENTER session=%s user_message='%.80s' last_products=%d history=%d language=%s",
         session_id, user_message, len(last_products or []), len(history or []), language)
@@ -193,6 +194,16 @@ async def run_llm_agent(
                         f"to generate and apply the discount automatically."
                     )
                     messages.append({"role": "system", "content": directive})
+
+    if force_first_tool:
+        messages.append({
+            "role": "system",
+            "content": (
+                "IMPORTANT: Your first action MUST be to call search_products with the "
+                "customer's request. Do NOT respond conversationally yet — look up the "
+                "products first, then talk about what you found."
+            ),
+        })
 
     for entry in (history or [])[-20:]:
         if not isinstance(entry, dict):

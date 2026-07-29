@@ -815,7 +815,7 @@ async def handle_add_to_cart(
             "type": "add_to_cart",
             "payload": {
                 "product_id": int(product["id"]),
-                "variation_id": int(variant_id),
+                "variant_id": int(variant_id),
                 "quantity": 1,
                 "permalink": product.get("permalink", ""),
                 "handle": product.get("handle", ""),
@@ -843,7 +843,24 @@ async def _resolve_product_for_add(
 
     page_context = page_context or {}
 
-    # 1. Resolve ordinal reference ("first", "second", "third")
+    # 0. PDP Add-to-Cart — if on a product page and saying "add this"/"add to cart", use page context first
+    if page_context.get("product_id") and re.search(
+        r"\b(add\s+(this|it|to\s*cart|the\s*product)|add\s*$|put\s+(this|it|in\s*(my\s*)?cart)|"
+        r"i('ll| will)\s*take\s+(this|it)|get\s+(this|it)|buy\s+(this|it))\b", lower,
+    ):
+        try:
+            detail = await store_client.get_product_details(int(page_context["product_id"]))
+            if detail and detail.get("id"):
+                return {
+                    "id": detail.get("id"),
+                    "name": detail.get("name", "Product"),
+                    "permalink": detail.get("permalink", ""),
+                    "variant_id": detail.get("variation_id") or detail.get("id"),
+                }
+        except Exception as e:
+            logger.error("Failed fetching PDP product pid %s: %s", page_context["product_id"], e)
+
+    # 1. Resolve ordinal reference ("first" through "fifth") → active_recommendations or last_products
     target_index = None
     if re.search(r"\b(first|1st|number one|no 1|no\. 1)\b", lower):
         target_index = 0
@@ -851,11 +868,33 @@ async def _resolve_product_for_add(
         target_index = 1
     elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower):
         target_index = 2
+    elif re.search(r"\b(fourth|4th|number four|no 4|no\. 4)\b", lower):
+        target_index = 3
+    elif re.search(r"\b(fifth|5th|number five|no 5|no\. 5)\b", lower):
+        target_index = 4
 
-    if target_index is not None and active_recommendations and len(active_recommendations) > target_index:
-        recommended_item = active_recommendations[target_index]
-        if isinstance(recommended_item, dict) and recommended_item.get("id"):
-            return recommended_item
+    if target_index is not None:
+        if active_recommendations and len(active_recommendations) > target_index:
+            rec = active_recommendations[target_index]
+            if isinstance(rec, dict) and rec.get("id"):
+                return rec
+        last_prods = page_context.get("last_products") or []
+        if len(last_prods) > target_index:
+            try:
+                last_pid = last_prods[target_index]
+                if isinstance(last_pid, dict):
+                    last_pid = last_pid.get("id")
+                if last_pid:
+                    detail = await store_client.get_product_details(int(last_pid))
+                    if detail and detail.get("id"):
+                        return {
+                            "id": detail.get("id"),
+                            "name": detail.get("name", "Product"),
+                            "permalink": detail.get("permalink", ""),
+                            "variant_id": detail.get("variation_id") or detail.get("id"),
+                        }
+            except Exception as e:
+                logger.error("Failed fetching last_product ordinal %s: %s", target_index, e)
 
     # 2. Resolve anaphoric reference ("add this", "get it", "add to cart")
     if re.search(r"\b(this|that|it|product|shoe|item)\b", lower):

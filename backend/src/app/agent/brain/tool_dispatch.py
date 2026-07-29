@@ -227,7 +227,7 @@ async def execute_tool_call(
             "type": "add_to_cart",
             "payload": {
                 "product_id": product_id,
-                "variation_id": variation_id or 0,
+                "variant_id": variation_id or 0,
                 "quantity": quantity,
                 "handle": product_handle,
                 "permalink": product_permalink,
