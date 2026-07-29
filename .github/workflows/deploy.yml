@@ -1,13 +1,10 @@
 name: Deploy to Lightsail
 
-# Auto-deploy: on every push to main (the production branch), SSH into the
-# Lightsail box, pull the latest code, and rebuild/restart the stack.
-# Workflow: feature branch -> PR -> merge to main -> this deploys automatically.
 on:
   push:
     branches:
       - main
-  workflow_dispatch: {}   # lets you trigger a deploy manually from the Actions tab
+  workflow_dispatch: {}
 
 jobs:
   deploy:
@@ -19,13 +16,13 @@ jobs:
           host: ${{ secrets.LIGHTSAIL_HOST }}
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
-          command_timeout: 40m       # first build installs deps; later builds are cached
+          command_timeout: 40m
           script: |
             set -e
             cd ~/agentic-ecommerce
             git fetch --all
             git reset --hard origin/main
-            sudo docker compose --env-file .env -f infra/docker/docker-compose.prod.yml down --remove-orphans
-            sudo docker compose --env-file .env -f infra/docker/docker-compose.prod.yml up -d --build
+            sudo docker compose --env-file backend/.env -f infra/docker/docker-compose.prod.yml down --remove-orphans
+            sudo docker compose --env-file backend/.env -f infra/docker/docker-compose.prod.yml up -d --build
             sudo docker image prune -f
             curl -sf https://speako.nuro7.in/api/v1/health && echo "Deploy OK" || echo "Health check FAILED"
