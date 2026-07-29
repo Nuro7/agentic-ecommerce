@@ -53,6 +53,7 @@ from ..classifier import (
     CHITCHAT, OFF_TOPIC, STORE_INFO, CART_ACTION,
     SEARCH, PRODUCT_DETAIL, INVENTORY,
 )
+from ...services.promotions import rerank_and_annotate_promotions
 from .canned import normalize_language, chitchat_response, off_topic_response, _OFF_TOPIC_RESPONSES
 from .fast_intent import (
     run_fast_intent,
@@ -443,21 +444,26 @@ async def ask_brain(
     history: List[Dict[str, Any]] = (
         state.get("conversation_history", []) if isinstance(state, dict) else []
     )
-    _raw_products = state.get("last_products", []) if isinstance(state, dict) else []
-    last_products: List[Any] = [p for p in _raw_products if isinstance(p, dict)]
+    active_recommendations: List[Any] = [
+        p for p in (state.get("active_recommendations", []) if isinstance(state, dict) else [])
+        if isinstance(p, dict)
+    ]
+    view_history: List[Any] = [
+        p for p in (state.get("view_history", []) if isinstance(state, dict) else [])
+        if isinstance(p, dict)
+    ]
+    last_products = active_recommendations
 
     current_pid = page_context.get("product_id") if isinstance(page_context, dict) else None
     if current_pid:
         try:
-            current_pid_str = str(current_pid)
-            last_products = [p for p in last_products if (p.get("id") if isinstance(p, dict) else p) != current_pid_str]
-            last_products.insert(0, {
-                "id": current_pid_str,
+            view_history.insert(0, {
+                "id": str(current_pid),
                 "name": (page_context.get("product_name") or "Current Product").strip(),
                 "permalink": page_context.get("url") or "",
             })
         except Exception as e:
-            logger.warning("Failed to prepend current product to last_products: %s", e)
+            logger.warning("Failed to prepend current product to view_history: %s", e)
 
     logger.info("[TRACE] Step2 classify: intent=%s conf=%.2f via=%s detected_lang=%s",
         intent_result.intent, intent_result.confidence, intent_result.via, detected_lang)
@@ -587,7 +593,7 @@ async def ask_brain(
             retrieval_ran = True  # call completed â€” result may be empty list
             if retrieval_results:
                 retrieval_found = True
-                last_products = [
+                active_recommendations = [
                     {
                         "id": r.platform_id,
                         "name": r.name,
@@ -600,6 +606,19 @@ async def ask_brain(
                     }
                     for r in retrieval_results
                 ]
+                last_products = active_recommendations
+
+                # Promotion re-ranking: inject campaign metadata into products
+                try:
+                    active_campaigns = await store_client.get_active_campaigns()
+                    if active_campaigns:
+                        last_products = rerank_and_annotate_promotions(
+                            last_products, active_campaigns,
+                        )
+                        active_recommendations = last_products
+                except Exception as prom_exc:
+                    logger.debug("Promotion re-ranking skipped: %s", prom_exc)
+
                 logger.info(
                     "[TRACE] Step5 retrieval: found=%d query='%s' products=%s",
                     len(last_products), _search_query[:40],
@@ -615,6 +634,7 @@ async def ask_brain(
                 # they matched (a hallucination vector). Clear stale products so
                 # the hard stop below fires deterministically.
                 if intent_result.intent == SEARCH:
+                    active_recommendations = []
                     last_products = []
         except Exception as exc:
             logger.warning("Retrieval pre-fetch failed (non-fatal): %s", exc)
@@ -648,33 +668,12 @@ async def ask_brain(
         elif retrieval_ran:
             logger.info("[TRACE] Step5 hard_stop: SKIP â€” generic browse or session has %d old products", len(last_products))
 
-    # â”€â”€ Fast specific handlers (pre-LLM, keyword + intent matched) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â”€â”€ Fast specific handlers (pre-LLM, intent-classifier matched) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # These deterministic handlers short-circuit the LLM for well-defined
     # patterns where a direct store API call gives the right answer.
+    # Keyword substring checks removed per FIX 4 — intent routing uses the
+    # LLM classifier / tool-calling interface for semantic understanding.
     if result is None:
-        _order_kw = ("my order", "order status", "track my", "where is my order", "order number", "order tracking")
-        _compare_kw = ("compare", " vs ", " versus ", "difference between", "which is better", "which one is")
-        _buy_kw = ("i want to buy", "i want to get", "buy me", "get me a", "i'd like to buy", "i'll take", "purchase a")
-        _add_kw = ("add to cart", "add it to cart", "put in cart", "add one", "add two", "add three", "add to bag")
-
-        if any(kw in lower_msg for kw in _order_kw):
-            try:
-                result = await handle_order_tracking(
-                    cleaned_message, lower_msg, state if isinstance(state, dict) else {}, lang,
-                    store_client=store_client,
-                )
-            except Exception as exc:
-                logger.warning("handle_order_tracking failed: %s", exc)
-
-        if result is None and any(kw in lower_msg for kw in _compare_kw):
-            try:
-                result = await handle_compare(
-                    cleaned_message, lower_msg, last_products, lang,
-                    store_client=store_client,
-                )
-            except Exception as exc:
-                logger.warning("handle_compare failed: %s", exc)
-
         if result is None and intent_result.intent == INVENTORY:
             try:
                 result = await handle_availability(
@@ -684,7 +683,7 @@ async def ask_brain(
             except Exception as exc:
                 logger.warning("handle_availability failed: %s", exc)
 
-        if result is None and (any(kw in lower_msg for kw in _add_kw) or intent_result.intent == CART_ACTION):
+        if result is None and intent_result.intent == CART_ACTION:
             try:
                 result = await handle_add_to_cart(
                     cleaned_message, lower_msg, session_id, last_products, lang,
@@ -692,15 +691,6 @@ async def ask_brain(
                 )
             except Exception as exc:
                 logger.warning("handle_add_to_cart failed: %s", exc)
-
-        if result is None and any(kw in lower_msg for kw in _buy_kw):
-            try:
-                result = await handle_buy_intent(
-                    cleaned_message, lower_msg, session_id, lang,
-                    store_client=store_client,
-                )
-            except Exception as exc:
-                logger.warning("handle_buy_intent failed: %s", exc)
 
     logger.info("[FLOW] brain step5 result_pre_llm=%s session=%s", "cached" if result else "None", session_id)
 
@@ -817,10 +807,10 @@ async def ask_brain(
         append_live_navigation(
             ui_actions,
             store_context=store_context,
-            query=cleaned_message,
+            query=result.get("clean_query") or _search_query or cleaned_message,
             platform=client_platform(store_client),
             current_url=str((page_context or {}).get("url") or ""),
-            last_products=last_products,
+            active_recommendations=active_recommendations,
         )
     except Exception as _nav_exc:
         logger.debug("[turn %s] live-nav skipped: %s", turn_id, _nav_exc)
@@ -942,17 +932,24 @@ async def ask_brain(
         {"role": "user", "content": cleaned_message},
         {"role": "assistant", "content": response_text},
     ])
+    result_cart = result.get("cart_snapshot") if isinstance(result, dict) else None
     await session_service.update_session(
         tenant_id,
         session_id,
         conversation_history=updated_history,
-        cart_snapshot=cart,
+        cart_snapshot=result_cart if isinstance(result_cart, dict) else cart,
         customer_email=result.get("customer_email"),
         last_products=(
             result.get("last_products")
             if isinstance(result.get("last_products"), list)
             else last_products
         ),
+        active_recommendations=(
+            result.get("active_recommendations")
+            if isinstance(result.get("active_recommendations"), list)
+            else active_recommendations
+        ),
+        view_history=view_history,
     )
 
     try:

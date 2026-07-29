@@ -66,6 +66,9 @@
     greeted: localStorage.getItem('_wa_greeted') === '1',
   };
 
+  // ── Pending navigation queue — redirected only after TTS finishes ──────────
+  let _pendingNavigation = null;
+
   // ── Primary-colour shades, precomputed in JS ────────────────────────────────
   // The core tokens used to rely on CSS color-mix(), which is unsupported in older
   // Safari and many in-app webviews (a real slice of Shopify mobile traffic) — when
@@ -2361,24 +2364,25 @@
       }
 
       case 'add_to_cart':
+        // Server-side cart management (FIX 5): backend already executed the
+        // Shopify Storefront GraphQL cartLinesAdd or WooCommerce REST add.
+        // Frontend just updates badge/toast — no more client-side AJAX to /cart/add.js.
         if (act.payload && act.payload.product_id) {
-          // Dedup: skip if we just handled this product locally via user_transcript
           if (S._localAddHandled && (Date.now() - S._localAddHandled) < 5000) {
             const same = Number(act.payload.product_id) === Number((S.lastShownProduct || {}).id);
             if (same) { S._localAddHandled = 0; break; }
           }
-          console.log('[WooAgent A2C] Brain dispatched add_to_cart:', act.payload);
+          // If server-side already returned cart data via cart_updated, this is a
+          // fallback path from a legacy payload — use addToCartDispatch as before.
+          console.log('[WooAgent A2C] Legacy client-side add dispatched:', act.payload);
           try {
             await addToCartDispatch(act.payload);
-            console.log('[WooAgent A2C] Brain add-to-cart succeeded');
           } catch (error) {
             const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
-            console.error('[WooAgent A2C] Brain add-to-cart failed:', message);
+            console.error('[WooAgent A2C] add-to-cart failed:', message);
             addBubble('bot', message);
             showToast(message);
           }
-        } else {
-          console.warn('[WooAgent A2C] Brain add_to_cart missing product_id in payload:', act.payload);
         }
         break;
 
@@ -2402,6 +2406,8 @@
         const cnt = c.cart_count || c.item_count || cart.item_count || cart.totalQuantity || 0;
         updateBadge(cnt);
         if (cart.checkout_url) S.checkoutUrl = cart.checkout_url;
+        S.cartSnapshot = cart;
+        try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cart)); } catch (e) {}
         if (c.product_id) {
           showToast('Added to cart!');
         } else if (c.message) {
@@ -2579,6 +2585,7 @@
           }
         } catch (e) {}
         const performRedirect = () => {
+          _pendingNavigation = null;
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
             goToCheckout();
           } else {
@@ -2586,15 +2593,10 @@
           }
         };
 
-        const checkAndRedirect = () => {
-          if (S.speaking) {
-            setTimeout(checkAndRedirect, 100);
-          } else {
-            performRedirect();
-          }
-        };
-
-        setTimeout(checkAndRedirect, p.delay_ms || 800);
+        _pendingNavigation = performRedirect;
+        if (!S.speaking && !a2aIsPlaying) {
+          setTimeout(performRedirect, p.delay_ms || 800);
+        }
         break;
       }
 
@@ -4359,6 +4361,8 @@
   // Stops the currently playing AudioBufferSourceNode and drains the queue so
   // the AI goes silent the moment the user starts speaking over it.
   function flushAudioQueue() {
+    // Cancel any pending navigation — user interrupted, don't redirect
+    _pendingNavigation = null;
     // Stop the currently playing source node immediately
     if (a2aCurrentSource) {
       try {
@@ -4679,9 +4683,16 @@
   }
 
   // Called whenever S.speaking becomes false — resumes live listening if active.
-  // 450ms delay lets speaker echo/reverb decay so the mic doesn't pick up the
-  // tail of the bot's own voice and transcribe it as a user message.
+  // Also executes any pending navigation (queued redirect) that was waiting
+  // for TTS to finish so the user hears the full response before the page
+  // navigates away.
   function onSpeakingEnd() {
+    if (_pendingNavigation) {
+      const pn = _pendingNavigation;
+      _pendingNavigation = null;
+      pn();
+      return;
+    }
     // ── A2A guard ──────────────────────────────────────────────────────────
     // In A2A mode the ScriptProcessorNode keeps the mic open CONTINUOUSLY.
     // Calling startRecording() or startLiveRecognition() here would start a

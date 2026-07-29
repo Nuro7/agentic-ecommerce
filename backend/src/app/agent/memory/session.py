@@ -94,6 +94,8 @@ class SessionService:
         cart_snapshot: Optional[Dict[str, Any]] = None,
         customer_email: Optional[str] = None,
         last_products: Optional[list] = None,
+        active_recommendations: Optional[list] = None,
+        view_history: Optional[list] = None,
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         # Serialize the read-modify-write so concurrent updates for the same
@@ -108,6 +110,10 @@ class SessionService:
                 state["customer_email"] = str(customer_email).strip().lower()
             if last_products is not None:
                 state["last_products"] = list(last_products)[:12]
+            if active_recommendations is not None:
+                state["active_recommendations"] = list(active_recommendations)[:12]
+            if view_history is not None:
+                state["view_history"] = list(view_history)[:12]
             if meta is not None and isinstance(meta, dict):
                 current_meta = state.get("meta", {})
                 if not isinstance(current_meta, dict):

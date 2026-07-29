@@ -30,6 +30,7 @@ def get_tool_definitions() -> list:
         {"name": "update_cart_quantity"},
         {"name": "find_variants"},
         {"name": "get_best_coupon"},
+        {"name": "apply_conversational_discount"},
         {"name": "submit_review"},
     ]
 

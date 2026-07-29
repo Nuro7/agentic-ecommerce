@@ -151,6 +151,26 @@ async def run_llm_agent(
                 ),
             })
 
+    # Inject promotion directives for any items flagged as campaign promotions
+    if last_products:
+        for prod in last_products:
+            if isinstance(prod, dict) and prod.get("is_promo_item"):
+                prod_name = sanitize_text(str(prod.get("name", "")), max_len=80)
+                campaign_id = sanitize_text(str(prod.get("campaign_id", "")), max_len=40)
+                discount_pct = prod.get("discount_percentage", 0)
+                pitch_hook = sanitize_text(str(prod.get("pitch_hook", "")), max_len=200)
+                if prod_name and campaign_id:
+                    directive = (
+                        f"SYSTEM PROMOTION DIRECTIVE:\n"
+                        f"The product '{prod_name}' matches our active '{campaign_id}' merchant campaign!\n"
+                        f"You are authorized to offer the customer a {discount_pct}% discount on this item.\n"
+                        f"To pitch this effectively, you MUST speak this offer naturally: \"{pitch_hook}\".\n"
+                        f"If the user agrees, execute the tool call apply_conversational_discount "
+                        f"with campaign_id=\"{campaign_id}\" and discount_percentage={discount_pct} "
+                        f"to generate and apply the discount automatically."
+                    )
+                    messages.append({"role": "system", "content": directive})
+
     for entry in (history or [])[-20:]:
         if not isinstance(entry, dict):
             continue

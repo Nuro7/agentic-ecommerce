@@ -346,6 +346,17 @@ async def execute_tool_call(
         actions.append({"type": "review_submitted", "payload": result})
         return {"submit_review": result}, actions, [pid], None
 
+    if tool_name == "apply_conversational_discount":
+        campaign_id = str(tool_args.get("campaign_id") or "")
+        discount_percentage = float(tool_args.get("discount_percentage", 0))
+        return await _apply_conversational_discount(
+            store_client=store_client,
+            session_id=session_id,
+            campaign_id=campaign_id,
+            discount_percentage=discount_percentage,
+            actions=actions,
+        )
+
     if tool_name == "get_store_info":
         info = await store_client.get_store_policies()
         return {"store_info": info}, actions, [], None
@@ -431,6 +442,32 @@ async def execute_tool_call(
         return {"store_event": event_name}, actions, [product_id] if product_id else [], None
 
     return {"ignored_tool": tool_name}, actions, product_ids, customer_email
+
+
+async def _apply_conversational_discount(
+    *,
+    store_client: Any,
+    session_id: str,
+    campaign_id: str,
+    discount_percentage: float,
+    actions: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
+    from ...services.promotions import generate_and_apply_discount
+    result = await generate_and_apply_discount(
+        store_client=store_client,
+        session_id=session_id,
+        campaign_id=campaign_id,
+        discount_percentage=discount_percentage,
+    )
+    if result.get("success"):
+        actions.append({
+            "type": "coupon_applied",
+            "payload": {
+                "code": result.get("code", ""),
+                "discount": result.get("message", "Discount applied"),
+            },
+        })
+    return result, actions, [], None
 
 
 def _normalize_cart(cart: Dict[str, Any]) -> Dict[str, Any]:
@@ -642,6 +679,27 @@ def tool_schema() -> List[Dict[str, Any]]:
                 "name": "get_best_coupon",
                 "description": "Find the best available coupon for the customer (discount amount/description). no arguments needed.",
                 "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "apply_conversational_discount",
+                "description": "Generate and apply a single-use promotional discount code to the customer's cart. Call this when the customer agrees to an offer you pitched during a campaign promotion.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "campaign_id": {
+                            "type": "string",
+                            "description": "The campaign_id from the promotion directive (e.g. 'dead_stock_clearance').",
+                        },
+                        "discount_percentage": {
+                            "type": "number",
+                            "description": "The discount percentage to apply (e.g. 15.0 for 15% off).",
+                        },
+                    },
+                    "required": ["campaign_id", "discount_percentage"],
+                },
             },
         },
         {

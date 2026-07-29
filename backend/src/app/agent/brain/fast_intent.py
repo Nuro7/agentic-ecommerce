@@ -626,26 +626,60 @@ async def handle_add_to_cart(
                 })
 
     final_qty = max(1, qty)
-    _handle = product.get("handle") or ""
-    if not _handle:
-        _m = re.search(r"/products/([^/?#]+)", product.get("permalink", ""))
-        if _m:
-            _handle = _m.group(1)
+
+    # Execute add-to-cart server-side (Shopify: Storefront GraphQL cartLinesAdd;
+    # WooCommerce: REST API). Returns full cart snapshot with checkoutUrl.
+    try:
+        cart_result = await store_client.add_to_cart(
+            session_id=session_id,
+            product_id=int(product["id"]),
+            variation_id=variation_id,
+            quantity=final_qty,
+            variation=variation_data,
+            product_name=product.get("name", ""),
+            price=product.get("price", ""),
+        )
+        cart_snapshot = {k: v for k, v in cart_result.items() if k != "success"}
+        checkout_url = cart_result.get("checkout_url", "")
+        item_count = int(cart_result.get("item_count", final_qty))
+    except Exception as exc:
+        logger.warning("Server-side add_to_cart failed, returning client action: %s", exc)
+        _handle = product.get("handle") or ""
+        if not _handle:
+            _m = re.search(r"/products/([^/?#]+)", product.get("permalink", ""))
+            if _m:
+                _handle = _m.group(1)
+        return with_actions_alias({
+            "response_text": say(language, "added_to_cart", name=product.get("name", "Product"), qty=final_qty),
+            "ui_actions": [{
+                "type": "add_to_cart",
+                "payload": {
+                    "product_id": int(product["id"]),
+                    "variation_id": variation_id,
+                    "variation": variation_data,
+                    "quantity": final_qty,
+                    "permalink": product.get("permalink", ""),
+                    "handle": _handle,
+                },
+            }],
+            "suggested_replies": ["Add another item", "View cart", "Proceed to checkout"],
+            "last_products": [product.get("id")],
+        })
+
     return with_actions_alias({
         "response_text": say(language, "added_to_cart", name=product.get("name", "Product"), qty=final_qty),
         "ui_actions": [{
-            "type": "add_to_cart",
+            "type": "cart_updated",
             "payload": {
+                "cart": cart_snapshot,
+                "item_count": item_count,
                 "product_id": int(product["id"]),
-                "variation_id": variation_id,
-                "variation": variation_data,
-                "quantity": final_qty,
-                "permalink": product.get("permalink", ""),
-                "handle": _handle,
+                "checkout_url": checkout_url,
             },
         }],
         "suggested_replies": ["Add another item", "View cart", "Proceed to checkout"],
         "last_products": [product.get("id")],
+        "cart_snapshot": cart_snapshot,
     })
 
 

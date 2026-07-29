@@ -45,16 +45,19 @@ def append_live_navigation(
     query,
     platform: str,
     current_url: str = "",
-    last_products: Optional[List[Any]] = None,
+    active_recommendations: Optional[List[Any]] = None,
 ) -> None:
     """Append ONE `redirect` ui_action matching this turn's answer (in place).
 
-    Priority: add_to_cart â†’ cart page; a single shown product with a permalink
-    â†’ its product page; any shown products â†’ the storefront search page with the
+    Priority: add_to_cart → cart page; a single shown product with a permalink
+    → its product page; any shown products → the storefront search page with the
     normalized spoken query. Skips when a redirect/checkout action is already
     present, when the target equals the page the customer is on, or when no
-    target URL can be built. Additive only â€” inline cards always still render;
+    target URL can be built. Additive only — inline cards always still render;
     the widget's live_navigation flag decides whether to actually navigate.
+
+    Ordinal navigation ("first", "second", "that one") targets
+    active_recommendations exclusively — never view_history.
     """
     if not isinstance(ui_actions, list):
         return
@@ -97,8 +100,8 @@ def append_live_navigation(
         _push(checkout_url or "/checkout", "checkout")
         return
 
-    # Product list navigation from history (e.g. "go to the first product")
-    if last_products and isinstance(last_products, list):
+    # Product list navigation from recommendations (e.g. "go to the first product")
+    if active_recommendations and isinstance(active_recommendations, list):
         target_index = None
         if re.search(r"\b(first|1st|number one|no 1|no\. 1)\b", lower_query):
             target_index = 0
@@ -107,11 +110,11 @@ def append_live_navigation(
         elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower_query):
             target_index = 2
         elif re.search(r"\b(that|this)\s*(one|product|item)?(?:\s*(?:please|thanks|thank\s*you))*\s*$", lower_query) or lower_query in ("take that", "take this", "that one", "this one", "that product", "this product"):
-            # Anaphoric reference â€” pick the last explicitly shown product, else the first
+            # Anaphoric reference — pick the last explicitly shown product, else the first
             target_index = 0
 
-        if target_index is not None and len(last_products) > target_index:
-            prod = last_products[target_index]
+        if target_index is not None and len(active_recommendations) > target_index:
+            prod = active_recommendations[target_index]
             if isinstance(prod, dict):
                 purl = product_page_url(prod)
                 if purl:
