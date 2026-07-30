@@ -260,13 +260,11 @@ class IntentClassifier:
     def _init_grok(self) -> None:
         """Init the intent-classification LLM client.
 
-        Prefers OpenAI (GPT-4o-mini) — fast and reliable. Falls back to xAI Grok
-        only if OPENAI_API_KEY is absent but GROK_API_KEY is set. If neither is
-        set, the regex tier handles everything.
+        Uses OpenAI (GPT-4o-mini) only — fast and reliable. Grok removed
+        due to unreliable timeouts. Falls back to regex if no key is set.
         """
         import os
         openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        grok_key = os.environ.get("GROK_API_KEY", "").strip()
         try:
             from openai import AsyncOpenAI
             if openai_key:
@@ -279,21 +277,9 @@ class IntentClassifier:
                     "IntentClassifier: OpenAI (%s) ready — timeout=%.1fs",
                     self._model, self._timeout,
                 )
-            elif grok_key:
-                # Legacy path — only if OpenAI isn't configured.
-                self._groq = AsyncOpenAI(
-                    api_key=grok_key,
-                    base_url="https://api.x.ai/v1",
-                    max_retries=0,
-                    timeout=self._timeout,
-                )
-                logger.info(
-                    "IntentClassifier: xAI Grok (%s) ready — timeout=%.1fs",
-                    self._model, self._timeout,
-                )
             else:
                 logger.info(
-                    "IntentClassifier: no OPENAI_API_KEY / GROK_API_KEY — regex fallback only"
+                    "IntentClassifier: no OPENAI_API_KEY — regex fallback only"
                 )
         except Exception as exc:
             logger.warning("IntentClassifier: LLM client init failed: %s", exc)

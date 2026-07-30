@@ -315,14 +315,12 @@ async def _call_gpt4o(messages: list[dict], tools: list[dict]) -> dict:
 async def _best_available(messages: list[dict], tools: list[dict]) -> dict:
     # Each call is timeout-bounded so a hung provider can't stall the turn
     # (this runs on the escalation fallback path, which has no outer wait_for).
-    # Order mirrors the default chain: GPT-4o-mini → xAI Grok → Gemini.
+    # Order: GPT-4o-mini → Gemini (Grok removed — unreliable timeouts).
     if gpt_mini_client:
         return await asyncio.wait_for(_call_gpt_mini(messages, tools), timeout=_FALLBACK_TIMEOUT)
-    if xai_client:
-        return await asyncio.wait_for(_call_groq(messages, tools), timeout=_FALLBACK_TIMEOUT)
     if gemini_client:
         return await asyncio.wait_for(_call_gemini_brain(messages, tools), timeout=_FALLBACK_TIMEOUT)
-    raise RuntimeError("No LLM clients configured — set GROK_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY")
+    raise RuntimeError("No LLM clients configured — set OPENAI_API_KEY or GEMINI_API_KEY")
 
 
 # ── Main routing entry point ───────────────────────────────────────────────
@@ -374,9 +372,8 @@ async def route_and_call(
         return _validated_response(await _best_available(messages, tools))
 
     # ── Primary: GPT-4o-mini ─────────────────────────────────────────────────
-    # Fast, reliable, well-funded — the default brain. Falls back to xAI Grok →
-    # Gemini if it's unavailable. (Grok is kept as a backup, not the primary, so
-    # an unhealthy Grok key can't tax every turn with its timeout.)
+    # Fast, reliable, well-funded — the default brain. Falls back to Gemini
+    # if it's unavailable. (Grok removed — unreliable timeouts.)
     if gpt_mini_client and _gpt_mini_breaker.is_available():
         logger.info("LLM route: GPT-4o-mini [primary, lang=%s, tools~%d]", lang, tool_count)
         try:
@@ -388,26 +385,9 @@ async def route_and_call(
             return _validated_response(raw)
         except Exception as e:
             _gpt_mini_breaker.record_failure()
-            logger.warning("GPT-4o-mini failed (%s), falling back to xAI Grok", e)
+            logger.warning("GPT-4o-mini failed (%s), falling back to Gemini", e)
 
-    # ── Secondary: xAI Grok (grok-4.3) ───────────────────────────────────────
-    # Flagship backup — leading tool calling, low hallucination, 1M context.
-    if xai_client and _grok_breaker.is_available():
-        logger.info(
-            "LLM route: xAI Grok [%s, fallback, lang=%s]",
-            XAI_MODEL, lang,
-        )
-        try:
-            raw = await asyncio.wait_for(
-                _call_groq(messages, tools),
-                timeout=_budget_timeout(_t0, _FALLBACK_TIMEOUT),
-            )
-            _grok_breaker.record_success()
-            return _validated_response(raw)
-        except Exception as e:
-            _grok_breaker.record_failure()
-            logger.warning("xAI Grok failed (%s), trying Gemini", e)
-
+    # ── Secondary: Gemini ────────────────────────────────────────────────────
     if gemini_client and _gemini_breaker.is_available():
         logger.info("LLM route: Gemini [last-resort fallback, lang=%s]", lang)
         try:
