@@ -18,9 +18,7 @@ class WooAgent_Auth {
         return isset($options['api_secret']) ? (string) $options['api_secret'] : '';
     }
 
-    /**
-     * Build HMAC signature for an outbound request to the backend.
-     *
+    /
      * Payload format: timestamp + "." + path + "." + body
      * Including the path prevents a valid /chat signature being replayed
      * against a different endpoint. Must match security.py compute_signature().
