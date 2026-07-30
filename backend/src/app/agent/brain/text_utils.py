@@ -403,11 +403,15 @@ def has_buy_now_intent(lower: str) -> bool:
 
 
 def has_add_intent(lower: str) -> bool:
-    return any(token in lower for token in [
+    if any(token in lower for token in [
         "add to cart", "add this to cart", "add it to cart",
         "buy this", "yes add", "put in cart", "add one",
         "add it", "add this", "yes, add",
-    ])
+    ]):
+        return True
+    if re.search(r"\b(take|get|pick|select|choose|grab)\s+(the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|that|this)\b", lower):
+        return True
+    return False
 
 
 def has_remove_intent(lower: str) -> bool:

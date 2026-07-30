@@ -1178,6 +1178,9 @@ async def _resolve_product_for_add(
                         }
             except Exception as e:
                 logger.error("Failed fetching last_product ordinal %s: %s", target_index, e)
+        logger.warning("Ordinal %d requested but no matching product in active_recommendations (%d) or last_products (%d) — returning None",
+                       target_index, len(active_recommendations or []), len(last_prods))
+        return None
 
     # 2. Resolve anaphoric reference ("add this", "get it", "add to cart")
     if re.search(r"\b(this|that|it|product|shoe|item)\b", lower):
@@ -1195,7 +1198,7 @@ async def _resolve_product_for_add(
             except Exception as e:
                 logger.error("Failed fetching context product for pid %s: %s", current_pid, e)
 
-        if active_recommendations:
+        if active_recommendations and len(active_recommendations) > 0:
             first_rec = active_recommendations[0]
             if isinstance(first_rec, dict) and first_rec.get("id"):
                 return first_rec

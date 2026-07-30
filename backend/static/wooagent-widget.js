@@ -1321,6 +1321,14 @@
       50% { box-shadow: 0 0 0 8px rgba(99,102,241,0.28); }
       100% { box-shadow: 0 0 0 3px #6366f1; }
     }
+    .speako-glow {
+      animation: speako-glow-pulse 1.5s ease-out;
+    }
+    @keyframes speako-glow-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(99,102,241,0.6); }
+      50% { box-shadow: 0 0 15px rgba(99,102,241,0.9), 0 0 30px rgba(99,102,241,0.4); }
+      100% { box-shadow: 0 0 0 2px rgba(99,102,241,0.8); }
+    }
   `;
   document.head.appendChild(globalCss);
 
@@ -2521,9 +2529,17 @@
   async function processAction(act) {
     // In voice-nav mode with panel closed, skip DOM-rendering actions
     const isHidden = S.mode === 'voice_nav' && !S.open;
+    const _isSearchPage = /\/search\b/.test(location.pathname);
     switch (act.type) {
       case 'show_products': {
         const _products = (act.payload && act.payload.products) || [];
+        // On native Shopify search pages, skip rendering Speako's own floating
+        // cards — let the native theme product grid handle display. The redirect
+        // action (added by append_live_navigation) already navigated here.
+        if (_isSearchPage) {
+          window._wa_lastProducts = _products;
+          break;
+        }
         // In voice-only mode, inject floating shelf on document.body (light DOM)
         if (_voiceOnlyMode) {
           _injectInPageCards(_products);
@@ -2917,14 +2933,17 @@
       case 'highlight_card': {
         const hc = act.payload || {};
         const idx = parseInt(hc.target_index !== undefined ? hc.target_index : hc.index, 10);
-        const cards = document.querySelectorAll('.speako-product-card, .wa-inpage-card, [data-product-card], .product-card, .product-item, .wa-card');
+        const cards = document.querySelectorAll(
+          '.speako-product-card, .wa-inpage-card, [data-product-card], .product-card, .product-item, .wa-card, ' +
+          '.grid__item, [data-product-id], .product-grid-item, a[href*="/products/"]'
+        );
         if (Number.isInteger(idx) && idx >= 0 && idx < cards.length) {
           const target = cards[idx];
-          cards.forEach(c => c.classList.remove('is-selected', 'highlight-pulse'));
-          target.classList.add('is-selected', 'highlight-pulse');
+          cards.forEach(c => c.classList.remove('is-selected', 'highlight-pulse', 'speako-glow'));
+          target.classList.add('is-selected', 'highlight-pulse', 'speako-glow');
           target.scrollIntoView({ behavior: 'smooth', block: 'center' });
           window.scrollBy({ top: -80, behavior: 'instant' });
-          setTimeout(() => target.classList.remove('highlight-pulse'), 1500);
+          setTimeout(() => target.classList.remove('highlight-pulse', 'speako-glow'), 3000);
         }
         break;
       }
@@ -2942,8 +2961,8 @@
           if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             window.scrollBy({ top: -80, behavior: 'instant' });
-            el.classList.add('speako-highlighted');
-            setTimeout(() => el.classList.remove('speako-highlighted'), 3000);
+            el.classList.add('speako-highlighted', 'speako-glow');
+            setTimeout(() => el.classList.remove('speako-highlighted', 'speako-glow'), 3000);
           }
         }
         break;
@@ -3755,6 +3774,9 @@
     if (_inpageShelfEl) { _inpageShelfEl.remove(); _inpageShelfEl = null; }
   }
   function _injectInPageCards(products) {
+    // Skip floating cards on native Shopify search pages — the theme's product
+    // grid handles display. Redirect action navigates to the search page instead.
+    if (/\/search\b/.test(location.pathname)) return;
     _removeInpageShelf();
     if (!Array.isArray(products) || !products.length) return;
     const seen = new Set();

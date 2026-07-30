@@ -639,7 +639,17 @@ async def ask_brain(
     retrieval_ran = False
     retrieval_found = False
     _search_query = cleaned_message  # default: use cleaned_message
-    if result is None and intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY):
+
+    # Don't run retrieval when the user is selecting a product from
+    # existing results ("take the second", "pick the first", "get that one").
+    # Treat these as CART_ACTION (product selection) not SEARCH, so the
+    # existing active_recommendations from session are preserved.
+    _is_ordinal_select = bool(re.search(
+        r"\b(take|get|pick|select|choose|grab)\s+(the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|that|this)\b",
+        lower_msg,
+    ))
+
+    if result is None and intent_result.intent in (SEARCH, PRODUCT_DETAIL, INVENTORY) and not _is_ordinal_select:
         # For SEARCH intent, extract a clean search query from verbose
         # natural language so "husband birthday surprise gift formal shoes"
         # becomes "formal shoes" instead of drowning in conversational noise.
