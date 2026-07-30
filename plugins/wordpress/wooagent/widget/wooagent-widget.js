@@ -6190,20 +6190,10 @@
     setTimeout(showMicPermissionBanner, 2000);
   }
 
-  // Auto-start voice-only mode on return visit (mic was previously granted)
-  if (localStorage.getItem('_wa_mic_perm_granted') === '1') {
-    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-      stream.getTracks().forEach(t => t.stop());
-      S.micPermissionGranted = true;
-      startVoiceOnly();
-    }).catch(() => {
-      // Permission revoked — reset localStorage flags so banner shows next time
-      localStorage.removeItem('_wa_mic_perm_granted');
-      localStorage.removeItem('_wa_mic_perm_asked');
-      S.micPermissionAsked = false;
-      showMicPermissionBanner();
-    });
-  }
+  // Auto-start voice-only mode on return visit is DISABLED — the chatbot
+  // must only open when the user clicks the FAB button. Voice mode was
+  // auto-starting on every page load, causing repeated greetings, voice
+  // interference, and session confusion.
 
   if (isCheckoutPage()) {
     // Apply immediately and again after React Blocks mounts
