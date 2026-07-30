@@ -1163,6 +1163,30 @@
       0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.6), 0 8px 28px rgba(0,0,0,0.5); }
       100% { box-shadow: 0 0 0 12px rgba(52,211,153,0), 0 8px 28px rgba(0,0,0,0.5); }
     }
+    .wa-voice-pill {
+      position: fixed;
+      bottom: 80px; right: 24px;
+      background: var(--bg1);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 6px 14px;
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13px; color: var(--text);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      z-index: 2147483646;
+      animation: wa-in .3s ease-out;
+      pointer-events: none;
+    }
+    .wa-voice-pill .wa-voice-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      animation: wa-voice-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes wa-voice-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.8); }
+    }
 
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
@@ -1224,6 +1248,10 @@
       </svg>
       <span class="wa-badge" id="wa-badge">0</span>
     </button>
+
+    <div class="wa-voice-pill" id="wa-voice-pill" style="display:none">
+      <span class="wa-voice-dot"></span> Voice Active
+    </div>
 
     <div class="wa-pane" id="wa-pane" role="dialog" aria-label="Shopping Assistant">
 
@@ -1336,6 +1364,7 @@
   const closeBtn = $('wa-close');
   const clearBtn = $('wa-clear');
   const statusTxt = $('wa-status-text');
+  const voicePill = $('wa-voice-pill');
 
   function b64ToObjectUrl(b64, format) {
     try {
@@ -1707,6 +1736,11 @@
   }
 
   function openPane() {
+    if (_voiceOnlyMode) {
+      _voiceOnlyMode = false;
+      voicePill.style.display = 'none';
+      fab.classList.remove('voice-nav-active');
+    }
     primeAudioEngines();
     S.open = true;
     pane.classList.add('open');
@@ -4592,6 +4626,11 @@
     a2aReconnectCount = 0;  // [2] reset so next startA2AMode gets fresh attempts
     flushAudioQueue();      // [1] stop any playing audio immediately
     _a2aStopCapture();
+    if (_voiceOnlyMode) {
+      _voiceOnlyMode = false;
+      voicePill.style.display = 'none';
+      fab.classList.remove('voice-nav-active');
+    }
     if (geminiSocket) {
       try { geminiSocket.close(1000, 'user stopped'); } catch (e) {}
       geminiSocket = null;
@@ -4621,6 +4660,30 @@
     }
   }
 
+  let _voiceOnlyMode = false;
+
+  // ── startVoiceOnly: connect A2A WS + start listening, no chat pane ────
+  function startVoiceOnly() {
+    _voiceOnlyMode = true;
+    primeAudioEngines();
+    localStorage.setItem('_wa_mic_perm_granted', '1');
+    voicePill.style.display = 'flex';
+    fab.classList.add('voice-nav-active');
+    if (A2A_ENABLED) {
+      startA2AMode();
+    } else {
+      startLiveModeHTTP();
+    }
+  }
+
+  // ── stopVoiceOnly: tear down voice-only mode ─────────────────────────
+  function stopVoiceOnly() {
+    _voiceOnlyMode = false;
+    voicePill.style.display = 'none';
+    fab.classList.remove('voice-nav-active');
+    if (isLiveMode) stopLiveMode();
+  }
+
   // ── showMicPermissionBanner: ask for mic access, then fire greeting ─────
   function showMicPermissionBanner() {
     if (S.micPermissionAsked || S.micPermissionGranted) return;
@@ -4639,7 +4702,7 @@
         S.micPermissionGranted = true;
         localStorage.setItem('_wa_mic_perm_asked', '1');
         banner.remove();
-        openPane();
+        startVoiceOnly();
       } catch (e) {
         showToast('Microphone access denied');
       }
@@ -5723,6 +5786,21 @@
   // Mic permission banner after 2s (only on first visit)
   if (!S.micPermissionAsked && !S.micPermissionGranted) {
     setTimeout(showMicPermissionBanner, 2000);
+  }
+
+  // Auto-start voice-only mode on return visit (mic was previously granted)
+  if (localStorage.getItem('_wa_mic_perm_granted') === '1') {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      stream.getTracks().forEach(t => t.stop());
+      S.micPermissionGranted = true;
+      startVoiceOnly();
+    }).catch(() => {
+      // Permission revoked — reset localStorage flags so banner shows next time
+      localStorage.removeItem('_wa_mic_perm_granted');
+      localStorage.removeItem('_wa_mic_perm_asked');
+      S.micPermissionAsked = false;
+      showMicPermissionBanner();
+    });
   }
 
   if (isCheckoutPage()) {
