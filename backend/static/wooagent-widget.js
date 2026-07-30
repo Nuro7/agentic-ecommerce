@@ -2793,6 +2793,10 @@
           if (_voiceOnlyMode || S.mode === 'voice_nav') {
             sessionStorage.setItem('_wa_voice_nav_resume_session', '1');
           }
+          // Save pending search (voice text + highlight) to replay after landing
+          if (p.pending_search) {
+            sessionStorage.setItem('_wa_pending_search', JSON.stringify(p.pending_search));
+          }
         } catch (e) {}
 
         const performRedirect = () => {
@@ -6040,6 +6044,45 @@
 
   // ── Restore in-page product cards from sessionStorage — REMOVED (no shelf) ──
   try { sessionStorage.removeItem('_wa_inpage_products'); } catch (e) {}
+
+  // ── Replay pending search (voice + highlight) after search redirect lands ──
+  try {
+    const pendingSearch = sessionStorage.getItem('_wa_pending_search');
+    if (pendingSearch) {
+      sessionStorage.removeItem('_wa_pending_search');
+      const ps = JSON.parse(pendingSearch);
+      setTimeout(() => {
+        // Speak voice explanation using browser TTS
+        if (ps.voice_text && window.speechSynthesis) {
+          const utterance = new SpeechSynthesisUtterance(ps.voice_text);
+          utterance.rate = 1.0;
+          utterance.pitch = 1.0;
+          utterance.volume = 1.0;
+          window.speechSynthesis.speak(utterance);
+        }
+        // Highlight product on native Shopify grid
+        if (ps.highlight) {
+          const hc = ps.highlight;
+          const idx = parseInt(hc.target_index !== undefined ? hc.target_index : hc.index, 10);
+          const cards = document.querySelectorAll(
+            '.grid__item, .product-card, .product-grid-item, [data-product-id], .card-wrapper'
+          );
+          if (Number.isInteger(idx) && idx >= 0 && idx < cards.length) {
+            const target = cards[idx];
+            cards.forEach(c => {
+              c.style.outline = '';
+              c.style.boxShadow = '';
+              c.style.transition = '';
+            });
+            target.style.outline = '3px solid #6366f1';
+            target.style.boxShadow = '0 0 16px rgba(99,102,241,0.5)';
+            target.style.transition = 'box-shadow 0.3s ease, outline 0.3s ease';
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }
+      }, 600);
+    }
+  } catch (e) {}
 
   // Auto-resume after redirect DISABLED — chatbot stays closed until FAB click
   // try {

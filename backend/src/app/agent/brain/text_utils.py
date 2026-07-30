@@ -69,7 +69,8 @@ def append_live_navigation(
     def _push(url: str, reason: str, nav_query: str = "") -> None:
         if not url or url.rstrip("/") == here:
             return
-        payload: Dict[str, Any] = {"url": url, "reason": reason, "delay_ms": 1500}
+        delay = 0 if reason == "search" else 1500
+        payload: Dict[str, Any] = {"url": url, "reason": reason, "delay_ms": delay}
         if nav_query:
             payload["query"] = nav_query
         ui_actions.append({"type": "redirect", "payload": payload})

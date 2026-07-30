@@ -920,6 +920,38 @@ async def ask_brain(
     except Exception as _nav_exc:
         logger.debug("[turn %s] live-nav skipped: %s", turn_id, _nav_exc)
 
+    # ── Defer voice + highlight for search redirects ────────────────
+    # When a search redirect is present, strip all spoken/highlight
+    # actions so they DO NOT fire on the current page. Instead they
+    # are embedded in the redirect payload as pending_search so the
+    # widget replays them AFTER landing on the search page.
+    _search_redirect = None
+    for _a in ui_actions:
+        if isinstance(_a, dict) and _a.get("type") == "redirect":
+            _p = _a.get("payload") or {}
+            if _p.get("reason") == "search":
+                _search_redirect = _a
+                break
+    if _search_redirect is not None:
+        _pending = {}
+        _voice_text = response_text or ""
+        if _voice_text:
+            _pending["voice_text"] = _voice_text
+        # Find and extract highlight_card action (first one only)
+        _highlight_idx = None
+        for _i, _a in enumerate(ui_actions):
+            if isinstance(_a, dict) and _a.get("type") == "highlight_card":
+                _highlight_idx = _i
+                _pending["highlight"] = _a.get("payload", {})
+                break
+        if _highlight_idx is not None:
+            ui_actions.pop(_highlight_idx)
+        # Embed pending payload into redirect
+        _search_redirect["payload"]["pending_search"] = _pending
+        # Shorten response text — voice will replay after landing
+        _sq = _search_redirect["payload"].get("query") or _search_query or ""
+        response_text = f"Searching for {_sq}..." if _sq else "Searching..."
+
     inline_suggestions, response_text = extract_next_suggestions(response_text)
     suggested: List[str] = inline_suggestions or (
         result.get("suggested_replies")
