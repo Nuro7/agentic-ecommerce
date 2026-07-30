@@ -8,13 +8,19 @@ set -e
 cd ~/agentic-ecommerce
 
 echo "[deploy] Stopping existing containers..."
-docker compose -f infra/docker/docker-compose.prod.yml down --remove-orphans
+docker compose -f infra/docker/docker-compose.prod.yml down --remove-orphans 2>/dev/null || true
+# Also remove orphan networks that may linger
+docker network prune -f 2>/dev/null || true
 
 echo "[deploy] Building and starting services..."
-docker compose -f infra/docker/docker-compose.prod.yml up -d --build
+# --force-recreate ensures containers are recreated even if names conflict
+# from stale state or simultaneous CI runs
+docker compose -f infra/docker/docker-compose.prod.yml up -d --build --force-recreate
 
-echo "[deploy] Waiting for web to be healthy..."
+echo "[deploy] Waiting for services to settle..."
 sleep 10
+
+echo "[deploy] Service status:"
 docker compose -f infra/docker/docker-compose.prod.yml ps
 
 echo "[deploy] Done."
