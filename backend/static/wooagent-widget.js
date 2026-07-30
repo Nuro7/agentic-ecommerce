@@ -4662,7 +4662,7 @@
 
   let _voiceOnlyMode = false;
 
-  // ── startVoiceOnly: connect A2A WS + start listening, no chat pane ────
+  // ── startVoiceOnly: connect A2A WS + play greeting + listen, no pane ──
   function startVoiceOnly() {
     _voiceOnlyMode = true;
     primeAudioEngines();
@@ -4673,6 +4673,12 @@
       startA2AMode();
     } else {
       startLiveModeHTTP();
+    }
+    // Play auto-greeting on first visit ("Welcome... What's your name?")
+    if (!S.greeted) {
+      S.greeted = true;
+      localStorage.setItem('_wa_greeted', '1');
+      fetchGreeting();
     }
   }
 
