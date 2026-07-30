@@ -353,7 +353,13 @@ async def chat_endpoint(
         session_meta = await session_service.get_meta(tenant_id, payload.session_id)
         if not session_meta.get("customer_name"):
             import re as _re
-            _nm = _re.search(r"\b(i'?m|my name is|call me|naam hai|peru|per enthaan|enno|en frnd)\s+([a-z]+)", payload.message, _re.I)
+            _nm = _re.search(
+                r"\b(i'?m|my name is|call me|it'?s|"
+                r"(?:mera|apna|amar|nanna|naa)\s+naam|"
+                r"(?:en|ente|naa|nanna)\s+peru|"
+                r"naam\s+hai|peru|per enthaan|enno|en frnd)\s+([a-z]{2,})",
+                payload.message, _re.I,
+            )
             if _nm:
                 captured = _nm.group(2).strip().capitalize()
                 session_meta["customer_name"] = captured
@@ -369,6 +375,9 @@ async def chat_endpoint(
         "tenant_id": tenant_id,
         "url": payload.store_url or "",
     }
+    # Inject customer_name so system prompt sees it
+    if session_service and session_meta.get("customer_name"):
+        store_context["customer_name"] = session_meta["customer_name"]
     cp = payload.current_page
     page_context: Dict[str, Any] = (
         {"url": cp.url, "title": cp.title, "product_id": cp.product_id, "product_name": cp.product_name, "variant_id": cp.variant_id}

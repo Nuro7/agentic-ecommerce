@@ -442,6 +442,32 @@ async def ask_brain(
     state: Any = gather_results[1] if not isinstance(gather_results[1], BaseException) else {}
     session_meta: Any = gather_results[2] if not isinstance(gather_results[2], BaseException) else {}
 
+    # ── Inject customer_name from session_meta into store_context ────────
+    if isinstance(session_meta, dict):
+        _cn = session_meta.get("customer_name", "").strip()
+        if _cn:
+            store_context["customer_name"] = _cn
+
+    # ── Name capture from user message (both text and voice paths) ─────────
+    if isinstance(session_meta, dict) and not session_meta.get("customer_name"):
+        import re as _re
+        _nm = _re.search(
+            r"\b(i'?m|my name is|call me|it'?s|"
+            r"(?:mera|apna|amar|nanna|naa)\s+naam|"
+            r"(?:en|ente|naa|nanna)\s+peru|"
+            r"naam\s+hai|peru|per enthaan|enno|en frnd)\s+([a-z]{2,})",
+            cleaned_message, _re.I,
+        )
+        if _nm:
+            _captured = _nm.group(2).strip().capitalize()
+            session_meta["customer_name"] = _captured
+            store_context["customer_name"] = _captured
+            if session_service:
+                try:
+                    await session_service.save_meta(tenant_id, session_id, {**session_meta, "customer_name": _captured})
+                except Exception:
+                    pass
+
     history: List[Dict[str, Any]] = (
         state.get("conversation_history", []) if isinstance(state, dict) else []
     )
