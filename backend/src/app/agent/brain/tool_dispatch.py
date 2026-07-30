@@ -70,6 +70,8 @@ async def execute_tool_call(
         requested_limit = safe_int(tool_args.get("limit"), default_limit)
         limit = max(1, min(requested_limit, 8))
         in_stock_only = bool(tool_args.get("in_stock_only", False))
+        sort_by = str(tool_args.get("sort_by") or "").strip() or None
+        sort_order = str(tool_args.get("sort_order") or "").strip() or None
         
         # Use hybrid_search (L3: BM25 + vector + RRF) instead of live store API
         # This provides stemming, fuzzy matching, and semantic search
@@ -84,6 +86,8 @@ async def execute_tool_call(
                 max_price=safe_float(tool_args.get("max_price")),
                 in_stock_only=in_stock_only,
                 limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
             )
         
         # Convert SearchResult objects to dict format expected by rest of code

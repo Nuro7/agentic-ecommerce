@@ -33,8 +33,14 @@ class BaseStoreClient(ABC):
         in_stock_only: bool = True,
         on_sale: Optional[bool] = None,
         limit: int = 6,
+        sort_by: Optional[str] = None,
+        sort_order: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search products by keyword, category, price range, or stock status."""
+        """Search products by keyword, category, price range, or stock status.
+
+        Supported sort_by values: "relevance", "price", "title", "newest",
+        "best_selling", "oldest". sort_order: "asc" or "desc".
+        """
 
     @abstractmethod
     async def get_product_details(self, product_id: int) -> Dict[str, Any]:

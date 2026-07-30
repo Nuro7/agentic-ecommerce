@@ -50,6 +50,17 @@ class WooCommerceClient(BaseStoreClient):
     async def close(self) -> None:
         await self.client.aclose()
 
+    _WC_SORT_MAP = {
+        "relevance": "relevance",
+        "price": "price",
+        "title": "title",
+        "name": "title",
+        "newest": "date",
+        "oldest": "date",
+        "popularity": "popularity",
+        "rating": "rating",
+    }
+
     async def search_products(
         self,
         *,
@@ -60,12 +71,20 @@ class WooCommerceClient(BaseStoreClient):
         in_stock_only: bool = True,
         on_sale: Optional[bool] = None,
         limit: int = 6,
+        sort_by: Optional[str] = None,
+        sort_order: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         raw_query = (query or "").strip()
         normalized_query = self._normalize_catalog_query(raw_query)
+        wc_orderby = self._WC_SORT_MAP.get(sort_by) if sort_by else None
+        wc_order = sort_order if sort_order in ("asc", "desc") else None
+        if sort_by == "oldest":
+            wc_order = "asc"
+        if sort_by == "newest" and not wc_order:
+            wc_order = "desc"
         cache_key = (
             f"catalog:search:{normalized_query}:{category_slug}:"
-            f"{min_price}:{max_price}:{in_stock_only}:{on_sale}:{limit}"
+            f"{min_price}:{max_price}:{in_stock_only}:{on_sale}:{limit}:{wc_orderby}:{wc_order}"
         )
         cached = await self._cache_get(cache_key)
         if isinstance(cached, list):
@@ -87,6 +106,10 @@ class WooCommerceClient(BaseStoreClient):
                 plugin_params["min_price"] = str(min_price)
             if max_price is not None:
                 plugin_params["max_price"] = str(max_price)
+            if wc_orderby:
+                plugin_params["orderby"] = wc_orderby
+            if wc_order:
+                plugin_params["order"] = wc_order
             rows = await self._request(
                 "GET",
                 "/wp-json/wooagent/v1/products/search",
@@ -111,6 +134,10 @@ class WooCommerceClient(BaseStoreClient):
                     store_params["max_price"] = int(float(max_price) * 100)
                 if on_sale is True:
                     store_params["on_sale"] = "true"
+                if wc_orderby:
+                    store_params["orderby"] = wc_orderby
+                if wc_order:
+                    store_params["order"] = wc_order
                 rows = await self._request(
                     "GET",
                     "/wp-json/wc/store/v1/products",
@@ -134,6 +161,10 @@ class WooCommerceClient(BaseStoreClient):
                 wc_params["stock_status"] = "instock"
             if on_sale is True:
                 wc_params["on_sale"] = True
+            if wc_orderby:
+                wc_params["orderby"] = wc_orderby
+            if wc_order:
+                wc_params["order"] = wc_order
             try:
                 rows = await self._request(
                     "GET",

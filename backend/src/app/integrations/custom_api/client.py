@@ -149,7 +149,10 @@ class CustomApiClient(BaseStoreClient):
         in_stock_only: bool = True,
         on_sale: Optional[bool] = None,
         limit: int = 6,
+        sort_by: Optional[str] = None,
+        sort_order: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        _ = (sort_by, sort_order)
         params: Dict[str, Any] = {
             "q": query,
             "limit": max(1, min(int(limit), 40)),

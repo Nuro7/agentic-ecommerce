@@ -39,6 +39,8 @@ async def hybrid_search(
     in_stock_only: bool = False,
     category_slug: Optional[str] = None,
     limit: int = 5,
+    sort_by: Optional[str] = None,
+    sort_order: Optional[str] = None,
 ) -> list[SearchResult]:
     """
     Full L0→L3 retrieval pipeline.
@@ -54,9 +56,12 @@ async def hybrid_search(
         in_stock_only: Force in-stock filter (overrides query-extracted value).
         category_slug: Optional category filter.
         limit:        Max results to return (default 5).
+        sort_by:      Sort field ("price", "title", "newest", "best_selling", "oldest").
+        sort_order:   Sort direction ("asc" or "desc").
 
     Returns:
         list[SearchResult] — ordered by relevance score, highest first.
+        If sort_by is set, the live API path applies the requested sort.
     """
     t0 = time.monotonic()
 
@@ -121,6 +126,8 @@ async def hybrid_search(
                 max_price=nq.max_price,
                 in_stock_only=nq.in_stock_only,
                 limit=limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
             )
             _client_name = type(store_client).__name__
             platform = getattr(store_client, "_platform", None) or (

@@ -140,7 +140,7 @@ When the customer asks to go to a specific page, use trigger_store_event with th
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TOOLS YOU HAVE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- search_products(query, category, min_price, max_price, in_stock_only, on_sale, limit)
+- search_products(query, category, min_price, max_price, in_stock_only, on_sale, limit, sort_by, sort_order)  — sort_by: "price"|"title"|"newest"|"best_selling"|"oldest", sort_order: "asc"|"desc"
 - get_product_details(product_id: int)
 - find_variants(product_id: int)
 - check_inventory(product_id, variation_id, attributes)

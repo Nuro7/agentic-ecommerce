@@ -423,6 +423,8 @@ class ShopifyClient(BaseStoreClient):
         max_price: Optional[float] = None,
         in_stock_only: bool = False,
         limit: int = 6,
+        sort_key: str = "RELEVANCE",
+        reverse: bool = False,
     ) -> List[Dict[str, Any]]:
         """Admin-API product search fallback. Used when the Storefront API returns
         nothing (missing/revoked Storefront token, or products not published to the
@@ -451,14 +453,14 @@ class ShopifyClient(BaseStoreClient):
                  if len(t) > 2 and t not in stop]
         if terms:
             admin_q = "status:active AND (" + " OR ".join(terms) + ")"
-            sort_key = "RELEVANCE"
         else:
             admin_q = "status:active"
-            sort_key = "TITLE"  # RELEVANCE errors without a text term
-        async def _fetch(q_str: str, sk: str, first: int) -> Optional[List[Dict[str, Any]]]:
+            if sort_key == "RELEVANCE":
+                sort_key = "TITLE"  # RELEVANCE errors without a text term
+        async def _fetch(q_str: str, sk: str, rev: bool, first: int) -> Optional[List[Dict[str, Any]]]:
             gql = ("""
-        query AdminSearch($q: String!, $first: Int!) {
-          products(query: $q, first: $first, sortKey: %s) {""" % sk + """
+        query AdminSearch($q: String!, $first: Int!, $reverse: Boolean!) {
+          products(query: $q, first: $first, sortKey: %s, reverse: $reverse) {""" % sk + """
             edges { node {
               id title handle descriptionHtml totalInventory tags
               featuredImage { url }
@@ -485,14 +487,14 @@ class ShopifyClient(BaseStoreClient):
                 out.append(p)
             return out
 
-        products = await _fetch(admin_q, sort_key, 100)
+        products = await _fetch(admin_q, sort_key, reverse, 100)
         if products is None:
             return []
         # Typo path: a SEARCH whose (misspelled) terms matched nothing in Shopify's
-        # exact search â€” fetch a browse page so the FUZZY ranker below can still find
-        # it ("gshook"â†’"g-shock"). Shopify has no fuzzy search, so we match locally.
+        # exact search — fetch a browse page so the FUZZY ranker below can still find
+        # it ("gshook"→"g-shock"). Shopify has no fuzzy search, so we match locally.
         if terms and not products:
-            products = await _fetch("status:active", "TITLE", 150) or []
+            products = await _fetch("status:active", "TITLE", False, 150) or []
         fetched = len(products)
 
         # Client-side relevance: typo-tolerant token match against name/tags/desc.
@@ -553,6 +555,15 @@ class ShopifyClient(BaseStoreClient):
 
     # â”€â”€ Products â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+    _SORT_MAP = {
+        "relevance": "RELEVANCE",
+        "price": "PRICE",
+        "title": "TITLE",
+        "newest": "CREATED_AT",
+        "best_selling": "BEST_SELLING",
+        "oldest": "CREATED_AT",
+    }
+
     async def search_products(
         self,
         *,
@@ -563,10 +574,16 @@ class ShopifyClient(BaseStoreClient):
         in_stock_only: bool = True,
         on_sale: Optional[bool] = None,
         limit: int = 6,
+        sort_by: Optional[str] = None,
+        sort_order: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        sort_key = self._SORT_MAP.get(sort_by) if sort_by else "RELEVANCE"
+        reverse = True if (sort_order or "").lower() == "desc" else False
+        if sort_by == "oldest":
+            reverse = False  # CREATED_AT asc = oldest first
         cache_key = (
             f"catalog:search:{query}:{category_slug}:"
-            f"{min_price}:{max_price}:{in_stock_only}:{on_sale}:{limit}"
+            f"{min_price}:{max_price}:{in_stock_only}:{on_sale}:{limit}:{sort_key}:{reverse}"
         )
         cached = await self._cache_get(cache_key)
         if isinstance(cached, list):
@@ -590,8 +607,8 @@ class ShopifyClient(BaseStoreClient):
         per_page = max(1, min(int(limit or 6), 40))
 
         GQL = """
-        query SearchProducts($query: String!, $first: Int!) {
-          products(query: $query, first: $first, sortKey: RELEVANCE) {
+        query SearchProducts($query: String!, $first: Int!, $sortKey: ProductSortKeys!, $reverse: Boolean!) {
+          products(query: $query, first: $first, sortKey: $sortKey, reverse: $reverse) {
             edges {
               node {
                 id title handle description availableForSale totalInventory
@@ -620,7 +637,7 @@ class ShopifyClient(BaseStoreClient):
         """
         products: List[Dict[str, Any]] = []
         try:
-            data = await self._storefront(GQL, {"query": gql_query, "first": per_page})
+            data = await self._storefront(GQL, {"query": gql_query, "first": per_page, "sortKey": sort_key, "reverse": reverse})
             edges = data.get("products", {}).get("edges", [])
             products = [self._normalize_product_node(e["node"]) for e in edges]
         except Exception as exc:
@@ -633,6 +650,7 @@ class ShopifyClient(BaseStoreClient):
             products = await self._admin_search_products(
                 query=query, min_price=min_price, max_price=max_price,
                 in_stock_only=in_stock_only, limit=limit,
+                sort_key=sort_key, reverse=reverse,
             )
 
         if products:

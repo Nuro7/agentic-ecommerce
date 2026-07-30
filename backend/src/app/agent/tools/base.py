@@ -16,7 +16,23 @@ class ToolExecution:
 def get_tool_definitions() -> list:
     """Lightweight definitions for optional LLM tool-calling mode."""
     return [
-        {"name": "search_products"},
+        {
+            "name": "search_products",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search keywords"},
+                    "category": {"type": "string", "description": "Category slug to filter by"},
+                    "min_price": {"type": "number", "description": "Minimum price filter"},
+                    "max_price": {"type": "number", "description": "Maximum price filter"},
+                    "in_stock_only": {"type": "boolean", "description": "Only show in-stock products"},
+                    "on_sale": {"type": "boolean", "description": "Only show products on sale"},
+                    "limit": {"type": "integer", "description": "Max results (1-8)"},
+                    "sort_by": {"type": "string", "enum": ["price", "title", "newest", "best_selling", "oldest"], "description": "Sort field"},
+                    "sort_order": {"type": "string", "enum": ["asc", "desc"], "description": "Sort direction"},
+                },
+            },
+        },
         {"name": "get_product_details"},
         {"name": "check_inventory"},
         {"name": "get_cart"},
@@ -54,6 +70,8 @@ async def execute_tool(
             in_stock_only=_to_bool(args.get("in_stock_only"), default=True),
             on_sale=_to_optional_bool(args.get("on_sale")),
             limit=_to_int(args.get("limit"), default=6),
+            sort_by=str(args.get("sort_by") or "") or None,
+            sort_order=str(args.get("sort_order") or "") or None,
         )
         result = {
             "success": True,
