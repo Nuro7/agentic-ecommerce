@@ -4662,23 +4662,62 @@
 
   let _voiceOnlyMode = false;
 
-  // ── startVoiceOnly: connect A2A WS + play greeting + listen, no pane ──
+  // ── startVoiceOnly: play greeting → THEN start A2A mic (no echo bleed) ─
   function startVoiceOnly() {
     _voiceOnlyMode = true;
     primeAudioEngines();
     localStorage.setItem('_wa_mic_perm_granted', '1');
     voicePill.style.display = 'flex';
     fab.classList.add('voice-nav-active');
+    if (!S.greeted) {
+      // First visit: play greeting audio first, THEN start A2A
+      S.greeted = true;
+      localStorage.setItem('_wa_greeted', '1');
+      _greetThenA2A();
+    } else {
+      // Returning: start A2A immediately (no greeting needed)
+      _startA2A();
+    }
+  }
+
+  // ── _greetThenA2A: fetch greeting → play audio → THEN start A2A ──────
+  async function _greetThenA2A() {
+    try {
+      const r = await api('/greet', {
+        session_id: S.sessionId,
+        store_name: CFG.store_name,
+        language: S.language,
+        cart_context: (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') ? S.cartSnapshot : null,
+        current_page: {
+          url: location.href,
+          title: document.title,
+          product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
+          product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
+          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+          variant_id: detectActiveVariantId()
+        }
+      });
+      S.language = r.language_detected || r.language || S.language;
+      if (r.has_cart && r.cart_summary) updateBadge(r.cart_summary.item_count);
+      // Play greeting audio and WAIT for it to finish
+      await speakWithFallback(
+        r.audio_base64,
+        r.greeting_text || `Hi! Welcome to ${CFG.store_name}. How can I help you today?`,
+        S.language,
+        r.audio_format
+      );
+    } catch (e) {
+      // Greeting failed — continue silently
+    }
+    _startA2A();
+  }
+
+  // ── _startA2A: connect A2A WS + start mic capture ────────────────────
+  function _startA2A() {
     if (A2A_ENABLED) {
       startA2AMode();
     } else {
       startLiveModeHTTP();
-    }
-    // Play auto-greeting on first visit ("Welcome... What's your name?")
-    if (!S.greeted) {
-      S.greeted = true;
-      localStorage.setItem('_wa_greeted', '1');
-      fetchGreeting();
     }
   }
 
