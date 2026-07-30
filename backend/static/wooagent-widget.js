@@ -232,10 +232,44 @@
     .wa-badge.on { transform: scale(1); }
 
     /* ── PANE ─────────────────────────────────────────────── */
-    .wa-pane { display: none !important; } /* Chat pane disabled — voice-only */
+    .wa-pane {
+      position: fixed;
+      ${CFG.widget_position === 'bottom-left' ? 'left:20px' : 'right:20px'};
+      bottom: 94px;
+      width: 380px;
+      height: min(660px, calc(100dvh - 108px));
+      background: var(--bg0, #08080f);
+      border: 1px solid var(--line2, rgba(255,255,255,0.13));
+      border-radius: var(--r-xl, 28px);
+      box-shadow: var(--shadow);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+      z-index: 2147483645;
+      opacity: 0;
+      transform: translateY(16px) scale(0.96);
+      pointer-events: none;
+      transition: opacity .28s ease, transform .28s cubic-bezier(.34,1.56,.64,1);
+    }
+    /* Ambient glow at the bottom of the pane */
+    .wa-pane::before {
+      content: '';
+      position: absolute; bottom: 0; left: 0; right: 0; height: 200px;
+      background: radial-gradient(ellipse at 50% 110%,
+        ${_waAlpha(PC, 16)} 0%,
+        ${_waAlpha(PC, 6)} 55%,
+        transparent 100%);
+      pointer-events: none; z-index: 0;
+    }
+    .wa-pane.open {
+      opacity: 1; transform: translateY(0) scale(1); pointer-events: auto;
+    }
 
     @media (max-width: 480px) {
-      .wa-fab { right:14px !important; left:auto !important; bottom:16px !important; }
+      .wa-pane {
+        left:0 !important; right:0 !important; bottom:0 !important;
+        width:100% !important; height:95dvh !important;
+        border-radius: 20px 20px 0 0 !important; border-bottom:none !important;
+      }
       .wa-card { width: 144px !important; }
       .wa-card-img-wrap { width: 142px !important; }
     }
@@ -1629,8 +1663,10 @@
   }
 
   function startChatMode() {
-    // Chat mode disabled — redirect to voice
-    startVoiceNavMode();
+    primeAudioEngines();
+    closeMenu();
+    S.mode = 'chat';
+    openPane();
   }
 
   function startVoiceNavMode() {
@@ -1722,12 +1758,19 @@
   }
 
   fab.addEventListener('click', () => {
+    if (S.open) { closePane(); return; }
+    if (_resumePending) {
+      _resumePending = false;
+      _clearResumeGesture();
+      startLiveMode();
+      showToast('🎙️ Voice Navigation active.');
+      return;
+    }
     if (S.mode === 'voice_nav') { stopVoiceNavMode(); return; }
-    startVoiceNavMode();
+    toggleMenu();
   });
 
-  // Chat mode disabled — voice-only. Keep menuChat/MenuMic listeners no-op.
-  menuChat.addEventListener('click', startVoiceNavMode);
+  menuChat.addEventListener('click', startChatMode);
   menuMic.addEventListener('click', startVoiceNavMode);
 
   closeBtn.addEventListener('click', closePane);
@@ -1810,13 +1853,46 @@
   }
 
   function openPane() {
-    // Chat pane disabled — voice-only mode. No UI drawer shown.
+    if (_voiceOnlyMode) {
+      _voiceOnlyMode = false;
+      voicePill.style.display = 'none';
+      fab.classList.remove('voice-nav-active');
+    }
+    primeAudioEngines();
+    S.open = true;
+    pane.classList.add('open');
+    fab.classList.add('open');
+    fab.setAttribute('aria-expanded', 'true');
+    if (textBar && textBar.classList.contains('visible')) input.focus();
+    if (!S.greeted) {
+      S.greeted = true;
+      localStorage.setItem('_wa_greeted', '1');
+      fetchGreeting();
+      if (A2A_ENABLED) setTimeout(() => { if (S.open && !isA2AConnected) _startA2AForText(); }, 800);
+    } else {
+      let saved = [];
+      try { saved = JSON.parse(localStorage.getItem('_wa_conv') || '[]'); } catch (e) { }
+      if (saved.length && msgs.children.length === 0) {
+        const toShow = saved.slice(-6);
+        toShow.forEach(m => {
+          if (m.role === 'user' || m.role === 'assistant') {
+            addBubble(m.role === 'user' ? 'user' : 'bot', m.content);
+          }
+        });
+      }
+      if (CFG.enable_voice && !isLiveMode) {
+        setTimeout(() => { if (S.open && !isLiveMode) startLiveMode(); }, 600);
+      }
+    }
   }
 
   function closePane() {
     S.open = false;
     S.mode = 'idle';
     S._requestingMic = false;
+    pane.classList.remove('open');
+    fab.classList.remove('open');
+    fab.setAttribute('aria-expanded', 'false');
     stopCurrentAudio();
     if (isLiveMode) stopLiveMode();
   }
