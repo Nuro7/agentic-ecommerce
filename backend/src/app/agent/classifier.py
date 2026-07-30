@@ -252,7 +252,7 @@ class IntentClassifier:
         # Intent model. Defaults to OpenAI gpt-4o-mini (fast + reliable). xAI Grok
         # was timing out constantly, forcing the regex fallback on every message.
         self._model = os.environ.get("CLASSIFIER_MODEL", "gpt-4o-mini")
-        self._timeout = float(os.environ.get("CLASSIFIER_TIMEOUT_S", "6.0"))
+        self._timeout = float(os.environ.get("CLASSIFIER_TIMEOUT_S", "15.0"))
         self._regex = _RegexClassifier()
         self._groq = None   # variable name kept for internal compat
         self._init_grok()

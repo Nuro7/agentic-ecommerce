@@ -755,6 +755,7 @@ async def handle_availability(
     language: str,
     *,
     store_client: Any,
+    tenant_id: str = "",
 ) -> Optional[Dict[str, Any]]:
     size, color = extract_size_color(lower)
     query = normalize_availability_query(message)

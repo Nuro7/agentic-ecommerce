@@ -765,6 +765,7 @@ async def ask_brain(
                 result = await handle_availability(
                     cleaned_message, lower_msg, last_products, lang,
                     store_client=store_client,
+                    tenant_id=tenant_id,
                 )
             except Exception as exc:
                 logger.warning("handle_availability failed: %s", exc)
