@@ -28,6 +28,7 @@ from .text_utils import (
     has_cart_view_intent,
     has_cart_nav_intent,
     has_remove_intent,
+    has_add_intent,
 )
 from ..retrieval.search import hybrid_search
 from ...core.database import AsyncSessionLocal
@@ -77,6 +78,14 @@ async def run_fast_intent(
     # with NULL columns behaves exactly as before (env text for all tenants).
     from ...modules.tenants.service import get_store_config_for_tenant
     cfg = await get_store_config_for_tenant(tenant_id)
+
+    # If the query is an add-to-cart intent, bail out immediately — the caller
+    # (core.py) falls through to handle_add_to_cart which has page_context with
+    # the real product_id/variant_id from the PDP. Without this, the generic
+    # product search below would match "add to cart" and return a random product.
+    if has_add_intent(lower):
+        logger.info("[FLOW] fast_intent add_intent detected — returning None for handle_add_to_cart")
+        return None
 
     if has_shipping_intent(lower):
         _shipping = cfg.get("shipping_policy") or os.getenv("STORE_SHIPPING_POLICY", "")
