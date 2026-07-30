@@ -555,6 +555,10 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
     Dynamic JS loader — registered as the Shopify Script Tag.
     Reads per-tenant config from DB when shop param is provided.
     """
+    # Kill switch — set SPEAKO_DISABLE_WIDGET=true to hide the chatbot
+    if os.getenv("SPEAKO_DISABLE_WIDGET", "").lower() in ("true", "1", "yes"):
+        return Response("// Chatbot disabled by admin", media_type="application/javascript")
+
     backend_url = _get_backend_url(request)
 
     # Load per-tenant name/config from DB; no global fallback (STORE_NAME removed from settings)

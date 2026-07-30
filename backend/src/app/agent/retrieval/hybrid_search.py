@@ -120,8 +120,8 @@ async def bm25_search(
             "limit":      _BM25_LIMIT,
         })
         rows = result.mappings().all()
-        pid_list = [r[0] for r in rows]
-        name_list = [r[2][:60] for r in rows]
+        pid_list = [r["platform_id"] for r in rows]
+        name_list = [str(r["name"])[:60] for r in rows]
         logger.info("[TRACE] BM25 arm: found=%d rows query='%s' products=%s", len(rows), nq.clean[:40], name_list[:5])
 
         if rows:

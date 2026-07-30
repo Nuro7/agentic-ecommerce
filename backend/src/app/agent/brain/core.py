@@ -759,16 +759,6 @@ async def ask_brain(
             except Exception as exc:
                 logger.warning("handle_availability failed: %s", exc)
 
-        if result is None and (intent_result.intent == CART_ACTION or has_add_intent(lower_msg)):
-            try:
-                result = await handle_add_to_cart(
-                    cleaned_message, lower_msg, session_id, active_recommendations, lang,
-                    page_context=page_context,
-                    store_client=store_client,
-                )
-            except Exception as exc:
-                logger.warning("handle_add_to_cart failed: %s", exc)
-
         if result is None and has_buy_now_intent(lower_msg):
             try:
                 result = await handle_buy_now(
@@ -778,6 +768,16 @@ async def ask_brain(
                 )
             except Exception as exc:
                 logger.warning("handle_buy_now failed: %s", exc)
+
+        if result is None and (intent_result.intent == CART_ACTION or has_add_intent(lower_msg)):
+            try:
+                result = await handle_add_to_cart(
+                    cleaned_message, lower_msg, session_id, active_recommendations, lang,
+                    page_context=page_context,
+                    store_client=store_client,
+                )
+            except Exception as exc:
+                logger.warning("handle_add_to_cart failed: %s", exc)
 
     logger.info("[FLOW] brain step5 result_pre_llm=%s session=%s", "cached" if result else "None", session_id)
 
