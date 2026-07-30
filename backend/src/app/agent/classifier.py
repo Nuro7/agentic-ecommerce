@@ -1,9 +1,5 @@
 """
-Intent Classifier — xAI Grok primary (~50ms) + regex fallback (0ms)
-
-PRE-PROCESSING step in the Brain pipeline.
-Runs in parallel with session loading so it adds ZERO latency to the
-overall response time when the session load is the bottleneck.
+Intent Classifier — regex-only (~0ms, no API calls).
 
 Intent taxonomy (9 classes):
   search         → product discovery, browse, "show me X", "find X"
@@ -22,15 +18,9 @@ Routing contract (used by orchestrator):
   store_info     → fast deterministic handler (no LLM, env vars)
   cart_action    → fast deterministic handler OR LLM for complex ops
   search, product_detail, inventory, checkout, order_status → LLM agent
-
-Configuration:
-  GROK_CLASSIFIER_MODEL  xAI Grok model for intent classification
-                         Default: grok-3-mini-fast  (fast, cheap, ~50ms)
-  GROK_API_KEY           Required to enable xAI Grok path (xai-...)
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
@@ -51,11 +41,6 @@ PRODUCT_DETAIL = "product_detail"
 INVENTORY      = "inventory"
 OFF_TOPIC      = "off_topic"
 
-ALL_INTENTS = frozenset({
-    SEARCH, CART_ACTION, CHITCHAT, ORDER_STATUS,
-    CHECKOUT, STORE_INFO, PRODUCT_DETAIL, INVENTORY, OFF_TOPIC,
-})
-
 
 # ── Result dataclass ──────────────────────────────────────────────────────────
 
@@ -66,7 +51,7 @@ class IntentResult:
     query:       str   = ""     # normalised search term (intent == search)
     product_ref: str   = ""     # product name/ID mentioned in message
     quantity:    int   = 1      # quantity for cart ops
-    via:         str   = "regex"  # "groq" | "regex" | "fallback"
+    via:         str   = "regex"  # "regex" | "fallback"
     latency_ms:  float = 0.0
 
     # ── Routing helpers ───────────────────────────────────────────────────────
@@ -93,46 +78,12 @@ class IntentResult:
         )
 
 
-# ── Groq system prompt (kept compact for minimum token cost) ─────────────────
 
-_SYSTEM_PROMPT = """\
-You are an intent classifier for a multilingual e-commerce shopping assistant.
-
-Classify the user message into EXACTLY ONE of these intents:
-
-search         – looking for products, browsing, "show me X", "find X", "what do you have"
-cart_action    – add/remove/update/view cart items
-chitchat       – greetings (hi/hello/namaste), thanks, small talk, "ok", "yes", "no", affirmations
-order_status   – track order, order history, "where is my order", "my orders"
-checkout       – place order, confirm purchase, pay now, address, COD, UPI
-store_info     – shipping policy, return policy, payment methods, about the store, delivery charges
-product_detail – details about a specific product, compare products, "tell me more", price query
-inventory      – check stock, size availability, color options, "do you have in M", "is it available"
-off_topic      – not related to shopping at all (news, sports, coding, medical advice, etc.)
-
-Rules:
-- If the message is in Hindi/Malayalam/Tamil/Telugu/Bengali/Kannada still classify correctly.
-- "yes", "ok", "sure", "alright", single word replies to a conversation → chitchat
-- A message that mentions a product name AND "add" / "buy" / "cart" → cart_action
-- A message that mentions a product name WITHOUT cart/buy/add → search or product_detail
-- Greetings like "hi", "hello", "namaste", "ayubowan", "vanakkam" → chitchat
-- Shopping for products the store may sell (spices, medicines, cookware, books, …) → search,
-  even when the message mentions cooking/health context ("masala to cook biryani" → search).
-  Only requests for ADVICE itself (diagnosis, dosage, a recipe, a poem) → off_topic.
-
-Respond with ONLY valid JSON (no markdown, no explanation):
-{"intent": "...", "confidence": 0.95, "query": "search term if search intent else empty", "product_ref": "product name if mentioned else empty"}
-"""
-
-
-# ── Regex fallback patterns ───────────────────────────────────────────────────
-# These mirror the original orchestrator._has_*_intent() methods but are
-# consolidated here as a single fallback when Groq is unavailable.
+# ── Regex classifier (fast, no API calls) ────────────────────────────────────
 
 class _RegexClassifier:
     """
     Fast (0ms) regex-based classifier.
-    Used as fallback when Groq is unavailable or times out.
     """
 
     # ── Pattern sets ──────────────────────────────────────────────────────────
@@ -240,49 +191,12 @@ class _RegexClassifier:
 
 class IntentClassifier:
     """
-    Two-tier intent classifier:
-      Tier 1 — OpenAI gpt-4o-mini  (fast, reliable, structured JSON output)
-      Tier 2 — Regex patterns       (~0ms, fallback)
-
+    Regex-only intent classifier (~0ms, no API calls).
     Thread-safe singleton — call get_classifier() instead of instantiating directly.
     """
 
     def __init__(self) -> None:
-        import os
-        # Intent model. Defaults to OpenAI gpt-4o-mini (fast + reliable). xAI Grok
-        # was timing out constantly, forcing the regex fallback on every message.
-        self._model = os.environ.get("CLASSIFIER_MODEL", "gpt-4o-mini")
-        self._timeout = float(os.environ.get("CLASSIFIER_TIMEOUT_S", "15.0"))
         self._regex = _RegexClassifier()
-        self._groq = None   # variable name kept for internal compat
-        self._init_grok()
-
-    def _init_grok(self) -> None:
-        """Init the intent-classification LLM client.
-
-        Uses OpenAI (GPT-4o-mini) only — fast and reliable. Grok removed
-        due to unreliable timeouts. Falls back to regex if no key is set.
-        """
-        import os
-        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        try:
-            from openai import AsyncOpenAI
-            if openai_key:
-                self._groq = AsyncOpenAI(
-                    api_key=openai_key,
-                    max_retries=0,
-                    timeout=self._timeout,
-                )
-                logger.info(
-                    "IntentClassifier: OpenAI (%s) ready — timeout=%.1fs",
-                    self._model, self._timeout,
-                )
-            else:
-                logger.info(
-                    "IntentClassifier: no OPENAI_API_KEY — regex fallback only"
-                )
-        except Exception as exc:
-            logger.warning("IntentClassifier: LLM client init failed: %s", exc)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -291,88 +205,12 @@ class IntentClassifier:
         message: str,
         language: str = "en",
     ) -> IntentResult:
-        """
-        Classify a user message.
-
-        Tries Groq first; falls back to regex on any failure.
-        Never raises — always returns a valid IntentResult.
-        """
         if not message or not message.strip():
             return IntentResult(intent=CHITCHAT, confidence=1.0, via="fallback")
-
-        if self._groq is not None:
-            try:
-                result = await self._classify_via_grok(message, language)
-                logger.debug("Classifier Grok (xAI): %s", result)
-                return result
-            except Exception as exc:
-                logger.warning(
-                    "IntentClassifier xAI Grok failed (%s: %s) — using regex",
-                    type(exc).__name__, exc,
-                )
 
         result = self._regex.classify(message)
         logger.debug("Classifier regex: %s", result)
         return result
-
-    # ── xAI Grok path ────────────────────────────────────────────────────────
-
-    async def _classify_via_grok(
-        self,
-        message: str,
-        language: str,
-    ) -> IntentResult:
-        assert self._groq is not None  # guard: caller checks this before calling
-        t0 = time.monotonic()
-
-        user_content = f'Message: "{message}"\nLanguage: {language}'
-
-        response = await self._groq.chat.completions.create(
-            model=self._model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user",   "content": user_content},
-            ],
-            temperature=0.0,   # deterministic
-            max_tokens=120,    # enough for the JSON object
-        )
-
-        latency = round((time.monotonic() - t0) * 1000, 1)
-        raw = (response.choices[0].message.content or "").strip()
-
-        return self._parse_groq_response(raw, latency_ms=latency)
-
-    @staticmethod
-    def _parse_groq_response(raw: str, latency_ms: float = 0.0) -> IntentResult:
-        """Parse the JSON returned by Groq into an IntentResult."""
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            # Try to extract JSON from surrounding text
-            match = re.search(r"\{.*?\}", raw, re.S)
-            if match:
-                try:
-                    data = json.loads(match.group())
-                except json.JSONDecodeError:
-                    return IntentResult(intent=SEARCH, confidence=0.5, via="fallback")
-            else:
-                return IntentResult(intent=SEARCH, confidence=0.5, via="fallback")
-
-        intent = str(data.get("intent", SEARCH)).strip().lower()
-        if intent not in ALL_INTENTS:
-            intent = SEARCH
-
-        confidence = float(data.get("confidence", 0.8))
-        confidence = max(0.0, min(1.0, confidence))
-
-        return IntentResult(
-            intent=intent,
-            confidence=confidence,
-            query=str(data.get("query", "") or "").strip(),
-            product_ref=str(data.get("product_ref", "") or "").strip(),
-            via="groq",
-            latency_ms=latency_ms,
-        )
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
