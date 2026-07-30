@@ -74,10 +74,35 @@ def append_live_navigation(
             payload["query"] = nav_query
         ui_actions.append({"type": "redirect", "payload": payload})
 
+    lower_query = str(query or "").strip().lower()
+
+    # Product list navigation from recommendations (e.g. "go to the first product")
+    # Runs BEFORE the add_to_cart block so ordinal/anaphoric nav takes priority.
+    if active_recommendations and isinstance(active_recommendations, list):
+        target_index = None
+        if re.search(r"\b(first|1st|number one|no 1|no\. 1)\b", lower_query):
+            target_index = 0
+        elif re.search(r"\b(second|2nd|number two|no 2|no\. 2)\b", lower_query):
+            target_index = 1
+        elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower_query):
+            target_index = 2
+        elif re.search(r"\b(fourth|4th|number four|no 4|no\. 4)\b", lower_query):
+            target_index = 3
+        elif re.search(r"\b(fifth|5th|number five|no 5|no\. 5)\b", lower_query):
+            target_index = 4
+        elif re.search(r"\b(that|this)\s*(one|product|item)?(?:\s*(?:please|thanks|thank\s*you))*\s*$", lower_query) or lower_query in ("take that", "take this", "that one", "this one", "that product", "this product"):
+            target_index = 0
+
+        if target_index is not None and len(active_recommendations) > target_index:
+            prod = active_recommendations[target_index]
+            if isinstance(prod, dict):
+                purl = product_page_url(prod)
+                if purl:
+                    _push(purl, "product")
+                    return
+
     if any(a.get("type") == "add_to_cart" for a in (ui_actions or [])):
         return
-    # 0. Check explicit conversational page navigation intent
-    lower_query = str(query or "").strip().lower()
 
     # Profile / Account Page Navigation
     if re.search(r"\b(go to profile|my profile|my account|account settings|view profile|account)\b", lower_query):
@@ -116,27 +141,6 @@ def append_live_navigation(
             checkout_url = base_url.rstrip("/") + "/checkout"
         _push(checkout_url or "/checkout", "checkout")
         return
-
-    # Product list navigation from recommendations (e.g. "go to the first product")
-    if active_recommendations and isinstance(active_recommendations, list):
-        target_index = None
-        if re.search(r"\b(first|1st|number one|no 1|no\. 1)\b", lower_query):
-            target_index = 0
-        elif re.search(r"\b(second|2nd|number two|no 2|no\. 2)\b", lower_query):
-            target_index = 1
-        elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower_query):
-            target_index = 2
-        elif re.search(r"\b(that|this)\s*(one|product|item)?(?:\s*(?:please|thanks|thank\s*you))*\s*$", lower_query) or lower_query in ("take that", "take this", "that one", "this one", "that product", "this product"):
-            # Anaphoric reference — pick the last explicitly shown product, else the first
-            target_index = 0
-
-        if target_index is not None and len(active_recommendations) > target_index:
-            prod = active_recommendations[target_index]
-            if isinstance(prod, dict):
-                purl = product_page_url(prod)
-                if purl:
-                    _push(purl, "product")
-                    return
 
     types_present = {a.get("type") for a in ui_actions if isinstance(a, dict)}
     if types_present & {"redirect", "redirect_checkout", "redirect_checkout_with_address"}:

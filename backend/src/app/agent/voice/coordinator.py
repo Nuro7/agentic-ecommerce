@@ -365,6 +365,7 @@ class VoiceTurnCoordinator:
                             self.page_context.update({
                                 "product_id": product_id,
                                 "product_name": product_name,
+                                "variant_id": incoming.get("variant_id"),
                                 "url": incoming.get("url", self.page_context.get("url", "")),
                             })
                             logger.info(

@@ -31,6 +31,7 @@ class GreetCurrentPage(BaseModel):
     title: Optional[str] = None
     product_id: Optional[int] = None
     product_name: Optional[str] = None
+    variant_id: Optional[int] = None
 
 
 class GreetRequest(BaseModel):
@@ -352,7 +353,7 @@ async def chat_endpoint(
     }
     cp = payload.current_page
     page_context: Dict[str, Any] = (
-        {"url": cp.url, "title": cp.title, "product_id": cp.product_id, "product_name": cp.product_name}
+        {"url": cp.url, "title": cp.title, "product_id": cp.product_id, "product_name": cp.product_name, "variant_id": cp.variant_id}
         if cp else {}
     )
 

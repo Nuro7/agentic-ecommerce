@@ -1750,7 +1750,8 @@
           title: document.title,
           product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
           product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
-          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null
+          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+          variant_id: detectActiveVariantId()
         }
       });
 
@@ -2226,7 +2227,8 @@
           title: document.title,
           product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
           product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
-          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null
+          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+          variant_id: detectActiveVariantId()
         }
       };
 
@@ -2386,14 +2388,9 @@
               try { const e = await addRes.json(); errMsg = e.description || e.message || errMsg; } catch (_) {}
               throw new Error(errMsg);
             }
-            showToast('Added to cart!');
-            const cartRes = await fetch('/cart.js');
-            if (cartRes.ok) {
-              const cart = await cartRes.json();
-              updateBadge(cart.item_count || 0);
-              S.cartSnapshot = cart;
-              try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cart)); } catch (e) {}
-            }
+            // Wait for add.js to settle, then refresh cart before opening drawer
+            await new Promise(r => setTimeout(r, 300));
+            await fetchCartShopify(false);
             const cartDrawer = document.querySelector('cart-drawer') || document.querySelector('cart-drawer-component') || document.querySelector('[data-cart-drawer]');
             if (cartDrawer) {
               const openEvent = new CustomEvent('cart:build', { detail: { cart: S.cartSnapshot } });
@@ -2402,6 +2399,7 @@
             }
             const drawerEl = document.querySelector('.cart-drawer');
             if (drawerEl) drawerEl.classList.add('active');
+            showToast('Added to cart!');
           } catch (error) {
             const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
             console.error('[WooAgent A2C] add-to-cart failed:', message);
@@ -4200,6 +4198,7 @@
             }
           } catch (e) { }
 
+          const activeVariant = typeof detectActiveVariantId === 'function' ? detectActiveVariantId() : null;
           const pageContextPayload = {
             url: location.href,
             title: document.title,
@@ -4207,6 +4206,7 @@
             product_id: typeof detectProductId === 'function' ? detectProductId() : (S.currentPageProduct ? S.currentPageProduct.id : null),
             product_name: typeof detectProductName === 'function' ? detectProductName() : (S.currentPageProduct ? S.currentPageProduct.name : null),
             product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+            variant_id: activeVariant,
             interrupted_flow: interruptedFlow
           };
 
@@ -4225,6 +4225,7 @@
               page_type: pageContextPayload.page_type,
               product_id: pageContextPayload.product_id,
               product_name: pageContextPayload.product_name,
+              variant_id: activeVariant,
             }
           }));
         }
@@ -4967,14 +4968,47 @@
   }
 
   function detectProductId() {
-    if (window.Shopify && window.Shopify.analytics && window.Shopify.analytics.meta && window.Shopify.analytics.meta.product) {
-      return window.Shopify.analytics.meta.product.id;
-    }
-    if (window.meta && window.meta.product) {
-      return window.meta.product.id;
-    }
+    // Source 1: ShopifyAnalytics (most Shopify themes)
+    try {
+      const sa = window.ShopifyAnalytics || (window.Shopify && window.Shopify.analytics);
+      if (sa && sa.meta) {
+        if (sa.meta.product && sa.meta.product.id) return sa.meta.product.id;
+        if (sa.meta.page && sa.meta.page.resourceId) return parseInt(sa.meta.page.resourceId, 10);
+      }
+    } catch (_) {}
+    // Source 2: meta[property="product:id"]
+    try {
+      const metaTag = document.querySelector('meta[property="product:id"]');
+      if (metaTag) return parseInt(metaTag.content, 10);
+    } catch (_) {}
+    // Source 3: window.meta.product (Dawn / older themes)
+    try { if (window.meta && window.meta.product && window.meta.product.id) return window.meta.product.id; } catch (_) {}
+    // Source 4: window.Shopify.product (some custom themes)
+    try { if (window.Shopify && window.Shopify.product && window.Shopify.product.id) return window.Shopify.product.id; } catch (_) {}
+    // Source 5: WooCommerce body class
     const match = document.body.className.match(/postid-(\d+)/);
-    return match ? parseInt(match[1], 10) : null;
+    if (match) return parseInt(match[1], 10);
+    return null;
+  }
+
+  function detectActiveVariantId() {
+    try {
+      const form = document.querySelector('form[action*="/cart/add"]');
+      if (!form) return null;
+      // Shopify variant select or hidden input
+      const input = form.querySelector('input[name="id"]');
+      if (input) {
+        const val = parseInt(input.value, 10);
+        if (Number.isInteger(val) && val > 0) return val;
+      }
+      // Select element with name="id" (theme with <select> for variants)
+      const select = form.querySelector('select[name="id"]');
+      if (select) {
+        const val = parseInt(select.value, 10);
+        if (Number.isInteger(val) && val > 0) return val;
+      }
+    } catch (_) {}
+    return null;
   }
 
   function detectProductName() {

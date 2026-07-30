@@ -70,6 +70,7 @@ from .text_utils import (
     summarize_actions_for_voice,
     has_store_info_intent, has_shipping_intent, has_returns_intent,
     has_payment_intent, has_cart_view_intent, has_cart_nav_intent, has_remove_intent,
+    has_add_intent,
     append_live_navigation, client_platform,
 )
 
@@ -533,6 +534,7 @@ async def ask_brain(
         or has_cart_view_intent(lower_msg)
         or has_cart_nav_intent(lower_msg)
         or has_remove_intent(lower_msg)
+        or has_add_intent(lower_msg)
     ):
         try:
             result = await run_fast_intent(
@@ -690,7 +692,7 @@ async def ask_brain(
             except Exception as exc:
                 logger.warning("handle_availability failed: %s", exc)
 
-        if result is None and intent_result.intent == CART_ACTION:
+        if result is None and (intent_result.intent == CART_ACTION or has_add_intent(lower_msg)):
             try:
                 result = await handle_add_to_cart(
                     cleaned_message, lower_msg, session_id, active_recommendations, lang,

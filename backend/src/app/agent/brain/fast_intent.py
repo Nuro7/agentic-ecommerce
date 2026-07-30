@@ -843,34 +843,42 @@ async def _resolve_product_for_add(
 
     page_context = page_context or {}
 
-    # 0. PDP Add-to-Cart — if on a product page and saying "add this"/"add to cart", use page context first
-    if page_context.get("product_id") and re.search(
-        r"\b(add\s+(this|it|to\s*cart|the\s*product)|add\s*$|put\s+(this|it|in\s*(my\s*)?cart)|"
-        r"i('ll| will)\s*take\s+(this|it)|get\s+(this|it)|buy\s+(this|it))\b", lower,
-    ):
-        try:
-            detail = await store_client.get_product_details(int(page_context["product_id"]))
-            if detail and detail.get("id"):
-                return {
-                    "id": detail.get("id"),
-                    "name": detail.get("name", "Product"),
-                    "permalink": detail.get("permalink", ""),
-                    "variant_id": detail.get("variation_id") or detail.get("id"),
-                }
-        except Exception as e:
-            logger.error("Failed fetching PDP product pid %s: %s", page_context["product_id"], e)
+    # 0. PDP Add-to-Cart — if on a product page and saying add-related phrase, use page context first
+    if page_context.get("product_id"):
+        is_add_phrase = re.search(
+            r"\b(add\s+(this|it|to\s*cart|the\s*product)|add\s*$|put\s+(this|it|in\s*(my\s*)?cart)|"
+            r"i('ll| will)\s*take\s+(this|it)|get\s+(this|it)|buy\s+(this|it)|"
+            r"purchase|order\s+this|checkout\s+this)\b", lower,
+        )
+        if is_add_phrase:
+            try:
+                detail = await store_client.get_product_details(int(page_context["product_id"]))
+                if detail and detail.get("id"):
+                    vid = page_context.get("variant_id") or detail.get("variation_id") or detail.get("id")
+                    return {
+                        "id": detail.get("id"),
+                        "name": detail.get("name", "Product"),
+                        "permalink": detail.get("permalink", ""),
+                        "variant_id": int(vid) if vid else detail.get("id"),
+                    }
+            except Exception as e:
+                logger.error("Failed fetching PDP product pid %s: %s", page_context["product_id"], e)
 
     # 1. Resolve ordinal reference ("first" through "fifth") → active_recommendations or last_products
+    #    Skip if query is purely navigation ("show the first one") — let append_live_navigation handle that.
+    _has_nav_only = bool(re.search(r"\b(show|open|view|look|display|see|navigate)\b", lower)) and not bool(
+        re.search(r"\b(add|buy|purchase|cart|checkout)\b", lower)
+    )
     target_index = None
-    if re.search(r"\b(first|1st|number one|no 1|no\. 1)\b", lower):
+    if not _has_nav_only and re.search(r"\b(first|1st|number one|no 1|no\. 1)\b", lower):
         target_index = 0
-    elif re.search(r"\b(second|2nd|number two|no 2|no\. 2)\b", lower):
+    elif not _has_nav_only and re.search(r"\b(second|2nd|number two|no 2|no\. 2)\b", lower):
         target_index = 1
-    elif re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower):
+    elif not _has_nav_only and re.search(r"\b(third|3rd|number three|no 3|no\. 3)\b", lower):
         target_index = 2
-    elif re.search(r"\b(fourth|4th|number four|no 4|no\. 4)\b", lower):
+    elif not _has_nav_only and re.search(r"\b(fourth|4th|number four|no 4|no\. 4)\b", lower):
         target_index = 3
-    elif re.search(r"\b(fifth|5th|number five|no 5|no\. 5)\b", lower):
+    elif not _has_nav_only and re.search(r"\b(fifth|5th|number five|no 5|no\. 5)\b", lower):
         target_index = 4
 
     if target_index is not None:
