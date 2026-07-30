@@ -949,11 +949,13 @@ async def ask_brain(
         {"role": "assistant", "content": response_text},
     ])
     result_cart = result.get("cart_snapshot") if isinstance(result, dict) else None
+    cart_to_save = result_cart if isinstance(result_cart, dict) else cart
+    await session_service.save_cart(tenant_id, session_id, cart_to_save)
     await session_service.update_session(
         tenant_id,
         session_id,
         conversation_history=updated_history,
-        cart_snapshot=result_cart if isinstance(result_cart, dict) else cart,
+        cart_snapshot=cart_to_save,
         customer_email=result.get("customer_email"),
         last_products=(
             result.get("last_products")

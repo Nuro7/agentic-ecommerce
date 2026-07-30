@@ -2424,8 +2424,8 @@
             });
             if (match) itemKey = match.key || match.variant_id;
           }
-          if (!itemKey && act.payload && act.payload.product_id) {
-            // Fallback: remove last item
+          if (!itemKey) {
+            // Fallback: no key or product_id in payload — remove last item
             const snap = S.cartSnapshot || {};
             const snapItems = snap.items || [];
             if (snapItems.length) itemKey = snapItems[snapItems.length - 1].key;
@@ -2479,6 +2479,7 @@
         if (cart.checkout_url) S.checkoutUrl = cart.checkout_url;
         S.cartSnapshot = cart;
         try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cart)); } catch (e) {}
+        _sendCartUpdateToA2A();
         if (c.product_id) {
           showToast('Added to cart!');
         } else if (c.message) {
@@ -2504,7 +2505,7 @@
         if (IS_SHOPIFY) {
           await fetchCart();
         } else {
-          if (act.payload && act.payload.cart) S.cartSnapshot = act.payload.cart;
+          if (act.payload && act.payload.cart) { S.cartSnapshot = act.payload.cart; _sendCartUpdateToA2A(); }
           renderCart(act.payload && act.payload.cart);
         }
         break;
@@ -2856,6 +2857,7 @@
       };
       S.cartSnapshot = cartNorm;
       try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cartNorm)); } catch (e) {}
+      _sendCartUpdateToA2A();
       updateBadge(itemCount);
       renderCart({ is_empty: !itemCount, item_count: itemCount, total: cartNorm.total, items: cartNorm.items });
     } else {
@@ -3054,6 +3056,7 @@
     const cart = _normalizeShopifyCart(await _parseJsonSafe(res));
     S.cartSnapshot = cart;
     try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cart)); } catch (e) {}
+    _sendCartUpdateToA2A();
     updateBadge(cart.item_count);
     if (!silent) renderCart(cart);
     return cart;
@@ -3241,6 +3244,7 @@
       };
       S.cartSnapshot = cartNorm;
       try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cartNorm)); } catch (e) {}
+      _sendCartUpdateToA2A();
       updateBadge(itemCount);
       renderCart({
         is_empty: !itemCount,
@@ -3662,6 +3666,7 @@
   function renderCart(cart) {
     if (!cart) return;
     S.cartSnapshot = cart;
+    _sendCartUpdateToA2A();
     if (cart.is_empty || !cart.item_count) {
       const el = document.createElement('div');
       el.className = 'wa-cart-card';
@@ -4586,6 +4591,27 @@
       return true;
     } catch (e) {
       return false;
+    }
+  }
+
+  // ── _sendCartUpdateToA2A: push fresh cart to WebSocket after mutations ──
+  // Voice turns reuse the initial page_update cart — without this the backend's
+  // session_cart["value"] stays stale and all remove/clear/quantity handlers
+  // think the cart is empty.
+  function _sendCartUpdateToA2A() {
+    if (!geminiSocket || geminiSocket.readyState !== WebSocket.OPEN) return;
+    try {
+      const cart = (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot))
+        ? S.cartSnapshot : null;
+      if (cart) {
+        geminiSocket.send(JSON.stringify({
+          type: 'page_update',
+          page_context: {},
+          cart_context: cart,
+        }));
+      }
+    } catch (e) {
+      // non-critical
     }
   }
 
