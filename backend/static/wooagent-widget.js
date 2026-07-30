@@ -1222,6 +1222,108 @@
   `;
   shadow.appendChild(css);
 
+  // ── Global (light-DOM) styles for in-page product shelf ─────────────
+  const globalCss = document.createElement('style');
+  globalCss.textContent = `
+    .wa-inpage-shelf {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: #fff; border-top: 1px solid #e5e7eb;
+      box-shadow: 0 -8px 32px rgba(0,0,0,0.12);
+      z-index: 2147483645;
+      padding: 12px 16px 20px;
+      display: flex; flex-direction: column;
+      animation: wa-inpage-slide-up 0.35s ease-out;
+      font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+    }
+    .wa-inpage-shelf.dark { background: #1a1a2e; border-color: #2d2d44; }
+    .wa-inpage-shelf .wa-inpage-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    .wa-inpage-shelf .wa-inpage-title {
+      font-size: 14px; font-weight: 600; color: #111;
+    }
+    .wa-inpage-shelf.dark .wa-inpage-title { color: #f0f0f8; }
+    .wa-inpage-shelf .wa-inpage-close {
+      background: none; border: none; font-size: 20px; cursor: pointer;
+      color: #666; padding: 0 4px; line-height: 1;
+    }
+    .wa-inpage-shelf.dark .wa-inpage-close { color: #999; }
+    .wa-inpage-shelf .wa-inpage-scroll {
+      display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px;
+      scroll-snap-type: x mandatory;
+    }
+    .wa-inpage-shelf .wa-inpage-scroll::-webkit-scrollbar { height: 4px; }
+    .wa-inpage-shelf .wa-inpage-scroll::-webkit-scrollbar-thumb { background: #ccc; border-radius: 4px; }
+    .wa-inpage-card {
+      flex: 0 0 200px; scroll-snap-align: start;
+      background: #f9f9fb; border-radius: 12px; overflow: hidden;
+      border: 1px solid #e5e7eb;
+      display: flex; flex-direction: column;
+      transition: transform 0.2s, box-shadow 0.2s;
+      cursor: pointer;
+    }
+    .wa-inpage-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+    .wa-inpage-shelf.dark .wa-inpage-card { background: #242438; border-color: #2d2d44; }
+    .wa-inpage-card .wa-inpage-card-img {
+      width: 100%; height: 140px; object-fit: cover; background: #eee;
+    }
+    .wa-inpage-card .wa-inpage-card-body {
+      padding: 8px 10px 10px; display: flex; flex-direction: column; flex: 1;
+    }
+    .wa-inpage-card .wa-inpage-card-name {
+      font-size: 12px; font-weight: 600; color: #111;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      margin-bottom: 2px;
+    }
+    .wa-inpage-shelf.dark .wa-inpage-card-name { color: #f0f0f8; }
+    .wa-inpage-card .wa-inpage-card-price {
+      font-size: 13px; font-weight: 700; color: #059669; margin-bottom: 4px;
+    }
+    .wa-inpage-card .wa-inpage-card-stock {
+      font-size: 10px; color: #6b7280; margin-bottom: 6px;
+    }
+    .wa-inpage-card .wa-inpage-card-stock .wa-stock-dot {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: middle;
+    }
+    .wa-inpage-card .wa-inpage-card-stock .wa-stock-dot.in { background: #34d399; }
+    .wa-inpage-card .wa-inpage-card-stock .wa-stock-dot.low { background: #fbbf24; }
+    .wa-inpage-card .wa-inpage-card-stock .wa-stock-dot.out { background: #f87171; }
+    .wa-inpage-card .wa-inpage-card-add {
+      margin-top: auto; width: 100%; padding: 6px; border: none;
+      border-radius: 8px; background: #6366f1; color: #fff;
+      font-size: 11px; font-weight: 600; cursor: pointer;
+      transition: background 0.15s;
+    }
+    .wa-inpage-card .wa-inpage-card-add:hover { background: #4f46e5; }
+    .wa-inpage-card .wa-inpage-card-add:disabled { background: #9ca3af; cursor: not-allowed; }
+    .wa-inpage-card .wa-ai-top-pick {
+      position: relative; top: 0; left: 0;
+      background: linear-gradient(135deg,#6366f1,#8b5cf6);
+      color: #fff; font-size: 9px; font-weight: 700;
+      padding: 3px 10px; border-radius: 0 0 8px 0;
+      display: inline-block; letter-spacing: 0.3px;
+      z-index: 1;
+    }
+    .wa-inpage-card.is-selected {
+      box-shadow: 0 0 0 3px #6366f1, 0 14px 36px rgba(0,0,0,0.2);
+      transform: translateY(-4px) scale(1.02);
+    }
+    .wa-inpage-card.highlight-pulse {
+      animation: wa-inpage-pulse 1.5s ease-out;
+    }
+    @keyframes wa-inpage-slide-up {
+      from { transform: translateY(100%); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+    @keyframes wa-inpage-pulse {
+      0% { box-shadow: 0 0 0 0 #6366f1; }
+      50% { box-shadow: 0 0 0 8px rgba(99,102,241,0.28); }
+      100% { box-shadow: 0 0 0 3px #6366f1; }
+    }
+  `;
+  document.head.appendChild(globalCss);
+
   const root = document.createElement('div');
   root.className = 'wa';
   root.setAttribute('data-theme', localStorage.getItem('_wa_theme') || 'dark');
@@ -1582,13 +1684,21 @@
     }
   }
 
-  function resumeVoiceNavMode() {
+  function resumeVoiceNavMode(autoStart) {
     closeMenu();
     if (S.open) closePane();
     S.mode = 'voice_nav';
     _resumePending = true;
     fab.classList.add('voice-nav-active');
     primeAudioEngines();
+
+    if (autoStart) {
+      // Called after a redirect — skip tap gesture, start mic immediately
+      _resumePending = false;
+      startLiveMode();
+      showToast('🎙️ Voice Navigation resumed.');
+      return;
+    }
 
     showToast('🎙️ Tap to continue voice control.');
     const resumeGesture = () => {
@@ -2412,9 +2522,18 @@
     // In voice-nav mode with panel closed, skip DOM-rendering actions
     const isHidden = S.mode === 'voice_nav' && !S.open;
     switch (act.type) {
-      case 'show_products':
-        if (!isHidden) renderProducts((act.payload && act.payload.products) || []);
+      case 'show_products': {
+        const _products = (act.payload && act.payload.products) || [];
+        // In voice-only mode, inject floating shelf on document.body (light DOM)
+        if (_voiceOnlyMode) {
+          _injectInPageCards(_products);
+        } else if (!isHidden) {
+          renderProducts(_products);
+        }
+        // Remember for sessionStorage persistence on redirect
+        window._wa_lastProducts = _products;
         break;
+      }
 
       case 'show_product_detail': {
         if (isHidden) break;
@@ -2751,6 +2870,16 @@
             targetUrl = parsed.pathname + parsed.search + parsed.hash;
           }
         } catch (e) {}
+        // Save in-page products and voice state to sessionStorage for restore after navigation
+        try {
+          if (window._wa_lastProducts && Array.isArray(window._wa_lastProducts) && window._wa_lastProducts.length) {
+            sessionStorage.setItem('_wa_inpage_products', JSON.stringify(window._wa_lastProducts));
+          }
+          if (_voiceOnlyMode || S.mode === 'voice_nav') {
+            sessionStorage.setItem('_wa_voice_nav_resume_session', '1');
+          }
+        } catch (e) {}
+
         const performRedirect = () => {
           _pendingNavigation = null;
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
@@ -2770,12 +2899,13 @@
       case 'highlight_card': {
         const hc = act.payload || {};
         const idx = parseInt(hc.target_index !== undefined ? hc.target_index : hc.index, 10);
-        const cards = document.querySelectorAll('.speako-product-card, [data-product-card], .product-card, .product-item, .wa-card');
+        const cards = document.querySelectorAll('.speako-product-card, .wa-inpage-card, [data-product-card], .product-card, .product-item, .wa-card');
         if (Number.isInteger(idx) && idx >= 0 && idx < cards.length) {
           const target = cards[idx];
           cards.forEach(c => c.classList.remove('is-selected', 'highlight-pulse'));
           target.classList.add('is-selected', 'highlight-pulse');
           target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          window.scrollBy({ top: -80, behavior: 'instant' });
           setTimeout(() => target.classList.remove('highlight-pulse'), 1500);
         }
         break;
@@ -3076,6 +3206,48 @@
     if (sm && sm[2]) {
       window.location.href = '/search?q=' + encodeURIComponent(sm[2].trim());
       return true;
+    }
+    // ── Scroll commands ──────────────────────────────────────────────────
+    // Scroll down
+    if (/^(scroll\s+)?down$/i.test(t) || /^scroll\s+downwards?$/i.test(t)) {
+      window.scrollBy({ top: window.innerHeight * 0.7, behavior: 'smooth' });
+      speakLocal('Scrolling down'); return true;
+    }
+    // Scroll up
+    if (/^(scroll\s+)?up$/i.test(t) || /^scroll\s+upwards?$/i.test(t)) {
+      window.scrollBy({ top: -window.innerHeight * 0.7, behavior: 'smooth' });
+      speakLocal('Scrolling up'); return true;
+    }
+    // Scroll to bottom
+    if (/^(scroll\s+to\s+)?bottom$/i.test(t)) {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      speakLocal('Going to bottom'); return true;
+    }
+    // Scroll to top
+    if (/^(scroll\s+to\s+)?top$/i.test(t)) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      speakLocal('Going to top'); return true;
+    }
+    // Scroll to section
+    const sectionMatch = t.match(/^(?:scroll\s+to\s+|go\s+to\s+|show\s+)(reviews|description|footer|header|products?|grid|related|size|shipping|policy)/i);
+    if (sectionMatch) {
+      const SECTION_MAP = {
+        reviews: '#shopify-product-reviews, #product-reviews, [data-product-reviews], .product-reviews',
+        description: '.product-description, [data-product-description], .product__description',
+        footer: 'footer, .footer, .site-footer',
+        header: 'header, .header, .site-header',
+        products: '.product-grid, .collection, #collection, .collection-products',
+        grid: '.product-grid, .collection',
+        related: '.related-products, .product-recommendations',
+        size: '.size-chart, [data-size-chart], .product__size-chart',
+        shipping: '.shipping-policy, .shipping-info, .product__shipping',
+        policy: '.return-policy, .privacy-policy, .product__policy',
+      };
+      const selectors = SECTION_MAP[sectionMatch[1].toLowerCase()];
+      if (selectors) {
+        const el = document.querySelector(selectors.split(',')[0].trim());
+        if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); speakLocal('Here you go'); return true; }
+      }
     }
     return false;
   }
@@ -3528,6 +3700,95 @@
       if (item.image && typeof item.image === 'object' && item.image.src) return String(item.image.src);
     }
     return '';
+  }
+
+  // ── _injectInPageCards: floating product shelf on document.body (light DOM) ──
+  // Used when the chat pane is closed (voice-only mode). Cards get
+  // data-product-card-index attributes so highlight_card can target them.
+  let _inpageShelfEl = null;
+  function _removeInpageShelf() {
+    if (_inpageShelfEl) { _inpageShelfEl.remove(); _inpageShelfEl = null; }
+  }
+  function _injectInPageCards(products) {
+    _removeInpageShelf();
+    if (!Array.isArray(products) || !products.length) return;
+    const seen = new Set();
+    const unique = products.filter(p => {
+      const id = p && (p.id || p.product_id);
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (!unique.length) return;
+    const shelf = document.createElement('div');
+    shelf.className = 'wa-inpage-shelf';
+    shelf.style.maxHeight = '260px';
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
+      window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if (isDark) shelf.classList.add('dark');
+    const fmtPrice = n => {
+      const val = Number(String(n || '0').replace(/[^\d.]/g, '')) || 0;
+      return (CFG.currency || '₹') + val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+    const esc = s => { const d = document.createElement('div'); d.textContent = String(s || ''); return d.innerHTML; };
+    const escAttr = s => String(s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    shelf.innerHTML = `
+      <div class="wa-inpage-header">
+        <span class="wa-inpage-title">Speako AI Top Picks</span>
+        <button class="wa-inpage-close" aria-label="Close shelf">&times;</button>
+      </div>
+      <div class="wa-inpage-scroll">
+        ${unique.map((p, i) => {
+          const stockStatus = String(p.stock_status || '').toLowerCase();
+          const inStock = !stockStatus || stockStatus === 'instock' || stockStatus === 'onbackorder';
+          const isBackorder = stockStatus === 'onbackorder';
+          const qty = p.stock_quantity;
+          const lowStock = qty !== null && qty !== undefined && qty > 0 && qty < 5;
+          const onSale = !!(p.on_sale || (p.sale_price && p.sale_price !== p.regular_price));
+          const displayPrice = onSale ? p.sale_price : (p.price || p.regular_price || 0);
+          const imgSrc = p.image_url || (p.images && p.images[0] && p.images[0].src) || '';
+          return `<div class="wa-inpage-card" data-product-card-index="${i}">
+            ${i === 0 ? '<div class="wa-ai-top-pick">AI Top Pick</div>' : ''}
+            ${imgSrc ? `<img class="wa-inpage-card-img" src="${escAttr(imgSrc)}" alt="${escAttr(p.name)}" loading="lazy" onerror="this.style.display='none'">` : ''}
+            <div class="wa-inpage-card-body">
+              <div class="wa-inpage-card-name">${esc(p.name)}</div>
+              <div class="wa-inpage-card-price">${fmtPrice(displayPrice)}</div>
+              <div class="wa-inpage-card-stock">
+                <span class="wa-stock-dot ${!inStock ? 'out' : lowStock ? 'low' : 'in'}"></span>
+                ${!inStock ? 'Out of stock' : lowStock ? 'Only '+qty+' left' : isBackorder ? 'Available (backorder)' : 'In stock'}
+              </div>
+              <button class="wa-inpage-card-add${!inStock ? ' disabled' : ''}" ${!inStock ? 'disabled' : ''} data-id="${escAttr(p.id || p.product_id)}" data-name="${escAttr(p.name)}" data-price="${escAttr(displayPrice)}">
+                ${!inStock ? 'Out of stock' : 'Add to Cart'}
+              </button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    `;
+    shelf.querySelector('.wa-inpage-close').addEventListener('click', () => _removeInpageShelf());
+    shelf.querySelectorAll('.wa-inpage-card-add').forEach(btn => {
+      btn.addEventListener('click', async function() {
+        if (this.disabled) return;
+        const id = parseInt(this.dataset.id, 10);
+        if (!id) return;
+        showToast('Adding to cart…');
+        try {
+          const res = await fetch('/cart/add.js', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ id, quantity: 1 }),
+          });
+          if (!res.ok) { let e; try { e = await res.json(); } catch(_){} throw new Error((e&&e.description)||'Add failed'); }
+          await new Promise(r => setTimeout(r, 300));
+          await fetchCartShopify(false);
+          showToast('Added to cart!');
+        } catch (err) {
+          showToast(String(err.message || 'Could not add'));
+        }
+      });
+    });
+    document.body.appendChild(shelf);
+    _inpageShelfEl = shelf;
   }
 
   function renderProducts(products) {
@@ -5828,6 +6089,30 @@
     initPageTracking();
   }
 
+  // ── Turbo / pjax page-transition listeners ────────────────────────────
+  // These keep the A2A WebSocket alive when Shopify Turbo/navigation replaces
+  // the DOM without reloading the widget IIFE.
+  function _reconnectA2A() {
+    // Silent reconnect — no greeting, no banner
+    if (!isA2AConnected) {
+      startA2AMode();
+    }
+    // Restore in-page product cards from sessionStorage
+    try {
+      const stored = sessionStorage.getItem('_wa_inpage_products');
+      if (stored) {
+        const prods = JSON.parse(stored);
+        if (Array.isArray(prods) && prods.length) {
+          _injectInPageCards(prods);
+        }
+        sessionStorage.removeItem('_wa_inpage_products');
+      }
+    } catch (e) {}
+  }
+  document.addEventListener('turbo:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
+  document.addEventListener('page:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
+  document.addEventListener('shopify:section:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
+
   // Mic permission banner after 2s (only on first visit)
   if (!S.micPermissionAsked && !S.micPermissionGranted) {
     setTimeout(showMicPermissionBanner, 2000);
@@ -5891,6 +6176,18 @@
     }, { once: true });
   }
 
+  // ── Restore in-page product cards from sessionStorage (post-redirect) ──────
+  try {
+    const storedProds = sessionStorage.getItem('_wa_inpage_products');
+    if (storedProds) {
+      const prods = JSON.parse(storedProds);
+      if (Array.isArray(prods) && prods.length) {
+        setTimeout(() => { try { _injectInPageCards(prods); } catch(e){} }, 500);
+      }
+      sessionStorage.removeItem('_wa_inpage_products');
+    }
+  } catch (e) {}
+
   // ── Live Shopping Navigator: resume after an agent-driven navigation ────────
   // The redirect handler sets _wa_reopen just before moving the page. On the new
   // page, re-open the panel via the normal reopen path — openPane() restores the
@@ -5898,11 +6195,13 @@
   // voice session, exactly like a manual re-open. Mic permission persists
   // per-origin, so getUserMedia succeeds without a fresh gesture in most browsers.
   try {
-    if (localStorage.getItem('_wa_voice_nav_resume') === '1') {
+    const voiceNavResume = localStorage.getItem('_wa_voice_nav_resume') || sessionStorage.getItem('_wa_voice_nav_resume_session');
+    if (voiceNavResume === '1') {
       localStorage.removeItem('_wa_voice_nav_resume');
+      sessionStorage.removeItem('_wa_voice_nav_resume_session');
       setTimeout(() => {
         try {
-          resumeVoiceNavMode();
+          resumeVoiceNavMode(true);
         } catch (e) { }
       }, 700);
     } else if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
