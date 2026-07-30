@@ -64,6 +64,8 @@
     // Restore conversation so chat doesn't reset on page nav
     conversation: (() => { try { return JSON.parse(localStorage.getItem('_wa_conv') || '[]'); } catch(e) { return []; } })(),
     greeted: localStorage.getItem('_wa_greeted') === '1',
+    micPermissionAsked: localStorage.getItem('_wa_mic_perm_asked') === '1',
+    micPermissionGranted: false,
   };
 
   // ── Pending navigation queue — redirected only after TTS finishes ──────────
@@ -1167,6 +1169,31 @@
         animation-duration:0.01ms !important;
         transition-duration:0.01ms !important;
       }
+    }
+
+    .wa-mic-banner {
+      position: fixed; bottom: 94px; left: 50%; transform: translateX(-50%);
+      background: var(--bg1); border: 1px solid var(--line);
+      border-radius: var(--r-lg); padding: 12px 16px;
+      display: flex; align-items: center; gap: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.15); z-index: 2147483647;
+      animation: wa-in .3s ease-out;
+    }
+    .wa-mic-banner .wa-mic-icon { font-size: 20px; }
+    .wa-mic-banner .wa-mic-text { flex: 1; font-size: 14px; color: var(--text); }
+    .wa-mic-btn { background: var(--p); color: var(--bg0); border: none; border-radius: var(--r-sm); padding: 8px 16px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+
+    .wa-card.is-selected {
+      box-shadow: 0 0 0 3px var(--p), 0 14px 36px rgba(0,0,0,0.2);
+      transform: translateY(-4px) scale(1.02);
+    }
+    .wa-card.highlight-pulse {
+      animation: wa-highlight-pulse 1.5s ease-out;
+    }
+    @keyframes wa-highlight-pulse {
+      0% { box-shadow: 0 0 0 0 var(--p); }
+      50% { box-shadow: 0 0 0 8px var(--p-md); }
+      100% { box-shadow: 0 0 0 3px var(--p); }
     }
   `;
   shadow.appendChild(css);
@@ -2708,14 +2735,14 @@
 
       case 'highlight_card': {
         const hc = act.payload || {};
-        const idx = parseInt(hc.index, 10);
-        const cards = document.querySelectorAll('.speako-product-card, [data-product-card], .product-card, .product-item');
+        const idx = parseInt(hc.target_index !== undefined ? hc.target_index : hc.index, 10);
+        const cards = document.querySelectorAll('.speako-product-card, [data-product-card], .product-card, .product-item, .wa-card');
         if (Number.isInteger(idx) && idx >= 0 && idx < cards.length) {
           const target = cards[idx];
-          cards.forEach(c => c.classList.remove('speako-highlighted', 'is-selected'));
-          target.classList.add('speako-highlighted', 'is-selected');
+          cards.forEach(c => c.classList.remove('is-selected', 'highlight-pulse'));
+          target.classList.add('is-selected', 'highlight-pulse');
           target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          showToast(`Showing option #${idx + 1}`);
+          setTimeout(() => target.classList.remove('highlight-pulse'), 1500);
         }
         break;
       }
@@ -4594,6 +4621,31 @@
     }
   }
 
+  // ── showMicPermissionBanner: ask for mic access, then fire greeting ─────
+  function showMicPermissionBanner() {
+    if (S.micPermissionAsked || S.micPermissionGranted) return;
+    const banner = document.createElement('div');
+    banner.className = 'wa-mic-banner';
+    banner.innerHTML = `
+      <span class="wa-mic-icon">🎤</span>
+      <span class="wa-mic-text">Enable Voice Assistant to shop hands-free</span>
+      <button class="wa-mic-btn" id="wa-enable-mic">Enable Voice</button>
+    `;
+    document.body.appendChild(banner);
+    document.getElementById('wa-enable-mic').addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop());
+        S.micPermissionGranted = true;
+        localStorage.setItem('_wa_mic_perm_asked', '1');
+        banner.remove();
+        sendTextToA2A('hello');
+      } catch (e) {
+        showToast('Microphone access denied');
+      }
+    });
+  }
+
   // ── _sendCartUpdateToA2A: push fresh cart to WebSocket after mutations ──
   // Voice turns reuse the initial page_update cart — without this the backend's
   // session_cart["value"] stays stale and all remove/clear/quantity handlers
@@ -5666,6 +5718,11 @@
   if (IS_SHOPIFY) {
     fetchCartShopify(true).catch(() => {});
     initPageTracking();
+  }
+
+  // Mic permission banner after 2s (only on first visit)
+  if (!S.micPermissionAsked && !S.micPermissionGranted) {
+    setTimeout(showMicPermissionBanner, 2000);
   }
 
   if (isCheckoutPage()) {

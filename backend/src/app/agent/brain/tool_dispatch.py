@@ -66,7 +66,7 @@ async def execute_tool_call(
         if brand and brand.lower() not in raw_query.lower():
             raw_query = f"{brand} {raw_query}".strip()
         query = normalize_discovery_query(raw_query)
-        default_limit = 6 if not query else 5
+        default_limit = 5 if not query else 4
         requested_limit = safe_int(tool_args.get("limit"), default_limit)
         limit = max(1, min(requested_limit, 8))
         in_stock_only = bool(tool_args.get("in_stock_only", False))
@@ -122,9 +122,18 @@ async def execute_tool_call(
         actions.append({"type": "show_products", "payload": {"products": products}})
         product_ids = [p.get("id") for p in products if p.get("id")]
         compact = [
-            {"id": p.get("id"), "name": p.get("name"), "price": p.get("price"), "in_stock": p.get("in_stock")}
+            {"id": p.get("id"), "name": p.get("name"), "price": p.get("price"),
+             "in_stock": p.get("in_stock"), "image_url": p.get("image_url"),
+             "handle": p.get("handle"), "permalink": p.get("permalink"),
+             "variant_id": p.get("variant_id")}
             for p in products
         ]
+
+        # Highlight the first in-stock product
+        first_in_stock = next((p for p in products if p.get("in_stock")), products[0] if products else None)
+        if first_in_stock:
+            idx = products.index(first_in_stock)
+            actions.append({"type": "highlight_card", "payload": {"target_index": idx}})
         result: Dict[str, Any] = {"products": compact, "count": len(products)}
         if brand:
             result["brand_searched"] = brand

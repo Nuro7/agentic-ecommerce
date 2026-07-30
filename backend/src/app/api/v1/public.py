@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...agent.brain.canned import say
 from ...agent.prompts.filtering import detect_language
 from ...agent.voice.transcription import STTService
 from ...config import settings
@@ -201,13 +202,19 @@ async def greet_endpoint(
         key = "new_product"
     else:
         key = "new_general"
-    greeting_text = lang_greetings.get(key, lang_greetings["new_general"])
+
+    # Use welcome_ask_name template for first-time visitors with no name yet
+    if key == "new_general" and not customer_name:
+        greeting_text = say(language, "welcome_ask_name", store_name=store_name)
+        session_meta["asked_for_name"] = True
+    else:
+        greeting_text = lang_greetings.get(key, lang_greetings["new_general"])
 
     # Merchant-customized greeting (tenant column, migration 0016) overrides the
     # default first-visit greeting only. Returning-customer and product-context
     # greetings stay dynamic — a static custom message can't mention the cart or
     # the product being viewed.
-    if key == "new_general":
+    if key == "new_general" and not session_meta.get("asked_for_name"):
         from ...modules.tenants.service import get_store_config_for_tenant
         _cfg = await get_store_config_for_tenant(tenant_id)
         if _cfg.get("greeting_message"):
@@ -340,6 +347,17 @@ async def chat_endpoint(
                     tenant_id = _t.id
     except Exception:
         pass
+
+    # ── Name capture from first message ──────────────────────────────────────
+    if session_service:
+        session_meta = await session_service.get_meta(tenant_id, payload.session_id)
+        if not session_meta.get("customer_name"):
+            import re as _re
+            _nm = _re.search(r"\b(i'?m|my name is|call me|naam hai|peru|per enthaan|enno|en frnd)\s+([a-z]+)", payload.message, _re.I)
+            if _nm:
+                captured = _nm.group(2).strip().capitalize()
+                session_meta["customer_name"] = captured
+                await session_service.save_meta(tenant_id, payload.session_id, {**session_meta, "customer_name": captured})
 
     # Per-tenant currency (tenant DB column → global env fallback).
     from ...modules.tenants.service import get_store_config_for_tenant
