@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .normalizer import normalize, NormalizedQuery
 from .cache import l1_get, l1_set
-from .reranker import SearchResult
+from .reranker import SearchResult, rerank as _rerank
 from .hybrid_search import l3_search
 from ...integrations.adapters import ShopifyAdapter, WooAdapter, CustomAdapter
 
@@ -99,15 +99,7 @@ async def hybrid_search(
     if db is not None:
         try:
             bm25_results, vec_results = await l3_search(db, tenant_id, nq)
-            # l3_search returns (bm25_list, vec_list); RRF reranking is done inline
-            # Merge and deduplicate by platform_id, preferring higher-ranked
-            seen = set()
-            merged = []
-            for r in bm25_results + vec_results:
-                if r.platform_id not in seen:
-                    seen.add(r.platform_id)
-                    merged.append(r)
-            results = merged[:limit]
+            results = _rerank(bm25_results, vec_results, nq, top_n=limit)
             logger.info(
                 "Search L3 HIT  tenant=%s query='%s'  n=%d  (%.1fms)",
                 tenant_id, nq.clean[:40], len(results),

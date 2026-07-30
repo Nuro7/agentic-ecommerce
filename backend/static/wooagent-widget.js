@@ -4631,15 +4631,15 @@
       <span class="wa-mic-text">Enable Voice Assistant to shop hands-free</span>
       <button class="wa-mic-btn" id="wa-enable-mic">Enable Voice</button>
     `;
-    document.body.appendChild(banner);
-    document.getElementById('wa-enable-mic').addEventListener('click', async () => {
+    root.appendChild(banner);
+    root.querySelector('#wa-enable-mic').addEventListener('click', async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach(t => t.stop());
         S.micPermissionGranted = true;
         localStorage.setItem('_wa_mic_perm_asked', '1');
         banner.remove();
-        sendTextToA2A('hello');
+        openPane();
       } catch (e) {
         showToast('Microphone access denied');
       }
