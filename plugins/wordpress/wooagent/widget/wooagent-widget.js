@@ -2933,9 +2933,15 @@
         const st = act.payload || {};
         const sel = st.selector || '';
         if (sel) {
-          const el = document.querySelector(sel);
+          const selectors = sel.split(',');
+          let el = null;
+          for (const s of selectors) {
+            el = document.querySelector(s.trim());
+            if (el) break;
+          }
           if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            window.scrollBy({ top: -80, behavior: 'instant' });
             el.classList.add('speako-highlighted');
             setTimeout(() => el.classList.remove('speako-highlighted'), 3000);
           }
@@ -6132,6 +6138,11 @@
   // These keep the A2A WebSocket alive when Shopify Turbo/navigation replaces
   // the DOM without reloading the widget IIFE.
   function _reconnectA2A() {
+    // Close existing connection before reconnecting to prevent connection storm
+    if (geminiSocket && geminiSocket.readyState <= 1) {
+      try { geminiSocket.close(); } catch (e) {}
+    }
+    isA2AConnected = false;
     // Silent reconnect — no greeting, no banner
     if (!isA2AConnected) {
       startA2AMode();
