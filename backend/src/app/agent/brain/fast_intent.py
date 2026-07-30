@@ -686,6 +686,8 @@ async def handle_buy_now(
     page_context: Optional[Dict[str, Any]] = None,
     *,
     store_client: Any,
+    tenant_id: str = "",
+    session_service: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Handle 'Buy now' intent: add active variant to cart and redirect to checkout.
@@ -693,9 +695,12 @@ async def handle_buy_now(
     product = await _resolve_product_for_add(
         message=message,
         lower=lower,
+        session_id=session_id,
         active_recommendations=active_recommendations,
         page_context=page_context or {},
         store_client=store_client,
+        tenant_id=tenant_id,
+        session_service=session_service,
     )
     if not product or not product.get("id"):
         return with_actions_alias({
@@ -977,13 +982,18 @@ async def handle_add_to_cart(
     page_context: Optional[Dict[str, Any]] = None,
     *,
     store_client: Any,
+    tenant_id: str = "",
+    session_service: Any = None,
 ) -> Optional[Dict[str, Any]]:
     product = await _resolve_product_for_add(
         message=message,
         lower=lower,
+        session_id=session_id,
         active_recommendations=active_recommendations,
         page_context=page_context or {},
         store_client=store_client,
+        tenant_id=tenant_id,
+        session_service=session_service,
     )
     if not product or not product.get("id"):
         return with_actions_alias({
@@ -1108,10 +1118,13 @@ async def handle_pdp_auto_tour(
 async def _resolve_product_for_add(
     message: str,
     lower: str,
+    session_id: str,
     active_recommendations: List[Any],
     page_context: Optional[Dict[str, Any]] = None,
     *,
     store_client: Any,
+    tenant_id: str = "",
+    session_service: Any = None,
 ) -> Optional[Dict[str, Any]]:
     def _get_pid(p: Any) -> Optional[int]:
         pid = p.get("id") if isinstance(p, dict) else p
@@ -1123,8 +1136,6 @@ async def _resolve_product_for_add(
     page_context = page_context or {}
 
     # 0. PDP Add-to-Cart — if on a product page, use page context first.
-    #    No regex gate needed: the caller (core.py step 5 or handle_add_to_cart)
-    #    already validated this is an add-to-cart intent before calling us.
     if page_context.get("product_id"):
         try:
             detail = await store_client.get_product_details(int(page_context["product_id"]))
@@ -1140,7 +1151,6 @@ async def _resolve_product_for_add(
             logger.error("Failed fetching PDP product pid %s: %s", page_context["product_id"], e)
 
     # 1. Resolve ordinal reference ("first" through "fifth") → active_recommendations or last_products
-    #    Skip if query is purely navigation ("show the first one") — let append_live_navigation handle that.
     _has_nav_only = bool(re.search(r"\b(show|open|view|look|display|see|navigate)\b", lower)) and not bool(
         re.search(r"\b(add|buy|purchase|cart|checkout)\b", lower)
     )
@@ -1203,6 +1213,26 @@ async def _resolve_product_for_add(
             if isinstance(first_rec, dict) and first_rec.get("id"):
                 return first_rec
 
+        # 2a. Try SessionFacts last_product_id as fallback for "that/this/it"
+        if session_service is not None and tenant_id and session_id:
+            try:
+                from ..memory.facts import get_session_facts_service
+                facts = await get_session_facts_service().get(tenant_id, session_id)
+                if facts:
+                    last_pid = facts.get("last_product_id")
+                    if last_pid:
+                        detail = await store_client.get_product_details(int(last_pid))
+                        if detail and detail.get("id"):
+                            logger.info("Resolved anaphoric '%s' via SessionFacts last_product_id=%s", lower[:30], last_pid)
+                            return {
+                                "id": detail.get("id"),
+                                "name": detail.get("name", "Product"),
+                                "permalink": detail.get("permalink", ""),
+                                "variant_id": detail.get("variation_id") or detail.get("id"),
+                            }
+            except Exception as e:
+                logger.warning("SessionFacts fallback failed for anaphoric reference: %s", e)
+
     # 3. Explicit product_id in text
     product_id_match = re.search(r"product\s*id\s*(\d+)", lower)
     if product_id_match:
@@ -1220,7 +1250,26 @@ async def _resolve_product_for_add(
             if best and best.get("id"):
                 return best
 
-    # 5. Fallback to first recommendation
+    # 5. SessionFacts fallback — last known product from any previous turn
+    if session_service is not None and tenant_id and session_id:
+        try:
+            from ..memory.facts import get_session_facts_service
+            facts = await get_session_facts_service().get(tenant_id, session_id)
+            if facts and facts.get("last_product_id"):
+                pid = int(facts["last_product_id"])
+                detail = await store_client.get_product_details(pid)
+                if detail and detail.get("id"):
+                    logger.info("SessionFacts fallback last_product_id=%s for query='%s'", pid, message[:60])
+                    return {
+                        "id": detail.get("id"),
+                        "name": detail.get("name", "Product"),
+                        "permalink": detail.get("permalink", ""),
+                        "variant_id": detail.get("variation_id") or detail.get("id"),
+                    }
+        except Exception as e:
+            logger.debug("SessionFacts fallback failed: %s", e)
+
+    # 6. Fallback to first recommendation
     if active_recommendations:
         pid = _get_pid(active_recommendations[0])
         if pid:

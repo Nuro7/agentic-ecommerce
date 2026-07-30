@@ -775,6 +775,8 @@ async def ask_brain(
                     cleaned_message, lower_msg, session_id, active_recommendations, lang,
                     page_context=page_context,
                     store_client=store_client,
+                    tenant_id=tenant_id,
+                    session_service=session_service,
                 )
             except Exception as exc:
                 logger.warning("handle_buy_now failed: %s", exc)
@@ -785,6 +787,8 @@ async def ask_brain(
                     cleaned_message, lower_msg, session_id, active_recommendations, lang,
                     page_context=page_context,
                     store_client=store_client,
+                    tenant_id=tenant_id,
+                    session_service=session_service,
                 )
             except Exception as exc:
                 logger.warning("handle_add_to_cart failed: %s", exc)
