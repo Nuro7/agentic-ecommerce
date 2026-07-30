@@ -6185,10 +6185,10 @@
   document.addEventListener('page:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
   document.addEventListener('shopify:section:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
 
-  // Mic permission banner after 2s (only on first visit)
-  if (!S.micPermissionAsked && !S.micPermissionGranted) {
-    setTimeout(showMicPermissionBanner, 2000);
-  }
+  // Mic permission banner DISABLED — chatbot stays closed until FAB click
+  // if (!S.micPermissionAsked && !S.micPermissionGranted) {
+  //   setTimeout(showMicPermissionBanner, 2000);
+  // }
 
   // Auto-start voice-only mode on return visit is DISABLED — the chatbot
   // must only open when the user clicks the FAB button. Voice mode was
@@ -6250,25 +6250,20 @@
     }
   } catch (e) {}
 
-  // ── Live Shopping Navigator: resume after an agent-driven navigation ────────
-  // The redirect handler sets _wa_reopen just before moving the page. On the new
-  // page, re-open the panel via the normal reopen path — openPane() restores the
-  // conversation from localStorage and (voice-first mode) auto-resumes the live
-  // voice session, exactly like a manual re-open. Mic permission persists
-  // per-origin, so getUserMedia succeeds without a fresh gesture in most browsers.
-  try {
-    const voiceNavResume = localStorage.getItem('_wa_voice_nav_resume') || sessionStorage.getItem('_wa_voice_nav_resume_session');
-    if (voiceNavResume === '1') {
-      localStorage.removeItem('_wa_voice_nav_resume');
-      sessionStorage.removeItem('_wa_voice_nav_resume_session');
-      setTimeout(() => {
-        try {
-          resumeVoiceNavMode(true);
-        } catch (e) { }
-      }, 700);
-    } else if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
-      localStorage.removeItem('_wa_reopen');
-      setTimeout(() => { try { if (!S.open) openPane(); } catch (e) { } }, 700);
-    }
-  } catch (e) { }
+  // Auto-resume after redirect DISABLED — chatbot stays closed until FAB click
+  // try {
+  //   const voiceNavResume = localStorage.getItem('_wa_voice_nav_resume') || sessionStorage.getItem('_wa_voice_nav_resume_session');
+  //   if (voiceNavResume === '1') {
+  //     localStorage.removeItem('_wa_voice_nav_resume');
+  //     sessionStorage.removeItem('_wa_voice_nav_resume_session');
+  //     setTimeout(() => {
+  //       try {
+  //         resumeVoiceNavMode(true);
+  //       } catch (e) { }
+  //     }, 700);
+  //   } else if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
+  //     localStorage.removeItem('_wa_reopen');
+  //     setTimeout(() => { try { if (!S.open) openPane(); } catch (e) { } }, 700);
+  //   }
+  // } catch (e) { }
 })();
