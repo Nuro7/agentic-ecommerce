@@ -71,6 +71,16 @@ _IN_STOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Currency and price word patterns to strip from search query ──
+_CURRENCY_WORDS_RE = re.compile(
+    r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?|cents?)\b",
+    re.IGNORECASE,
+)
+_STANDALONE_PRICE_RE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\b|\b(?:rs|inr|usd|\$|₹|€|£)\s*\d+(?:\.\d+)?\b",
+    re.IGNORECASE,
+)
+
 # ── Discriminating-attribute detector ─────────────────────────────────────────
 # Queries that pin a specific colour / size / capacity / model must NOT be served
 # from the L2 semantic cache: "red shoes" and "blue shoes" embed >0.92 similar, so
@@ -110,6 +120,17 @@ _NOISE_RE = re.compile(
     r"i\s+am\s+looking\s+for)\b",
     re.IGNORECASE,
 )
+
+# ── Size/attribute patterns to extract as structured filters (not search text) ──
+_SIZE_RE = re.compile(
+    r"\b(?:size|sized?)\s*(?:uk|us|eu)?\s*(\d{1,2}(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
+# Clothing sizes
+_CLOTHING_SIZE_RE = re.compile(
+    r"\b(xxs?|xs|s|m|l|xl|xxl|xxxl|2xl|3xl|small|medium|large|xsmall|xsm|xlarge)\b",
+    re.IGNORECASE,
+)
 # Leading affirmations/negations a user types before the real query
 # ("no i need a watch", "yeah show me watches") — stripped only at the START so a
 # meaningful "no" elsewhere is untouched.
@@ -128,6 +149,7 @@ class NormalizedQuery:
     has_attribute: bool = False       # query pins a colour/size/capacity → skip L2
     tokens: list[str] = field(default_factory=list)  # clean tokenised words
     cache_key: str = ""               # deterministic key for L1 lookup
+    size: Optional[str] = None        # extracted size (e.g., "9", "M", "UK 9")
 
     def is_empty(self) -> bool:
         return not self.clean.strip()
@@ -152,36 +174,49 @@ def normalize(raw_query: str) -> NormalizedQuery:
     # 4. Extract price filters before stripping numbers
     min_price, max_price = _extract_prices(text)
 
-    # 5. Extract stock hint + discriminating-attribute flag (before stripping)
+    # 5. Extract size BEFORE stripping (so we can pass it as structured filter)
+    size = _extract_size(text)
+
+    # 6. Extract stock hint + discriminating-attribute flag (before stripping)
     in_stock_only = bool(_IN_STOCK_RE.search(text))
     has_attribute = bool(_ATTRIBUTE_RE.search(text))
 
-    # 6. Strip noise phrases ("show me", "i want", "looking for", etc.) and a
+    # 7. Strip noise phrases ("show me", "i want", "looking for", etc.) and a
     #    leading affirmation/negation ("no i need…", "yeah show…").
     text = _LEADING_FILLER_RE.sub("", text)
     text = _NOISE_RE.sub(" ", text)
 
-    # 7. Strip price/stock phrases now (they've been captured)
+    # 8. Strip price/stock phrases now (they've been captured)
     text = _PRICE_UNDER_RE.sub(" ", text)
     text = _PRICE_OVER_RE.sub(" ", text)
     text = _PRICE_RANGE_RE.sub(" ", text)
+    text = _STANDALONE_PRICE_RE.sub(" ", text)
     text = _IN_STOCK_RE.sub(" ", text)
 
-    # 8. Remove punctuation except hyphens (needed for "t-shirt", "v-neck")
+    # 9. Strip currency words and symbols (they're captured as price filters)
+    text = _CURRENCY_WORDS_RE.sub(" ", text)
+    text = re.sub(r"[₹$€£]", " ", text)
+
+    # 10. Strip size patterns from search text (passed as structured filter)
+    text = _SIZE_RE.sub(" ", text)
+    text = _CLOTHING_SIZE_RE.sub(" ", text)
+    text = re.sub(r"\b(?:size|sized?)\b", " ", text)
+
+    # 11. Remove punctuation except hyphens (needed for "t-shirt", "v-neck")
     text = re.sub(r"[^\w\s\-]", " ", text)
 
-    # 9. Collapse whitespace
+    # 12. Collapse whitespace
     text = re.sub(r"\s+", " ", text).strip()
 
-    # 10. Expand synonyms
+    # 13. Expand synonyms
     for informal, canonical in _SYNONYMS.items():
         text = re.sub(rf"\b{re.escape(informal)}\b", canonical, text)
 
-    # 11. Tokenise (for BM25 and embedding)
+    # 14. Tokenise (for BM25 and embedding)
     tokens = [t for t in text.split() if len(t) > 1]
 
-    # 12. Build deterministic cache key
-    cache_key = _make_cache_key(text, min_price, max_price, in_stock_only)
+    # 15. Build deterministic cache key
+    cache_key = _make_cache_key(text, min_price, max_price, in_stock_only, size)
 
     return NormalizedQuery(
         raw=raw_query,
@@ -193,6 +228,7 @@ def normalize(raw_query: str) -> NormalizedQuery:
         has_attribute=has_attribute,
         tokens=tokens,
         cache_key=cache_key,
+        size=size,
     )
 
 
@@ -228,7 +264,7 @@ def _extract_prices(text: str) -> tuple[Optional[float], Optional[float]]:
     return min_price, max_price
 
 
-def _make_cache_key(clean: str, min_p: Optional[float], max_p: Optional[float], stock: bool) -> str:
+def _make_cache_key(clean: str, min_p: Optional[float], max_p: Optional[float], stock: bool, size: Optional[str] = None) -> str:
     parts = [clean]
     if min_p is not None:
         parts.append(f"min{int(min_p)}")
@@ -236,4 +272,21 @@ def _make_cache_key(clean: str, min_p: Optional[float], max_p: Optional[float], 
         parts.append(f"max{int(max_p)}")
     if stock:
         parts.append("instock")
+    if size:
+        parts.append(f"size{size.replace(' ', '')}")
     return ":".join(parts)
+
+
+def _extract_size(text: str) -> Optional[str]:
+    """Extract size from query (e.g., 'size 9', 'UK 9', 'M', 'large')."""
+    # Try "size N" or "UK/US/EU N" patterns
+    size_match = _SIZE_RE.search(text)
+    if size_match:
+        return size_match.group(1)
+    
+    # Try clothing sizes
+    clothing_match = _CLOTHING_SIZE_RE.search(text)
+    if clothing_match:
+        return clothing_match.group(1).upper()
+    
+    return None

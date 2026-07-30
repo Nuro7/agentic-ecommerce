@@ -532,9 +532,17 @@ async def handle_product_discovery(
         products.insert(0, best)
     products = products[:6]
 
+    # Build multi-product description for voice (top 3-4 recommendations)
+    top_products = products[:4]
+    product_descriptions = []
+    for i, p in enumerate(top_products):
+        pname = p.get("name", "")
+        pprice = p.get("price", "")
+        pprice_str = f" at ₹{pprice}" if pprice else ""
+        product_descriptions.append(f"Option {i+1} is {pname}{pprice_str}")
+    
     name = products[0].get("name", "")
     price = products[0].get("price", "")
-    price_text = f", ₹{price}" if price else ""
 
     is_sold_out = all(not in_stock(p) for p in products[:3])
 
@@ -568,11 +576,13 @@ async def handle_product_discovery(
                 "short_description": r.description[:200] if r.description else "",
             })
         if alternatives:
-            response = f"{name} is currently out of stock. Here are some similar options that are available:"
+            response = f"{name} is currently out of stock. Here are some similar options that are available: " + ", ".join(product_descriptions)
             actions = [
                 {"type": "show_products", "payload": {"products": products}},
                 {"type": "show_products", "payload": {"products": alternatives}},
             ]
+            for idx in range(min(len(products), 4)):
+                actions.append({"type": "highlight_card", "payload": {"target_index": idx, "products": products}})
             first_in_stock = next((p for p in alternatives if p.get("in_stock")), alternatives[0] if alternatives else None)
             if first_in_stock and first_in_stock.get("id"):
                 actions.append({
@@ -587,12 +597,19 @@ async def handle_product_discovery(
             last_ids = [p.get("id") for p in (products + alternatives) if p.get("id")]
         else:
             response = f"{name} is currently out of stock, and I couldn't find similar alternatives. Check back later or browse our catalog."
-            actions = [{"type": "show_products", "payload": {"products": products}}]
+            actions = [
+                {"type": "show_products", "payload": {"products": products}},
+                {"type": "highlight_card", "payload": {"target_index": 0, "products": products}},
+            ]
             suggested = ["Show all products", "Browse categories", "Show my cart"]
             last_ids = [p.get("id") for p in products if p.get("id")]
     else:
-        response = f"{name}{price_text} — want me to show the size and color options?"
-        actions = [{"type": "show_products", "payload": {"products": products}}]
+        response = ", ".join(product_descriptions) + ". Let me know if you would like to see options or add any to your cart."
+        actions = [
+            {"type": "show_products", "payload": {"products": products}},
+        ]
+        for idx in range(min(len(products), 4)):
+            actions.append({"type": "highlight_card", "payload": {"target_index": idx, "products": products}})
         first_in_stock = next((p for p in products if p.get("in_stock")), products[0] if products else None)
         if first_in_stock and first_in_stock.get("id"):
             actions.append({

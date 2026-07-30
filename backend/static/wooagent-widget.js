@@ -12,6 +12,9 @@
     language: 'en',
     platform: 'woocommerce',
     live_navigation: true,
+    // TTS voice profile - persists across page loads to ensure voice consistency
+    // e.g., { provider: 'google', voice_name: 'en-US-Neural2-F', language_code: 'en-US' }
+    voice_profile: null,
   };
 
   // Live Shopping Navigator: agent-driven page navigation (search/product/cart).
@@ -66,6 +69,20 @@
     greeted: localStorage.getItem('_wa_greeted') === '1',
     micPermissionAsked: localStorage.getItem('_wa_mic_perm_asked') === '1',
     micPermissionGranted: false,
+    // TTS voice profile - persisted across page loads for consistency
+    voiceProfile: (() => {
+      try {
+        const stored = localStorage.getItem('_wa_voice_profile') || sessionStorage.getItem('_wa_voice_profile');
+        if (stored) return JSON.parse(stored);
+        if (CFG.voice_profile) return CFG.voice_profile;
+      } catch (e) {}
+      const defProfile = { provider: 'google', voice_name: 'en-US-Neural2-F', gender: 'female', language_code: 'en-US' };
+      try {
+        sessionStorage.setItem('_wa_voice_profile', JSON.stringify(defProfile));
+        localStorage.setItem('_wa_voice_profile', JSON.stringify(defProfile));
+      } catch (e) {}
+      return defProfile;
+    })(),
   };
 
   // ── Pending navigation queue — redirected only after TTS finishes ──────────
@@ -1806,25 +1823,26 @@
       return;
     }
     setStatus('Connecting...');
-    try {
-      for (let i = 0; i < 5; i++) {
-        if (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') break;
-        await new Promise(r => setTimeout(r, 100));
-      }
-      const r = await api('/greet', {
-        session_id: S.sessionId,
-        store_name: CFG.store_name,
-        language: S.language,
-        cart_context: (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') ? S.cartSnapshot : null,
-        current_page: {
-          url: location.href,
-          title: document.title,
-          product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
-          product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
-          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
-          variant_id: detectActiveVariantId()
+try {
+        for (let i = 0; i < 5; i++) {
+          if (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') break;
+          await new Promise(r => setTimeout(r, 100));
         }
-      });
+        const r = await api('/greet', {
+          session_id: S.sessionId,
+          store_name: CFG.store_name,
+          language: S.language,
+          voice_profile: S.voiceProfile,
+          cart_context: (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') ? S.cartSnapshot : null,
+          current_page: {
+            url: location.href,
+            title: document.title,
+            product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
+            product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
+            product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+            variant_id: detectActiveVariantId()
+          }
+        });
 
       S.language = r.language_detected || r.language || S.language;
       if (r.has_cart && r.cart_summary) {
@@ -2292,6 +2310,7 @@
         language: S.language || 'en',
         store_url: location.origin,
         store_name: CFG.store_name,
+        voice_profile: S.voiceProfile,
         cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {},
         current_page: {
           url: location.href,
@@ -2309,6 +2328,13 @@
       setStatus('Online · ' + CFG.store_name);
 
       if (r.language) S.language = r.language;
+      // Persist voice profile from backend to ensure voice consistency across page loads
+      if (r.voice_profile) {
+        S.voiceProfile = r.voice_profile;
+        try {
+          localStorage.setItem('_wa_voice_profile', JSON.stringify(r.voice_profile));
+        } catch (e) {}
+      }
       if (r.address_state) {
         S.addressState = r.address_state;
         localStorage.setItem('_wa_addr_state', r.address_state);
@@ -2793,14 +2819,16 @@
           if (_voiceOnlyMode || S.mode === 'voice_nav') {
             sessionStorage.setItem('_wa_voice_nav_resume_session', '1');
           }
-          // Save pending search (voice text + highlight) to replay after landing
-          if (p.pending_search) {
-            sessionStorage.setItem('_wa_pending_search', JSON.stringify(p.pending_search));
-          }
         } catch (e) {}
 
         const performRedirect = () => {
           _pendingNavigation = null;
+          try {
+            sessionStorage.setItem('_wa_voice_active', '1');
+            if (p.query) {
+              sessionStorage.setItem('_wa_pending_search', p.query);
+            }
+          } catch (e) {}
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
             goToCheckout();
           } else {
@@ -2819,27 +2847,27 @@
         const hc = act.payload || {};
         const idx = parseInt(hc.target_index !== undefined ? hc.target_index : hc.index, 10);
         const cards = document.querySelectorAll(
-          '.grid__item, .product-card, .product-grid-item, [data-product-id], .card-wrapper'
+          '.grid__item, .product-card, .product-grid-item, [data-product-id], .card-wrapper, .type-product, .product, li.product, .wc-block-grid__product'
         );
         if (Number.isInteger(idx) && idx >= 0 && idx < cards.length) {
           const target = cards[idx];
-          // Remove glow from all native grid items
           cards.forEach(c => {
             c.style.outline = '';
+            c.style.border = '';
             c.style.boxShadow = '';
             c.style.transition = '';
           });
-          // Apply inline glow to the selected element
-          target.style.outline = '3px solid #6366f1';
+          target.style.outline = 'none';
+          target.style.border = '2px solid #6366f1';
           target.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
           target.style.transition = 'all 0.3s ease-in-out';
           target.scrollIntoView({ behavior: 'smooth', block: 'center' });
           window.scrollBy({ top: -90, behavior: 'instant' });
           setTimeout(() => {
-            target.style.outline = '';
+            target.style.border = '';
             target.style.boxShadow = '';
             target.style.transition = '';
-          }, 3000);
+          }, 4500);
         }
         break;
       }
@@ -3149,7 +3177,16 @@
     // Search — only exact match patterns, no conversational ambiguitiy
     const sm = t.match(/^search\s+(for\s+)?(.+)/i);
     if (sm && sm[2]) {
-      window.location.href = '/search?q=' + encodeURIComponent(sm[2].trim());
+      const query = sm[2].trim();
+      // Persist voice session state before navigation so mic auto-resumes on /search
+      try {
+        sessionStorage.setItem('_wa_voice_active', '1');
+        sessionStorage.setItem('_wa_pending_search', query);
+        if (S.mode === 'voice_nav') {
+          localStorage.setItem('_wa_voice_nav_resume', '1');
+        }
+      } catch (e) {}
+      window.location.href = '/search?q=' + encodeURIComponent(query);
       return true;
     }
     // ── Scroll commands ──────────────────────────────────────────────────
@@ -4339,7 +4376,8 @@
       return Promise.resolve(a2aWsToken);  // reuse cached token
     }
     const base = (CFG.agent_api_url || 'http://localhost:8000').replace(/\/$/, '');
-    const url  = base + '/wooagent/ws-token?session_id=' + encodeURIComponent(S.sessionId) + tenantQS(true);
+    const voiceProfileQS = S.voiceProfile ? '&voice_profile=' + encodeURIComponent(JSON.stringify(S.voiceProfile)) : '';
+    const url  = base + '/wooagent/ws-token?session_id=' + encodeURIComponent(S.sessionId) + tenantQS(true) + voiceProfileQS;
     // No custom headers on this request — avoids CORS preflight (simple GET).
     // ngrok-skip-browser-warning bypasses the ngrok interstitial page for API calls.
     return fetch(url, {
@@ -4399,6 +4437,10 @@
       _a2aStreamBubble  = null;
       _a2aStreamText    = '';
       _a2aContextAcknowledged = false;
+      try {
+        sessionStorage.removeItem('_wa_voice_active');
+        sessionStorage.removeItem('_wa_pending_search');
+      } catch (e) {}
 
       // Block VAD/speech capture until server acknowledges page context handshake.
       // Prevents PDP hallucination race (T_audio ~100ms vs T_handshake ~300ms).
@@ -4438,7 +4480,8 @@
           ws.send(JSON.stringify({
             type: 'page_update',
             page_context: pageContextPayload,
-            cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
+            cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {},
+            voice_profile: S.voiceProfile
           }));
 
           // Micro-handshake: server must acknowledge before we start mic
@@ -6045,59 +6088,26 @@
   // ── Restore in-page product cards from sessionStorage — REMOVED (no shelf) ──
   try { sessionStorage.removeItem('_wa_inpage_products'); } catch (e) {}
 
-  // ── Replay pending search (voice + highlight) after search redirect lands ──
-  try {
-    const pendingSearch = sessionStorage.getItem('_wa_pending_search');
-    if (pendingSearch) {
-      sessionStorage.removeItem('_wa_pending_search');
-      const ps = JSON.parse(pendingSearch);
-      setTimeout(() => {
-        // Speak voice explanation using browser TTS
-        if (ps.voice_text && window.speechSynthesis) {
-          const utterance = new SpeechSynthesisUtterance(ps.voice_text);
-          utterance.rate = 1.0;
-          utterance.pitch = 1.0;
-          utterance.volume = 1.0;
-          window.speechSynthesis.speak(utterance);
-        }
-        // Highlight product on native Shopify grid
-        if (ps.highlight) {
-          const hc = ps.highlight;
-          const idx = parseInt(hc.target_index !== undefined ? hc.target_index : hc.index, 10);
-          const cards = document.querySelectorAll(
-            '.grid__item, .product-card, .product-grid-item, [data-product-id], .card-wrapper'
-          );
-          if (Number.isInteger(idx) && idx >= 0 && idx < cards.length) {
-            const target = cards[idx];
-            cards.forEach(c => {
-              c.style.outline = '';
-              c.style.boxShadow = '';
-              c.style.transition = '';
-            });
-            target.style.outline = '3px solid #6366f1';
-            target.style.boxShadow = '0 0 16px rgba(99,102,241,0.5)';
-            target.style.transition = 'box-shadow 0.3s ease, outline 0.3s ease';
-            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Auto-resume voice mode after search redirect
+  (function() {
+    try {
+      const isSearchPage = /\/search\b/.test(location.pathname) || /[?&]s=/.test(location.search);
+      const voiceActive = sessionStorage.getItem('_wa_voice_active') === '1';
+      
+      if (isSearchPage || voiceActive) {
+        // Immediate execution (<150ms) without waiting for user click
+        setTimeout(() => {
+          try {
+            if (S.mode === 'voice_nav' && typeof resumeVoiceNavMode === 'function') {
+              resumeVoiceNavMode(true);
+            } else if (typeof startVoiceOnly === 'function') {
+              startVoiceOnly();
+            }
+          } catch (e) {
+            console.warn('[WooAgent] Auto-resume voice failed:', e);
           }
-        }
-      }, 600);
-    }
-  } catch (e) {}
-
-  // Auto-resume after redirect DISABLED — chatbot stays closed until FAB click
-  // try {
-  //   const voiceNavResume = localStorage.getItem('_wa_voice_nav_resume') || sessionStorage.getItem('_wa_voice_nav_resume_session');
-  //   if (voiceNavResume === '1') {
-  //     localStorage.removeItem('_wa_voice_nav_resume');
-  //     sessionStorage.removeItem('_wa_voice_nav_resume_session');
-  //     setTimeout(() => {
-  //       try {
-  //         resumeVoiceNavMode(true);
-  //       } catch (e) { }
-  //     }, 700);
-  //   } else if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
-  //     localStorage.removeItem('_wa_reopen');
-  //     setTimeout(() => { try { if (!S.open) openPane(); } catch (e) { } }, 700);
-  //   }
-  // } catch (e) { }
+        }, 80);
+      }
+    } catch (e) {}
+  })();
 })();

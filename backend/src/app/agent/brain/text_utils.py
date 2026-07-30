@@ -208,9 +208,14 @@ def normalize_discovery_query(message: str) -> str:
         r")\b",
         " ", cleaned
     )
-    cleaned = re.sub(r"\b(?:under|below|less\s+than|above|over|more\s+than|upto|up\s+to)\s+\d+(?:\.\d+)?\b", " ", cleaned)
-    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|â‚¹|â‚¬|Â£|dollars?|rupees?|pounds?|euros?)\s*\d+(?:\.\d+)?\b", " ", cleaned)
-    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*(?:rs|inr|usd|\$|â‚¹|â‚¬|Â£|dollars?|rupees?|pounds?|euros?)\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:under|below|less\s+than|above|over|more\s+than|upto|up\s+to|max|maximum)\s+\d+(?:\.\d+)?\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\s*\d+(?:\.\d+)?\b", " ", cleaned)
+    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\b", " ", cleaned)
+    cleaned = re.sub(r"[₹$€£]", " ", cleaned)
+    # Strip size keywords from search query (they are passed as structured filters)
+    cleaned = re.sub(r"\b(?:size|sized?)\s*(?:uk|us|eu)?\s*\d+(?:\.\d+)?\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(xxs?|xs|s|m|l|xl|xxl|xxxl|2xl|3xl|small|medium|large|xsmall|xsm|xlarge)\b", " ", cleaned, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -245,8 +250,10 @@ def split_compare_terms(message: str) -> List[str]:
 # â”€â”€ Extraction helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def extract_budget(lower: str) -> Tuple[Optional[float], Optional[float]]:
-    max_match = re.search(r"(?:under|below|less than|upto|up to)\s*(\d+(?:\.\d+)?)", lower)
-    min_match = re.search(r"(?:above|over|more than)\s*(\d+(?:\.\d+)?)", lower)
+    max_match = re.search(r"(?:under|below|less\s+than|upto|up\s+to|max|maximum|budget|cheap)\s*[₹$€£]?\s*(\d+(?:\.\d+)?)", lower)
+    if not max_match:
+        max_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:dollars?|rupees?|rs|inr|usd|eur|gbp|pounds?|euros?|bucks?|\$|₹)", lower)
+    min_match = re.search(r"(?:above|over|more\s+than|min|minimum|starting\s+from|from)\s*[₹$€£]?\s*(\d+(?:\.\d+)?)", lower)
     return (
         float(min_match.group(1)) if min_match else None,
         float(max_match.group(1)) if max_match else None,
