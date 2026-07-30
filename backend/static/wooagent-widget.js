@@ -2410,16 +2410,35 @@
         break;
 
       case 'remove_from_cart':
-        if (act.payload && act.payload.cart_item_key) {
-          try {
-            if (IS_SHOPIFY) {
-              await removeFromCartShopify(act.payload.cart_item_key);
-            } else {
-              await removeFromCartViaWoo(act.payload.cart_item_key);
-            }
-          } catch (error) {
-            showToast('Could not remove item from cart.');
+        try {
+          let itemKey = act.payload && act.payload.cart_item_key;
+          if (!itemKey && act.payload && act.payload.product_id) {
+            // Backend sent product_id (from Storefront API) — match against
+            // our local /cart.js snapshot to get the correct change.js key.
+            const snap = S.cartSnapshot || {};
+            const snapItems = snap.items || [];
+            const pid = parseInt(act.payload.product_id, 10);
+            const match = snapItems.find(i => {
+              const ip = i.product_id || (i.product && i.product.id) || 0;
+              return parseInt(ip, 10) === pid;
+            });
+            if (match) itemKey = match.key || match.variant_id;
           }
+          if (!itemKey && act.payload && act.payload.product_id) {
+            // Fallback: remove last item
+            const snap = S.cartSnapshot || {};
+            const snapItems = snap.items || [];
+            if (snapItems.length) itemKey = snapItems[snapItems.length - 1].key;
+          }
+          if (itemKey) {
+            if (IS_SHOPIFY) {
+              await removeFromCartShopify(itemKey);
+            } else {
+              await removeFromCartViaWoo(itemKey);
+            }
+          }
+        } catch (error) {
+          showToast('Could not remove item from cart.');
         }
         break;
 

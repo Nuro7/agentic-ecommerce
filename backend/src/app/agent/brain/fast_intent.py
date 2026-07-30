@@ -185,15 +185,18 @@ async def run_fast_intent(
                 "suggested_replies": ["Show products"],
             })
         target = items[-1]
-        try:
-            await store_client.remove_from_cart(session_id=session_id, cart_item_key=target.get("cart_item_key"))
-        except Exception:
-            pass
-        cart_after = await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
+        target_product_id = (
+            target.get("product_id")
+            or (target.get("product") or {}).get("id")
+            or (target.get("merchandise") or {}).get("id")
+        )
         return with_actions_alias({
             "response_text": say(language, "removed_from_cart", name=target.get("name", "item")),
-            "ui_actions": [{"type": "show_cart", "payload": {"cart": normalize_cart_payload(cart_after)}}],
-            "suggested_replies": ["Checkout now", "Show products"],
+            "ui_actions": [{
+                "type": "remove_from_cart",
+                "payload": {"product_id": target_product_id},
+            }],
+            "suggested_replies": ["Show products", "Checkout"],
         })
 
     # Browse / show products fallback (only runs as LLM fallback)

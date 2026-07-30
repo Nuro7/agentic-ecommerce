@@ -512,19 +512,6 @@ async def ask_brain(
     if intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
         result = off_topic_response(lang)
 
-    elif intent_result.intent == CHITCHAT and intent_result.confidence >= 0.75:
-        # A bare "yes/ok/sure" right after the assistant ASKED a question/offer is a
-        # continuation, not cold-start chitchat. Don't short-circuit to the canned
-        # greeting â€” fall through so the LLM (which gets the history) can act on the
-        # offer ("Want me to search the home page?" â†’ "yes" â†’ it searches).
-        # Likewise, any SHORT reply mid-conversation (a name/number/phone the classifier
-        # mislabels as CHITCHAT) is an answer to the last turn â€” let the LLM continue
-        # with history instead of resetting to a greeting. Empty history still greets.
-        if _is_affirmative_followup(cleaned_message, history) or _is_continuation_reply(cleaned_message, history):
-            pass  # result stays None â†’ LLM path handles it with conversation history
-        else:
-            result = chitchat_response(lang, session_id)
-
     elif (
         intent_result.intent in (STORE_INFO, CART_ACTION)
         or has_store_info_intent(lower_msg)
@@ -544,6 +531,19 @@ async def ask_brain(
             )
         except Exception as exc:
             logger.warning("Fast-intent pre-LLM failed: %s", exc)
+
+    elif intent_result.intent == CHITCHAT and intent_result.confidence >= 0.75:
+        # A bare "yes/ok/sure" right after the assistant ASKED a question/offer is a
+        # continuation, not cold-start chitchat. Don't short-circuit to the canned
+        # greeting — fall through so the LLM (which gets the history) can act on the
+        # offer ("Want me to search the home page?" → "yes" → it searches).
+        # Likewise, any SHORT reply mid-conversation (a name/number/phone the classifier
+        # mislabels as CHITCHAT) is an answer to the last turn — let the LLM continue
+        # with history instead of resetting to a greeting. Empty history still greets.
+        if _is_affirmative_followup(cleaned_message, history) or _is_continuation_reply(cleaned_message, history):
+            pass  # result stays None → LLM path handles it with conversation history
+        else:
+            result = chitchat_response(lang, session_id)
 
     # â”€â”€ Store-not-connected guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # If this tenant has no usable Shopify token (domain present but Storefront AND
