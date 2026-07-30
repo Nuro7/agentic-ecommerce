@@ -677,6 +677,72 @@ async def handle_buy_intent(
     })
 
 
+async def handle_buy_now(
+    message: str,
+    lower: str,
+    session_id: str,
+    active_recommendations: List[Any],
+    language: str,
+    page_context: Optional[Dict[str, Any]] = None,
+    *,
+    store_client: Any,
+) -> Optional[Dict[str, Any]]:
+    """
+    Handle 'Buy now' intent: add active variant to cart and redirect to checkout.
+    """
+    product = await _resolve_product_for_add(
+        message=message,
+        lower=lower,
+        active_recommendations=active_recommendations,
+        page_context=page_context or {},
+        store_client=store_client,
+    )
+    if not product or not product.get("id"):
+        return with_actions_alias({
+            "response_text": say(language, "ask_add_which"),
+            "ui_actions": [],
+            "suggested_replies": ["Show products"],
+        })
+
+    variant_id = product.get("variant_id") or product.get("id")
+    product_id = int(product["id"])
+    name = product.get("name", "Product")
+    handle = product.get("handle", "")
+    permalink = product.get("permalink", "")
+
+    # Build UI actions: add_to_cart then redirect_checkout
+    ui_actions = [
+        {
+            "type": "add_to_cart",
+            "payload": {
+                "product_id": product_id,
+                "variant_id": int(variant_id),
+                "quantity": 1,
+                "handle": handle,
+                "permalink": permalink,
+            },
+        },
+        {
+            "type": "redirect_checkout",
+            "payload": {
+                "reason": "buy_now",
+                "url": "/checkout",
+                "delay_ms": 800,
+            },
+        },
+    ]
+
+    response_text = f"Adding {name} to your cart and taking you to checkout."
+    suggested_replies = ["Continue shopping", "View cart"]
+
+    return with_actions_alias({
+        "response_text": response_text,
+        "ui_actions": ui_actions,
+        "suggested_replies": suggested_replies,
+        "last_products": [product_id],
+    })
+
+
 async def handle_availability(
     message: str,
     lower: str,
@@ -976,6 +1042,66 @@ async def handle_add_to_cart(
         }],
         "suggested_replies": ["Add another item", "View cart", "Proceed to checkout"],
         "last_products": [product.get("id")],
+    })
+
+
+async def handle_pdp_auto_tour(
+    page_context: Dict[str, Any],
+    *,
+    store_client: Any,
+    session_service: Any,
+) -> Optional[Dict[str, Any]]:
+    """
+    Automatically explain on-screen products when the shopper lands on a PDP.
+    Returns an AgentResponse with scroll actions and product description.
+    """
+    # Only trigger on product pages with a valid product_id
+    if not page_context or page_context.get("page_type") != "product":
+        return None
+    product_id = page_context.get("product_id")
+    if not product_id:
+        return None
+    
+    try:
+        product_id = int(product_id)
+    except (TypeError, ValueError):
+        return None
+    
+    # Fetch product details
+    try:
+        detail = await store_client.get_product_details(product_id)
+    except Exception as e:
+        logger.warning("PDP auto-tour: failed to fetch product %s: %s", product_id, e)
+        return None
+    
+    if not detail or not detail.get("id"):
+        return None
+    
+    name = detail.get("name", "Product")
+    description = detail.get("description") or detail.get("short_description") or ""
+    # Clean HTML tags for speech
+    clean_desc = re.sub(r'<[^>]+>', '', description).strip()
+    # Take first two sentences for brevity
+    sentences = re.split(r'(?<=[.!?])\s+', clean_desc)
+    snippet = ' '.join(sentences[:2]).strip()
+    if not snippet:
+        snippet = f"The {name} is a great choice."
+    
+    response_text = f"I see you're looking at the {name}. {snippet}"
+    
+    # UI actions: scroll to description, then show variant picker, then scroll to form
+    ui_actions = [
+        {"type": "scroll_to", "payload": {"selector": ".product-description, [data-product-description], .product__description"}},
+        {"type": "show_variant_picker", "payload": {"product_id": product_id}},
+        {"type": "scroll_to", "payload": {"selector": ".product-form, .product__form, [data-product-form], form[action*='cart/add']"}},
+    ]
+    
+    suggested_replies = ["Tell me more", "Add to cart", "Buy now"]
+    
+    return with_actions_alias({
+        "response_text": response_text,
+        "ui_actions": ui_actions,
+        "suggested_replies": suggested_replies,
     })
 
 

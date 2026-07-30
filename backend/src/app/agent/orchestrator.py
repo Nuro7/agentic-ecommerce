@@ -65,7 +65,10 @@ class AgentOrchestrator:
         current_state: str,
         address_data: dict,
         language: str,
+        page_context: Optional[Dict[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> tuple:
         return await handle_address_collection(
             session_id, user_message, current_state, address_data, language,
+            page_context=page_context, tenant_id=tenant_id,
         )

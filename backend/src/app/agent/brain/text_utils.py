@@ -395,6 +395,13 @@ def has_buy_intent(lower: str) -> bool:
     ])
 
 
+def has_buy_now_intent(lower: str) -> bool:
+    return any(token in lower for token in [
+        "buy now", "buy this now", "purchase now", "order now",
+        "buy it now", "get it now", "buy this", "buy it",
+    ])
+
+
 def has_add_intent(lower: str) -> bool:
     return any(token in lower for token in [
         "add to cart", "add this to cart", "add it to cart",

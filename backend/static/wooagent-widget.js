@@ -2707,6 +2707,20 @@
         }
         break;
 
+      case 'show_variant_picker': {
+        if (isHidden) break;
+        const pickerPayload = act.payload || {};
+        const pickerProductId = pickerPayload.product_id;
+        if (pickerProductId) {
+          const variantPicker = document.querySelector('.variant-picker, .product-variant-selector, [data-variant-selector], .product__form .variant-selector, .product-form .swatch-wrapper, .product-form select, form[action*="cart/add"] select');
+          if (variantPicker) {
+            variantPicker.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            window.scrollBy({ top: -80, behavior: 'instant' });
+          }
+        }
+        break;
+      }
+
       case 'show_availability': {
         if (isHidden) break;
         const prod = (act.payload && act.payload.product) || {};
@@ -2783,6 +2797,10 @@
           type: 'wooagent_prefill_address',
           payload: act.payload
         }, '*');
+        // Scroll to payment section after a short delay to allow fields to populate
+        setTimeout(() => {
+          scrollToPaymentSection();
+        }, 1000);
         break;
 
       case 'redirect_checkout_with_address':
@@ -3229,11 +3247,11 @@
       speakLocal('Going to top'); return true;
     }
     // Scroll to section
-    const sectionMatch = t.match(/^(?:scroll\s+to\s+|go\s+to\s+|show\s+)(reviews|description|footer|header|products?|grid|related|size|shipping|policy)/i);
+    const sectionMatch = t.match(/^(?:scroll\s+to\s+|go\s+to\s+|show\s+)(reviews|description|footer|header|products?|grid|related|size|shipping|policy|variant.?picker|variant.?pick)/i);
     if (sectionMatch) {
       const SECTION_MAP = {
         reviews: '#shopify-product-reviews, #product-reviews, [data-product-reviews], .product-reviews',
-        description: '.product-description, [data-product-description], .product__description',
+        description: '.product-description, [data-product-description], .product__description, [data-product-description-container]',
         footer: 'footer, .footer, .site-footer',
         header: 'header, .header, .site-header',
         products: '.product-grid, .collection, #collection, .collection-products',
@@ -3242,11 +3260,32 @@
         size: '.size-chart, [data-size-chart], .product__size-chart',
         shipping: '.shipping-policy, .shipping-info, .product__shipping',
         policy: '.return-policy, .privacy-policy, .product__policy',
+        variant_picker: '.product-form, .product__form, [data-product-form], .variant-picker, form[action*="cart/add"]',
+        'variant-pick': '.product-form, .product__form, [data-product-form], .variant-picker, form[action*="cart/add"]',
       };
       const selectors = SECTION_MAP[sectionMatch[1].toLowerCase()];
       if (selectors) {
         const el = document.querySelector(selectors.split(',')[0].trim());
         if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); speakLocal('Here you go'); return true; }
+      }
+    }
+    return false;
+  }
+
+  function scrollToPaymentSection() {
+    const paymentSelectors = [
+      '.payment-section', '#payment', '.checkout-payment',
+      '[data-payment]', '.payment-methods', '.payment-options',
+      '.shopify-payment-button', '#checkout-payment',
+      '.wc-block-components-checkout-payment-methods',
+      '#payment_method', '.payment_box', '.woocommerce-checkout-payment',
+    ];
+    for (const sel of paymentSelectors) {
+      const el = document.querySelector(sel);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        window.scrollBy({ top: -80, behavior: 'instant' });
+        return true;
       }
     }
     return false;

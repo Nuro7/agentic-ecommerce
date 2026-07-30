@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ...core.security import sanitize_text
 from .text_utils import speech_digits_to_ascii, normalize_india_state, extract_email
@@ -98,6 +98,8 @@ async def handle_address_collection(
     current_state: str,
     address_data: dict,
     language: str,
+    page_context: Optional[Dict[str, Any]] = None,
+    tenant_id: Optional[str] = None,
 ) -> Tuple[str, str, dict, List[Dict[str, Any]]]:
     lang_prompts = _PROMPTS.get(language, _PROMPTS["en"])
     addr = AddressData()
@@ -110,6 +112,14 @@ async def handle_address_collection(
     response = ""
     ui_actions: List[Dict[str, Any]] = []
     cleaned = sanitize_text(user_message or "", max_len=250)
+
+    # Checkout phone-first mode: when on checkout page and state is IDLE,
+    # skip directly to phone collection
+    is_checkout = (page_context or {}).get("page_type") == "checkout"
+    if is_checkout and current_state == AddressCollectionState.IDLE:
+        next_state = AddressCollectionState.COLLECTING_PHONE
+        response = "What's your phone number for shipping updates?"
+        return response, next_state, addr.__dict__, ui_actions
 
     if current_state == AddressCollectionState.COLLECTING_NAME:
         parts = cleaned.split(maxsplit=1)
@@ -161,8 +171,50 @@ async def handle_address_collection(
         phone = "".join(numbers)
         if len(phone) >= 10:
             addr.phone = phone[-10:]
-            next_state = AddressCollectionState.COLLECTING_EMAIL
-            response = lang_prompts["email"]
+            
+            # On checkout page: try to look up saved address by phone
+            if is_checkout and tenant_id:
+                try:
+                    from ...modules.users.address_service import get_address_by_phone
+                    saved = await get_address_by_phone(addr.phone, tenant_id)
+                    if saved:
+                        # Pre-fill address data from saved address
+                        addr.first_name = saved.get("first_name") or addr.first_name
+                        addr.last_name = saved.get("last_name") or addr.last_name
+                        addr.address_line1 = saved.get("address_1") or addr.address_line1
+                        addr.city = saved.get("city") or addr.city
+                        addr.state = saved.get("state") or addr.state
+                        addr.postcode = saved.get("postcode") or addr.postcode
+                        addr.email = saved.get("email") or addr.email
+                        
+                        # Go directly to confirming with saved address
+                        next_state = AddressCollectionState.CONFIRMING
+                        response = (
+                            f"I found a saved address: {addr.address_line1}, {addr.city} {addr.postcode}. "
+                            f"Shall I use this? (yes/no)"
+                        )
+                        ui_actions.append({"type": "prefill_address", "payload": addr.to_woocommerce_format()})
+                        return response, next_state, addr.__dict__, ui_actions
+                except Exception as e:
+                    # If lookup fails, continue with normal flow
+                    pass
+            
+            # Normal flow: continue to email or skip if checkout
+            if is_checkout:
+                # On checkout, skip email and go to confirm
+                next_state = AddressCollectionState.CONFIRMING
+                response = lang_prompts["confirm"].format(
+                    name=f"{addr.first_name} {addr.last_name}".strip(),
+                    address=addr.address_line1,
+                    city=addr.city,
+                    pincode=addr.postcode,
+                    phone=addr.phone,
+                    email=addr.email or "not provided",
+                )
+                ui_actions.append({"type": "prefill_address", "payload": addr.to_woocommerce_format()})
+            else:
+                next_state = AddressCollectionState.COLLECTING_EMAIL
+                response = lang_prompts["email"]
         else:
             response = "I need a 10-digit phone number. Could you say it again?"
 
@@ -221,6 +273,18 @@ async def handle_address_collection(
                     "shipping": addr.to_woocommerce_format(),
                 },
             })
+            # Save address for future lookups
+            if tenant_id:
+                try:
+                    from ...modules.users.address_service import save_address
+                    await save_address(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        phone=addr.phone,
+                        address_data=addr.to_woocommerce_format(),
+                    )
+                except Exception:
+                    pass
         else:
             next_state = AddressCollectionState.COLLECTING_NAME
             response = "No problem, let's start over. " + lang_prompts["name"]

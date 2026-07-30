@@ -59,10 +59,12 @@ from .fast_intent import (
     run_fast_intent,
     handle_product_discovery,
     handle_buy_intent,
+    handle_buy_now,
     handle_availability,
     handle_compare,
     handle_order_tracking,
     handle_add_to_cart,
+    handle_pdp_auto_tour,
 )
 from .llm_loop import run_llm_agent, retry_with_stricter_prompt
 from .text_utils import (
@@ -71,6 +73,7 @@ from .text_utils import (
     has_store_info_intent, has_shipping_intent, has_returns_intent,
     has_payment_intent, has_cart_view_intent, has_cart_nav_intent, has_remove_intent,
     has_add_intent, has_clear_cart_intent, has_quantity_intent,
+    has_buy_now_intent,
     append_live_navigation, client_platform,
 )
 
@@ -492,6 +495,41 @@ async def ask_brain(
         except Exception as e:
             logger.warning("Failed to prepend current product to view_history: %s", e)
 
+    # Auto-tour: first visit to this PDP in session
+    if current_pid and isinstance(session_meta, dict):
+        toured = session_meta.get("_pdp_auto_toured", {})
+        if not toured.get(str(current_pid)):
+            try:
+                auto_tour_result = await handle_pdp_auto_tour(
+                    page_context=page_context,
+                    store_client=store_client,
+                    session_service=session_service,
+                )
+                if auto_tour_result:
+                    # Mark as toured so we don't repeat
+                    toured[str(current_pid)] = True
+                    session_meta["_pdp_auto_toured"] = toured
+                    # Persist updated meta
+                    await session_service.save_meta(
+                        tenant_id, session_id, session_meta
+                    )
+                    # Return early — auto-tour is the response
+                    speech_text = make_speech_friendly(
+                        auto_tour_result.get("response_text", ""), language
+                    )
+                    return {
+                        "session_id": session_id,
+                        "text": auto_tour_result.get("response_text", ""),
+                        "response_text": auto_tour_result.get("response_text", ""),
+                        "speech_text": speech_text,
+                        "language": language,
+                        "ui_actions": auto_tour_result.get("ui_actions", []),
+                        "actions": auto_tour_result.get("ui_actions", []),
+                        "suggested_replies": auto_tour_result.get("suggested_replies", []),
+                    }
+            except Exception as e:
+                logger.warning("PDP auto-tour failed: %s", e)
+
     logger.info("[TRACE] Step2 classify: intent=%s conf=%.2f via=%s detected_lang=%s",
         intent_result.intent, intent_result.confidence, intent_result.via, detected_lang)
     _names = [p.get("name","?")[:40] for p in (last_products or []) if isinstance(p, dict)][:3]
@@ -730,6 +768,16 @@ async def ask_brain(
                 )
             except Exception as exc:
                 logger.warning("handle_add_to_cart failed: %s", exc)
+
+        if result is None and has_buy_now_intent(lower_msg):
+            try:
+                result = await handle_buy_now(
+                    cleaned_message, lower_msg, session_id, active_recommendations, lang,
+                    page_context=page_context,
+                    store_client=store_client,
+                )
+            except Exception as exc:
+                logger.warning("handle_buy_now failed: %s", exc)
 
     logger.info("[FLOW] brain step5 result_pre_llm=%s session=%s", "cached" if result else "None", session_id)
 

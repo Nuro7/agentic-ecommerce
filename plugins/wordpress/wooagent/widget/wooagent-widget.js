@@ -64,7 +64,12 @@
     // Restore conversation so chat doesn't reset on page nav
     conversation: (() => { try { return JSON.parse(localStorage.getItem('_wa_conv') || '[]'); } catch(e) { return []; } })(),
     greeted: localStorage.getItem('_wa_greeted') === '1',
+    micPermissionAsked: localStorage.getItem('_wa_mic_perm_asked') === '1',
+    micPermissionGranted: false,
   };
+
+  // ── Pending navigation queue — redirected only after TTS finishes ──────────
+  let _pendingNavigation = null;
 
   // ── Primary-colour shades, precomputed in JS ────────────────────────────────
   // The core tokens used to rely on CSS color-mix(), which is unsupported in older
@@ -1158,6 +1163,30 @@
       0% { box-shadow: 0 0 0 0 rgba(52,211,153,0.6), 0 8px 28px rgba(0,0,0,0.5); }
       100% { box-shadow: 0 0 0 12px rgba(52,211,153,0), 0 8px 28px rgba(0,0,0,0.5); }
     }
+    .wa-voice-pill {
+      position: fixed;
+      bottom: 80px; right: 24px;
+      background: var(--bg1);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 6px 14px;
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13px; color: var(--text);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+      z-index: 2147483646;
+      animation: wa-in .3s ease-out;
+      pointer-events: none;
+    }
+    .wa-voice-pill .wa-voice-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      animation: wa-voice-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes wa-voice-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.8); }
+    }
 
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
@@ -1165,8 +1194,135 @@
         transition-duration:0.01ms !important;
       }
     }
+
+    .wa-mic-banner {
+      position: fixed; bottom: 94px; left: 50%; transform: translateX(-50%);
+      background: var(--bg1); border: 1px solid var(--line);
+      border-radius: var(--r-lg); padding: 12px 16px;
+      display: flex; align-items: center; gap: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.15); z-index: 2147483647;
+      animation: wa-in .3s ease-out;
+    }
+    .wa-mic-banner .wa-mic-icon { font-size: 20px; }
+    .wa-mic-banner .wa-mic-text { flex: 1; font-size: 14px; color: var(--text); }
+    .wa-mic-btn { background: var(--p); color: var(--bg0); border: none; border-radius: var(--r-sm); padding: 8px 16px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+
+    .wa-card.is-selected {
+      box-shadow: 0 0 0 3px var(--p), 0 14px 36px rgba(0,0,0,0.2);
+      transform: translateY(-4px) scale(1.02);
+    }
+    .wa-card.highlight-pulse {
+      animation: wa-highlight-pulse 1.5s ease-out;
+    }
+    @keyframes wa-highlight-pulse {
+      0% { box-shadow: 0 0 0 0 var(--p); }
+      50% { box-shadow: 0 0 0 8px var(--p-md); }
+      100% { box-shadow: 0 0 0 3px var(--p); }
+    }
   `;
   shadow.appendChild(css);
+
+  // ── Global (light-DOM) styles for in-page product shelf ─────────────
+  const globalCss = document.createElement('style');
+  globalCss.textContent = `
+    .wa-inpage-shelf {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: #fff; border-top: 1px solid #e5e7eb;
+      box-shadow: 0 -8px 32px rgba(0,0,0,0.12);
+      z-index: 2147483645;
+      padding: 12px 16px 20px;
+      display: flex; flex-direction: column;
+      animation: wa-inpage-slide-up 0.35s ease-out;
+      font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+    }
+    .wa-inpage-shelf.dark { background: #1a1a2e; border-color: #2d2d44; }
+    .wa-inpage-shelf .wa-inpage-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    .wa-inpage-shelf .wa-inpage-title {
+      font-size: 14px; font-weight: 600; color: #111;
+    }
+    .wa-inpage-shelf.dark .wa-inpage-title { color: #f0f0f8; }
+    .wa-inpage-shelf .wa-inpage-close {
+      background: none; border: none; font-size: 20px; cursor: pointer;
+      color: #666; padding: 0 4px; line-height: 1;
+    }
+    .wa-inpage-shelf.dark .wa-inpage-close { color: #999; }
+    .wa-inpage-shelf .wa-inpage-scroll {
+      display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px;
+      scroll-snap-type: x mandatory;
+    }
+    .wa-inpage-shelf .wa-inpage-scroll::-webkit-scrollbar { height: 4px; }
+    .wa-inpage-shelf .wa-inpage-scroll::-webkit-scrollbar-thumb { background: #ccc; border-radius: 4px; }
+    .wa-inpage-card {
+      flex: 0 0 200px; scroll-snap-align: start;
+      background: #f9f9fb; border-radius: 12px; overflow: hidden;
+      border: 1px solid #e5e7eb;
+      display: flex; flex-direction: column;
+      transition: transform 0.2s, box-shadow 0.2s;
+      cursor: pointer;
+    }
+    .wa-inpage-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+    .wa-inpage-shelf.dark .wa-inpage-card { background: #242438; border-color: #2d2d44; }
+    .wa-inpage-card .wa-inpage-card-img {
+      width: 100%; height: 140px; object-fit: cover; background: #eee;
+    }
+    .wa-inpage-card .wa-inpage-card-body {
+      padding: 8px 10px 10px; display: flex; flex-direction: column; flex: 1;
+    }
+    .wa-inpage-card .wa-inpage-card-name {
+      font-size: 12px; font-weight: 600; color: #111;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      margin-bottom: 2px;
+    }
+    .wa-inpage-shelf.dark .wa-inpage-card-name { color: #f0f0f8; }
+    .wa-inpage-card .wa-inpage-card-price {
+      font-size: 13px; font-weight: 700; color: #059669; margin-bottom: 4px;
+    }
+    .wa-inpage-card .wa-inpage-card-stock {
+      font-size: 10px; color: #6b7280; margin-bottom: 6px;
+    }
+    .wa-inpage-card .wa-inpage-card-stock .wa-stock-dot {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: middle;
+    }
+    .wa-inpage-card .wa-inpage-card-stock .wa-stock-dot.in { background: #34d399; }
+    .wa-inpage-card .wa-inpage-card-stock .wa-stock-dot.low { background: #fbbf24; }
+    .wa-inpage-card .wa-inpage-card-stock .wa-stock-dot.out { background: #f87171; }
+    .wa-inpage-card .wa-inpage-card-add {
+      margin-top: auto; width: 100%; padding: 6px; border: none;
+      border-radius: 8px; background: #6366f1; color: #fff;
+      font-size: 11px; font-weight: 600; cursor: pointer;
+      transition: background 0.15s;
+    }
+    .wa-inpage-card .wa-inpage-card-add:hover { background: #4f46e5; }
+    .wa-inpage-card .wa-inpage-card-add:disabled { background: #9ca3af; cursor: not-allowed; }
+    .wa-inpage-card .wa-ai-top-pick {
+      position: relative; top: 0; left: 0;
+      background: linear-gradient(135deg,#6366f1,#8b5cf6);
+      color: #fff; font-size: 9px; font-weight: 700;
+      padding: 3px 10px; border-radius: 0 0 8px 0;
+      display: inline-block; letter-spacing: 0.3px;
+      z-index: 1;
+    }
+    .wa-inpage-card.is-selected {
+      box-shadow: 0 0 0 3px #6366f1, 0 14px 36px rgba(0,0,0,0.2);
+      transform: translateY(-4px) scale(1.02);
+    }
+    .wa-inpage-card.highlight-pulse {
+      animation: wa-inpage-pulse 1.5s ease-out;
+    }
+    @keyframes wa-inpage-slide-up {
+      from { transform: translateY(100%); opacity: 0; }
+      to   { transform: translateY(0);    opacity: 1; }
+    }
+    @keyframes wa-inpage-pulse {
+      0% { box-shadow: 0 0 0 0 #6366f1; }
+      50% { box-shadow: 0 0 0 8px rgba(99,102,241,0.28); }
+      100% { box-shadow: 0 0 0 3px #6366f1; }
+    }
+  `;
+  document.head.appendChild(globalCss);
 
   const root = document.createElement('div');
   root.className = 'wa';
@@ -1194,6 +1350,10 @@
       </svg>
       <span class="wa-badge" id="wa-badge">0</span>
     </button>
+
+    <div class="wa-voice-pill" id="wa-voice-pill" style="display:none">
+      <span class="wa-voice-dot"></span> Voice Active
+    </div>
 
     <div class="wa-pane" id="wa-pane" role="dialog" aria-label="Shopping Assistant">
 
@@ -1306,6 +1466,7 @@
   const closeBtn = $('wa-close');
   const clearBtn = $('wa-clear');
   const statusTxt = $('wa-status-text');
+  const voicePill = $('wa-voice-pill');
 
   function b64ToObjectUrl(b64, format) {
     try {
@@ -1472,6 +1633,7 @@
   // Initialize state machine properties in S
   S.menuOpen = false;
   S.mode = 'idle'; // 'idle', 'chat', 'voice_nav'
+  S.lastShownProduct = null; // {id, handle, name, variation_id, variation} for local voice commands
 
   function toggleMenu() {
     S.menuOpen = !S.menuOpen;
@@ -1512,24 +1674,73 @@
     showToast('🎙️ Voice Navigation Mode Active');
   }
 
-  function resumeVoiceNavMode() {
-    closeMenu();
-    if (S.open) {
-      closePane();
-    }
-    S.mode = 'voice_nav';
-    fab.classList.add('voice-nav-active');
-    showToast('🎙️ Voice Navigation active. Tap anywhere to talk.');
+  let _resumePending = false;
+  let _cleanupResumeGesture = null;
 
-    const resumeGesture = () => {
-      primeAudioEngines();
+  function _clearResumeGesture() {
+    if (_cleanupResumeGesture) {
+      _cleanupResumeGesture();
+      _cleanupResumeGesture = null;
+    }
+  }
+
+  function resumeVoiceNavMode(autoStart) {
+    closeMenu();
+    if (S.open) closePane();
+    S.mode = 'voice_nav';
+    _resumePending = true;
+    fab.classList.add('voice-nav-active');
+    primeAudioEngines();
+
+    if (autoStart) {
+      // Called after a redirect — skip tap gesture, start mic immediately
+      _resumePending = false;
       startLiveMode();
+      showToast('🎙️ Voice Navigation resumed.');
+      return;
+    }
+
+    showToast('🎙️ Tap to continue voice control.');
+    const resumeGesture = () => {
+      if (!_resumePending) return;
+      _resumePending = false;
+      startLiveMode();
+      _clearResumeGesture();
+    };
+    _cleanupResumeGesture = () => {
       document.body.removeEventListener('click', resumeGesture);
       document.body.removeEventListener('touchend', resumeGesture);
     };
-
     document.body.addEventListener('click', resumeGesture);
     document.body.addEventListener('touchend', resumeGesture, { passive: true });
+
+    _tryAutoStartMic().then(ok => {
+      if (ok) {
+        _resumePending = false;
+        _clearResumeGesture();
+        showToast('🎙️ Voice Navigation active.');
+      }
+    });
+
+    setTimeout(() => {
+      if (_resumePending) {
+        _resumePending = false;
+        _clearResumeGesture();
+      }
+    }, 30000);
+  }
+
+  async function _tryAutoStartMic() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 }
+      });
+      stream.getTracks().forEach(t => t.stop());
+      startLiveMode();
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function stopVoiceNavMode() {
@@ -1540,14 +1751,15 @@
   }
 
   fab.addEventListener('click', () => {
-    if (S.open) {
-      closePane();
+    if (S.open) { closePane(); return; }
+    if (_resumePending) {
+      _resumePending = false;
+      _clearResumeGesture();
+      startLiveMode();
+      showToast('🎙️ Voice Navigation active.');
       return;
     }
-    if (S.mode === 'voice_nav') {
-      stopVoiceNavMode();
-      return;
-    }
+    if (S.mode === 'voice_nav') { stopVoiceNavMode(); return; }
     toggleMenu();
   });
 
@@ -1634,6 +1846,11 @@
   }
 
   function openPane() {
+    if (_voiceOnlyMode) {
+      _voiceOnlyMode = false;
+      voicePill.style.display = 'none';
+      fab.classList.remove('voice-nav-active');
+    }
     primeAudioEngines();
     S.open = true;
     pane.classList.add('open');
@@ -1690,15 +1907,22 @@
     }
     setStatus('Connecting...');
     try {
+      for (let i = 0; i < 5; i++) {
+        if (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') break;
+        await new Promise(r => setTimeout(r, 100));
+      }
       const r = await api('/greet', {
         session_id: S.sessionId,
         store_name: CFG.store_name,
         language: S.language,
+        cart_context: (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') ? S.cartSnapshot : null,
         current_page: {
           url: location.href,
           title: document.title,
-          product_id: detectProductId(),
-          product_name: detectProductName()
+          product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
+          product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
+          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+          variant_id: detectActiveVariantId()
         }
       });
 
@@ -1913,6 +2137,7 @@
       orb.classList.remove('recording');
       orbHint.innerHTML = isLiveMode ? '<strong>Tap to speak</strong> · tap again to stop' : '<strong>Tap to speak</strong> · or type below';
       console.warn('[WooAgent] Mic error:', err && err.name, err);
+      if (_resumePending) { _resumePending = false; return; } // silent fail during auto-resume
       let errMsg = '';
       if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')) {
         errMsg = 'Mic access was denied. Please allow microphone access in your browser settings, then try again.';
@@ -1927,7 +2152,7 @@
       }
       if (S.open) {
         addBubble('bot', errMsg);
-      } else {
+      } else if (!_resumePending) {
         showToast('❌ ' + errMsg);
       }
     } finally {
@@ -2135,6 +2360,9 @@
   async function sendToAgent(message) {
     if (S.loading) return;
     clearSuggestions();
+    // ── Local voice command intercept (text/push-to-talk) ────────────────
+    // For ALL basic commands, handle frontend-only without backend round trip.
+    if (handleLocalVoiceCommand(message)) return;
     // Clear live transcript pill — agent is now processing
     if (livePill) { livePill.classList.remove('active'); livePill.innerHTML = ''; }
 
@@ -2168,8 +2396,10 @@
         current_page: {
           url: location.href,
           title: document.title,
-          product_id: detectProductId(),
-          product_name: detectProductName()
+          product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
+          product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
+          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+          variant_id: detectActiveVariantId()
         }
       };
 
@@ -2289,26 +2519,70 @@
   }
 
   async function processAction(act) {
+    // In voice-nav mode with panel closed, skip DOM-rendering actions
+    const isHidden = S.mode === 'voice_nav' && !S.open;
     switch (act.type) {
-      case 'show_products':
-        renderProducts((act.payload && act.payload.products) || []);
+      case 'show_products': {
+        const _products = (act.payload && act.payload.products) || [];
+        // In voice-only mode, inject floating shelf on document.body (light DOM)
+        if (_voiceOnlyMode) {
+          _injectInPageCards(_products);
+        } else if (!isHidden) {
+          renderProducts(_products);
+        }
+        // Remember for sessionStorage persistence on redirect
+        window._wa_lastProducts = _products;
         break;
+      }
 
-      case 'show_product_detail':
-        if (act.payload && act.payload.product) renderProducts([act.payload.product]);
+      case 'show_product_detail': {
+        if (isHidden) break;
+        const _prod = act.payload && act.payload.product;
+        if (_prod) {
+          S.lastShownProduct = { id: _prod.id || _prod.product_id, handle: _extractHandle(_prod), name: _prod.name, variation_id: null, variation: {} };
+          renderProducts([_prod]);
+        }
         break;
+      }
 
       case 'add_to_cart':
-        if (act.payload && act.payload.product_id) {
-          // The backend emits add_to_cart as a CLIENT-SIDE action (it never adds
-          // server-side). The widget must perform the real add so the item lands
-          // in the customer's actual cart — on Shopify via the native AJAX cart,
-          // on WooCommerce via the WP REST bridge. (Previously the Shopify branch
-          // trusted a payload.cart that was never sent → nothing was added.)
+        const variationId = act.payload ? parseInt(act.payload.variant_id || act.payload.variation_id, 10) || 0 : 0;
+        const productId = act.payload && act.payload.product_id ? parseInt(act.payload.product_id, 10) : 0;
+        const quantity = Math.max(1, parseInt(act.payload.quantity, 10) || 1);
+        
+        const addId = variationId > 0 ? variationId : productId;
+        
+        if (addId > 0) {
+          console.log('[WooAgent A2C] Native AJAX add:', { productId, variationId, quantity, addId });
           try {
-            await addToCartDispatch(act.payload);
+            const addRes = await fetch('/cart/add.js', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({
+                id: addId,
+                quantity: quantity,
+              }),
+            });
+            if (!addRes.ok) {
+              let errMsg = 'Add to cart failed';
+              try { const e = await addRes.json(); errMsg = e.description || e.message || errMsg; } catch (_) {}
+              throw new Error(errMsg);
+            }
+            // Wait for add.js to settle, then refresh cart before opening drawer
+            await new Promise(r => setTimeout(r, 300));
+            await fetchCartShopify(false);
+            const cartDrawer = document.querySelector('cart-drawer') || document.querySelector('cart-drawer-component') || document.querySelector('[data-cart-drawer]');
+            if (cartDrawer) {
+              const openEvent = new CustomEvent('cart:build', { detail: { cart: S.cartSnapshot } });
+              document.dispatchEvent(openEvent);
+              if (typeof cartDrawer.open === 'boolean') cartDrawer.open = true;
+            }
+            const drawerEl = document.querySelector('.cart-drawer');
+            if (drawerEl) drawerEl.classList.add('active');
+            showToast('Added to cart!');
           } catch (error) {
             const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
+            console.error('[WooAgent A2C] add-to-cart failed:', message);
             addBubble('bot', message);
             showToast(message);
           }
@@ -2316,31 +2590,86 @@
         break;
 
       case 'remove_from_cart':
-        if (act.payload && act.payload.cart_item_key) {
-          // Like add, the backend remove is client-side only — perform the real
-          // removal so the customer's actual cart changes.
-          try {
-            if (IS_SHOPIFY) {
-              await removeFromCartShopify(act.payload.cart_item_key);
-            } else {
-              await removeFromCartViaWoo(act.payload.cart_item_key);
-            }
-          } catch (error) {
-            showToast('Could not remove item from cart.');
+        try {
+          let itemKey = act.payload && act.payload.cart_item_key;
+          if (!itemKey && act.payload && act.payload.product_id) {
+            // Backend sent product_id (from Storefront API) — match against
+            // our local /cart.js snapshot to get the correct change.js key.
+            const snap = S.cartSnapshot || {};
+            const snapItems = snap.items || [];
+            const pid = parseInt(act.payload.product_id, 10);
+            const match = snapItems.find(i => {
+              const ip = i.product_id || (i.product && i.product.id) || 0;
+              return parseInt(ip, 10) === pid;
+            });
+            if (match) itemKey = match.key || match.variant_id;
           }
+          if (!itemKey) {
+            // Fallback: no key or product_id in payload — remove last item
+            const snap = S.cartSnapshot || {};
+            const snapItems = snap.items || [];
+            if (snapItems.length) itemKey = snapItems[snapItems.length - 1].key;
+          }
+          if (itemKey) {
+            if (IS_SHOPIFY) {
+              await removeFromCartShopify(itemKey);
+            } else {
+              await removeFromCartViaWoo(itemKey);
+            }
+          }
+        } catch (error) {
+          showToast('Could not remove item from cart.');
         }
         break;
 
+      case 'mutate_cart': {
+        const mc = act.payload || {};
+        const mcKey = String(mc.cart_item_key || mc.key || '');
+        const mcQty = parseInt(mc.quantity, 10);
+        if (mcKey && Number.isInteger(mcQty) && mcQty >= 0) {
+          try {
+            if (IS_SHOPIFY) {
+              const res = await fetch('/cart/change.js', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                body: JSON.stringify({ id: mcKey, quantity: mcQty }),
+              });
+              if (!res.ok) throw new Error('mutate failed (' + res.status + ')');
+              await fetchCartShopify();
+            } else {
+              const endpoint = String(CFG.rest_url || '').replace(/\/$/, '') + '/cart/update';
+              const body = { session_id: S.sessionId, cart_item_key: mcKey, quantity: mcQty, nonce: CFG.nonce || '' };
+              const res = await fetch(endpoint, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+              if (!res.ok) throw new Error('mutate failed (' + res.status + ')');
+            }
+            if (mcQty === 0) showToast('🗑️ Removed from cart'); else showToast('✅ Quantity updated');
+          } catch (error) {
+            showToast('Could not update cart.');
+          }
+        }
+        break;
+      }
+
       case 'cart_updated': {
         const c = act.payload || {};
-        const cnt = c.cart_count || c.item_count || (c.cart && (c.cart.item_count || c.cart.count)) || 0;
+        const cart = c.cart || {};
+        const cnt = c.cart_count || c.item_count || cart.item_count || cart.totalQuantity || 0;
         updateBadge(cnt);
-        if (c.message) showToast('🛒 ' + c.message);
+        if (cart.checkout_url) S.checkoutUrl = cart.checkout_url;
+        S.cartSnapshot = cart;
+        try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cart)); } catch (e) {}
+        _sendCartUpdateToA2A();
+        if (c.product_id) {
+          showToast('Added to cart!');
+        } else if (c.message) {
+          showToast(c.message);
+        }
         if (window.jQuery) {
           window.jQuery(document.body).trigger('wc_fragment_refresh');
           window.jQuery(document.body).trigger('update_checkout');
         }
-        if (window.location.pathname.includes('/cart') || window.location.pathname.includes('/checkout')) {
+        if (window.location.pathname.includes('/cart') && !window.location.pathname.includes('/checkout')) {
           setTimeout(() => {
             window.location.reload();
           }, 1500);
@@ -2349,36 +2678,54 @@
       }
 
       case 'show_cart':
+        if (isHidden) break;
         // Shopify: render the REAL cart (/cart.js), not the backend's payload —
         // post-unification the authoritative cart lives in the storefront, so the
         // backend's cart snapshot can be stale/empty.
         if (IS_SHOPIFY) {
           await fetchCart();
         } else {
-          if (act.payload && act.payload.cart) S.cartSnapshot = act.payload.cart;
+          if (act.payload && act.payload.cart) { S.cartSnapshot = act.payload.cart; _sendCartUpdateToA2A(); }
           renderCart(act.payload && act.payload.cart);
         }
         break;
 
       case 'show_orders':
+        if (isHidden) break;
         renderOrders((act.payload && act.payload.orders) || []);
         break;
 
       case 'show_comparison':
+        if (isHidden) break;
         renderComparison((act.payload && act.payload.items) || []);
         break;
 
       case 'show_variants':
+        if (isHidden) break;
         if (act.payload && act.payload.variations) {
           renderVariantSelector(act.payload);
         }
         break;
 
+      case 'show_variant_picker': {
+        if (isHidden) break;
+        const pickerPayload = act.payload || {};
+        const pickerProductId = pickerPayload.product_id;
+        if (pickerProductId) {
+          const variantPicker = document.querySelector('.variant-picker, .product-variant-selector, [data-variant-selector], .product__form .variant-selector, .product-form .swatch-wrapper, .product-form select, form[action*="cart/add"] select');
+          if (variantPicker) {
+            variantPicker.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            window.scrollBy({ top: -80, behavior: 'instant' });
+          }
+        }
+        break;
+      }
+
       case 'show_availability': {
+        if (isHidden) break;
         const prod = (act.payload && act.payload.product) || {};
         const inv = (act.payload && act.payload.inventory) || {};
         if (prod && prod.id) {
-          // Merge precise inventory data into product so the card renders correct stock status
           renderProducts([{
             ...prod,
             stock_status: inv.in_stock ? 'instock' : 'outofstock',
@@ -2389,6 +2736,7 @@
       }
 
       case 'show_reviews':
+        if (isHidden) break;
         renderReviews(act.payload || {});
         break;
 
@@ -2404,6 +2752,40 @@
         // No addBubble here — would duplicate LLM's response
         break;
 
+      case 'apply_discount_code':
+        if (act.payload && act.payload.code && IS_SHOPIFY) {
+          const code = String(act.payload.code).trim();
+          try {
+            const res = await fetch('/cart/update.js', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ discount: code }),
+            });
+            if (res.ok) {
+              showToast(`✅ Discount ${code} applied!`);
+              await fetchCartShopify();
+              const cartDrawer = document.querySelector('cart-drawer') || document.querySelector('cart-drawer-component') || document.querySelector('[data-cart-drawer]');
+              if (cartDrawer) {
+                const openEvent = new CustomEvent('cart:build', { detail: { cart: S.cartSnapshot } });
+                document.dispatchEvent(openEvent);
+                if (typeof cartDrawer.open === 'boolean') cartDrawer.open = true;
+              }
+              const drawerEl = document.querySelector('.cart-drawer');
+              if (drawerEl) drawerEl.classList.add('active');
+            } else {
+              let errMsg = 'Failed to apply discount';
+              try { const e = await res.json(); errMsg = e.description || e.message || errMsg; } catch (_) {}
+              showToast(errMsg);
+            }
+          } catch (error) {
+            showToast('Could not apply discount code.');
+          }
+        } else if (act.payload && act.payload.code) {
+          showToast(`✅ Coupon ${act.payload.code} applied at checkout!`);
+        }
+        break;
+
       case 'coupon_applied':
         showToast(`🏷️ ${act.payload.code} applied — ${act.payload.discount}`);
         break;
@@ -2415,6 +2797,10 @@
           type: 'wooagent_prefill_address',
           payload: act.payload
         }, '*');
+        // Scroll to payment section after a short delay to allow fields to populate
+        setTimeout(() => {
+          scrollToPaymentSection();
+        }, 1000);
         break;
 
       case 'redirect_checkout_with_address':
@@ -2502,7 +2888,18 @@
             targetUrl = parsed.pathname + parsed.search + parsed.hash;
           }
         } catch (e) {}
+        // Save in-page products and voice state to sessionStorage for restore after navigation
+        try {
+          if (window._wa_lastProducts && Array.isArray(window._wa_lastProducts) && window._wa_lastProducts.length) {
+            sessionStorage.setItem('_wa_inpage_products', JSON.stringify(window._wa_lastProducts));
+          }
+          if (_voiceOnlyMode || S.mode === 'voice_nav') {
+            sessionStorage.setItem('_wa_voice_nav_resume_session', '1');
+          }
+        } catch (e) {}
+
         const performRedirect = () => {
+          _pendingNavigation = null;
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
             goToCheckout();
           } else {
@@ -2510,21 +2907,106 @@
           }
         };
 
-        const checkAndRedirect = () => {
-          if (S.speaking) {
-            setTimeout(checkAndRedirect, 100);
-          } else {
-            performRedirect();
-          }
-        };
+        _pendingNavigation = performRedirect;
+        if (!S.speaking && !a2aIsPlaying) {
+          setTimeout(performRedirect, p.delay_ms || 800);
+        }
+        break;
+      }
 
-        setTimeout(checkAndRedirect, p.delay_ms || 800);
+      case 'highlight_card': {
+        const hc = act.payload || {};
+        const idx = parseInt(hc.target_index !== undefined ? hc.target_index : hc.index, 10);
+        const cards = document.querySelectorAll('.speako-product-card, .wa-inpage-card, [data-product-card], .product-card, .product-item, .wa-card');
+        if (Number.isInteger(idx) && idx >= 0 && idx < cards.length) {
+          const target = cards[idx];
+          cards.forEach(c => c.classList.remove('is-selected', 'highlight-pulse'));
+          target.classList.add('is-selected', 'highlight-pulse');
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          window.scrollBy({ top: -80, behavior: 'instant' });
+          setTimeout(() => target.classList.remove('highlight-pulse'), 1500);
+        }
+        break;
+      }
+
+      case 'scroll_to': {
+        const st = act.payload || {};
+        const sel = st.selector || '';
+        if (sel) {
+          const el = document.querySelector(sel);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('speako-highlighted');
+            setTimeout(() => el.classList.remove('speako-highlighted'), 3000);
+          }
+        }
         break;
       }
 
       case 'show_store_info':
+        if (isHidden) break;
         renderStoreInfo(act.payload || {});
         break;
+
+      case 'store_event': {
+        // Generic store event dispatch — lets Speako trigger ANY store UI action
+        // by firing a custom DOM event that the store theme or an app listens for.
+        // Built-in Shopify events handled directly:
+        const ev = act.payload || {};
+        const eventName = ev.event || '';
+        const detail = ev.detail || {};
+
+        if (eventName === 'speako:open_cart_drawer') {
+          // Shopify cart drawer — try common theme selectors
+          const drawers = [
+            document.querySelector('[data-cart-drawer-toggle]'),
+            document.querySelector('[data-cart-toggle]'),
+            document.querySelector('.cart-drawer__toggle'),
+            document.querySelector('.js-cart-drawer-trigger'),
+            document.querySelector('.header__icon--cart'),
+            document.querySelector('a[href="/cart"]'),
+          ];
+          for (const btn of drawers) {
+            if (btn) { btn.click(); break; }
+          }
+        } else if (eventName === 'speako:open_product_modal') {
+          // Open product quick-view / modal on the current page
+          const pid = detail.product_id;
+          const triggers = [
+            document.querySelector(`[data-product-id="${pid}"] [data-quick-view]`),
+            document.querySelector(`[data-product-id="${pid}"] .quick-view`),
+            document.querySelector(`a[href*="/products/"][data-modal]`),
+          ];
+          for (const el of triggers) {
+            if (el) { el.click(); break; }
+          }
+        } else if (eventName === 'speako:select_variant') {
+          // Select a specific variant option on the product page
+          const opts = detail.options || {};
+          for (const [label, value] of Object.entries(opts)) {
+            const radios = document.querySelectorAll(
+              `[data-option-value]:not(.hidden):not([disabled])`
+            );
+            for (const radio of radios) {
+              if (radio.textContent.trim().toLowerCase() === String(value).toLowerCase()) {
+                radio.click();
+                break;
+              }
+            }
+          }
+        } else if (eventName === 'speako:scroll_to') {
+          // Scroll to a specific section (e.g., reviews, description)
+          const target = detail.selector || '';
+          if (target) {
+            const el = document.querySelector(target);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }
+
+        // Always dispatch as custom event for merchant-installed listeners
+        window.dispatchEvent(new CustomEvent(eventName, { detail }));
+        break;
+      }
     }
   }
 
@@ -2584,6 +3066,7 @@
       };
       S.cartSnapshot = cartNorm;
       try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cartNorm)); } catch (e) {}
+      _sendCartUpdateToA2A();
       updateBadge(itemCount);
       renderCart({ is_empty: !itemCount, item_count: itemCount, total: cartNorm.total, items: cartNorm.items });
     } else {
@@ -2664,20 +3147,173 @@
     }
   }
 
+  function speakLocal(text) {
+    if (S.muted || !window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = S.language || 'en';
+    u.rate = 1.0;
+    speechSynthesis.speak(u);
+  }
+
+  function handleLocalVoiceCommand(text) {
+    const t = text.trim();
+    if (!t || t.length > 120) return false;
+    // Add to cart — either /cart/add.js (Shopify) or REST (WooCommerce)
+    // Matches: "add to cart", "add this to cart", "put it in cart", "buy this", etc.
+    if (/(add|put)\s+(?:(?:this|it|that)\s+)?(to|in)\s+(?:my\s+)?(cart|bag)$/i.test(t) ||
+        /^buy\s+(?:this|it|that)$/i.test(t)) {
+      const last = S.lastShownProduct;
+      console.log('[WooAgent A2C] Local command matched:', t, 'lastShownProduct:', last);
+      if (!last || !last.id) {
+        console.warn('[WooAgent A2C] No lastShownProduct — falling through to brain path');
+        return false;
+      }
+      S._localAddHandled = Date.now();
+      const payload = {
+        product_id: last.id,
+        variation_id: last.variation_id || 0,
+        variation: last.variation || {},
+        handle: last.handle || '',
+        quantity: 1
+      };
+      console.log('[WooAgent A2C] Dispatching local add-to-cart:', payload);
+      addToCartDispatch(payload).then(() => {
+        console.log('[WooAgent A2C] Local add-to-cart succeeded');
+        speakLocal('Added to cart');
+        showToast('🛒 Added to cart');
+      }).catch(e => {
+        S._localAddHandled = 0;
+        console.error('[WooAgent A2C] Local add-to-cart failed:', e.message);
+        showToast(String(e.message || 'Add to cart failed'));
+      });
+      return true;
+    }
+    // Remove from cart
+    if (/(remove|delete|take)\s+(this|it|that)\s+(from|out\s+of)\s+(my\s+)?(cart|bag)/i.test(t) ||
+        /^remove\s+(this|it)/i.test(t)) {
+      if (S.cartSnapshot && Array.isArray(S.cartSnapshot.items) && S.cartSnapshot.items.length) {
+        const lastItem = S.cartSnapshot.items[S.cartSnapshot.items.length - 1];
+        if (lastItem && lastItem.cart_item_key) {
+          (IS_SHOPIFY ? removeFromCartShopify(lastItem.cart_item_key) : removeFromCartViaWoo(lastItem.cart_item_key))
+            .then(() => speakLocal('Removed from cart'))
+            .catch(e => showToast(String(e.message || 'Remove failed')));
+          return true;
+        }
+      }
+      showToast('No item to remove');
+      return true;
+    }
+    // Go to home
+    if (/^(go\s+to\s+)?(home|homepage|home\s+page)$/i.test(t)) {
+      window.location.href = '/';
+      return true;
+    }
+    // Go to cart
+    if (/^(go\s+to|show|view|open)\s+(my\s+)?cart$/i.test(t)) {
+      window.location.href = '/cart';
+      return true;
+    }
+    // Checkout
+    if (/^(go\s+to\s+)?(checkout|check\s*out)$/i.test(t) || /^buy\s+now$/i.test(t)) {
+      goToCheckout();
+      return true;
+    }
+    // Search — only exact match patterns, no conversational ambiguitiy
+    const sm = t.match(/^search\s+(for\s+)?(.+)/i);
+    if (sm && sm[2]) {
+      window.location.href = '/search?q=' + encodeURIComponent(sm[2].trim());
+      return true;
+    }
+    // ── Scroll commands ──────────────────────────────────────────────────
+    // Scroll down
+    if (/^(scroll\s+)?down$/i.test(t) || /^scroll\s+downwards?$/i.test(t)) {
+      window.scrollBy({ top: window.innerHeight * 0.7, behavior: 'smooth' });
+      speakLocal('Scrolling down'); return true;
+    }
+    // Scroll up
+    if (/^(scroll\s+)?up$/i.test(t) || /^scroll\s+upwards?$/i.test(t)) {
+      window.scrollBy({ top: -window.innerHeight * 0.7, behavior: 'smooth' });
+      speakLocal('Scrolling up'); return true;
+    }
+    // Scroll to bottom
+    if (/^(scroll\s+to\s+)?bottom$/i.test(t)) {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      speakLocal('Going to bottom'); return true;
+    }
+    // Scroll to top
+    if (/^(scroll\s+to\s+)?top$/i.test(t)) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      speakLocal('Going to top'); return true;
+    }
+    // Scroll to section
+    const sectionMatch = t.match(/^(?:scroll\s+to\s+|go\s+to\s+|show\s+)(reviews|description|footer|header|products?|grid|related|size|shipping|policy|variant.?picker|variant.?pick)/i);
+    if (sectionMatch) {
+      const SECTION_MAP = {
+        reviews: '#shopify-product-reviews, #product-reviews, [data-product-reviews], .product-reviews',
+        description: '.product-description, [data-product-description], .product__description, [data-product-description-container]',
+        footer: 'footer, .footer, .site-footer',
+        header: 'header, .header, .site-header',
+        products: '.product-grid, .collection, #collection, .collection-products',
+        grid: '.product-grid, .collection',
+        related: '.related-products, .product-recommendations',
+        size: '.size-chart, [data-size-chart], .product__size-chart',
+        shipping: '.shipping-policy, .shipping-info, .product__shipping',
+        policy: '.return-policy, .privacy-policy, .product__policy',
+        variant_picker: '.product-form, .product__form, [data-product-form], .variant-picker, form[action*="cart/add"]',
+        'variant-pick': '.product-form, .product__form, [data-product-form], .variant-picker, form[action*="cart/add"]',
+      };
+      const selectors = SECTION_MAP[sectionMatch[1].toLowerCase()];
+      if (selectors) {
+        const el = document.querySelector(selectors.split(',')[0].trim());
+        if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); speakLocal('Here you go'); return true; }
+      }
+    }
+    return false;
+  }
+
+  function scrollToPaymentSection() {
+    const paymentSelectors = [
+      '.payment-section', '#payment', '.checkout-payment',
+      '[data-payment]', '.payment-methods', '.payment-options',
+      '.shopify-payment-button', '#checkout-payment',
+      '.wc-block-components-checkout-payment-methods',
+      '#payment_method', '.payment_box', '.woocommerce-checkout-payment',
+    ];
+    for (const sel of paymentSelectors) {
+      const el = document.querySelector(sel);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        window.scrollBy({ top: -80, behavior: 'instant' });
+        return true;
+      }
+    }
+    return false;
+  }
+
   async function resolveShopifyVariantId(payload) {
     // Single-variant products (or cards without a picker) arrive with no variant
     // id. Fetch the product JSON by handle and pick the first available variant.
     const handle = payload && (payload.handle || payload.product_handle);
-    if (!handle) return 0;
+    if (!handle) { console.warn('[WooAgent A2C] resolveShopifyVariantId: no handle'); return 0; }
     try {
-      const res = await fetch('/products/' + encodeURIComponent(handle) + '.js',
+      const url = '/products/' + encodeURIComponent(handle) + '.js';
+      console.log('[WooAgent A2C] resolveShopifyVariantId: fetching', url);
+      const res = await fetch(url,
         { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
-      if (!res.ok) return 0;
+      if (!res.ok) {
+        console.warn('[WooAgent A2C] resolveShopifyVariantId: fetch failed', res.status, res.statusText);
+        return 0;
+      }
       const prod = await _parseJsonSafe(res);
       const variants = (prod && prod.variants) || [];
+      console.log('[WooAgent A2C] resolveShopifyVariantId: found', variants.length, 'variants');
       const avail = variants.find(v => v.available) || variants[0];
-      return avail ? (parseInt(avail.id, 10) || 0) : 0;
+      const vid = avail ? (parseInt(avail.id, 10) || 0) : 0;
+      console.log('[WooAgent A2C] resolveShopifyVariantId: resolved variant id =', vid, avail ? '(available)' : '(unavailable)');
+      return vid;
     } catch (e) {
+      console.warn('[WooAgent A2C] resolveShopifyVariantId: exception:', e);
       return 0;
     }
   }
@@ -2692,6 +3328,7 @@
     const cart = _normalizeShopifyCart(await _parseJsonSafe(res));
     S.cartSnapshot = cart;
     try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cart)); } catch (e) {}
+    _sendCartUpdateToA2A();
     updateBadge(cart.item_count);
     if (!silent) renderCart(cart);
     return cart;
@@ -2699,18 +3336,31 @@
 
   async function addToCartShopify(payload) {
     let variantId = parseInt(payload && (payload.variation_id || payload.variant_id), 10);
+    console.log('[WooAgent A2C] addToCartShopify: payload=', payload, 'explicit variantId=', variantId);
     if (!Number.isInteger(variantId) || variantId <= 0) {
       // No explicit variant: resolve from the handle. Prefer the payload handle,
-      // else the handle we remembered when this product's card was rendered.
+      // else the handle we remembered when this product's card was rendered,
+      // else extract from permalink or current page URL.
       let handle = (payload && (payload.handle || payload.product_handle)) || '';
+      if (!handle && payload && payload.permalink) {
+        const m = String(payload.permalink).match(/\/products\/([^/?#]+)/);
+        handle = m ? m[1] : '';
+      }
       if (!handle && payload && payload.product_id) {
         handle = (S.productHandles || {})[String(payload.product_id)] || '';
       }
+      if (!handle) {
+        const m = location.pathname.match(/\/products\/([^/?#]+)/);
+        handle = m ? m[1] : '';
+      }
+      console.log('[WooAgent A2C] addToCartShopify: resolved handle=', handle);
       variantId = await resolveShopifyVariantId({ handle });
     }
     if (!Number.isInteger(variantId) || variantId <= 0) {
+      console.error('[WooAgent A2C] addToCartShopify: no valid variant — throwing');
       throw new Error('Please choose a product option first.');
     }
+    console.log('[WooAgent A2C] addToCartShopify: POST /cart/add.js variantId=', variantId);
     const res = await fetch('/cart/add.js', {
       method: 'POST',
       credentials: 'same-origin',
@@ -2723,8 +3373,17 @@
     if (!res.ok) {
       let msg = 'Add to cart failed';
       try { const e = await res.json(); msg = e.description || e.message || msg; } catch (_) {}
+      console.error('[WooAgent A2C] addToCartShopify: HTTP', res.status, msg);
+      if (res.status === 422 && geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
+        showToast(`❌ ${msg}`);
+        geminiSocket.send(JSON.stringify({
+          type: 'client.cart_error',
+          payload: { error: msg, variant_id: variantId, product_id: payload.product_id },
+        }));
+      }
       throw new Error(msg);
     }
+    console.log('[WooAgent A2C] addToCartShopify: POST succeeded, refreshing cart');
     // The add already succeeded (res.ok). We don't need the returned line item —
     // we re-read the whole cart next — so DON'T parse the body. Shopify returns it
     // with a non-JSON content-type, and parsing it used to throw a false
@@ -2857,6 +3516,7 @@
       };
       S.cartSnapshot = cartNorm;
       try { localStorage.setItem('_wa_cart_snap', JSON.stringify(cartNorm)); } catch (e) {}
+      _sendCartUpdateToA2A();
       updateBadge(itemCount);
       renderCart({
         is_empty: !itemCount,
@@ -2900,9 +3560,9 @@
       try { localStorage.setItem('_wa_conv', JSON.stringify(S.conversation)); } catch (e) {}
     }
 
-    // In Voice Navigation mode when chatbox is closed, do not append text bubbles into the chatbox panel.
-    // Responses are spoken via audio, and actions move the storefront page directly.
+    // In Voice Navigation mode when chatbox is closed, show toast fallback for bot messages
     if (S.mode === 'voice_nav' && !S.open) {
+      if (who === 'bot' && text && text.length < 120) showToast(text);
       return null;
     }
 
@@ -3081,6 +3741,95 @@
     return '';
   }
 
+  // ── _injectInPageCards: floating product shelf on document.body (light DOM) ──
+  // Used when the chat pane is closed (voice-only mode). Cards get
+  // data-product-card-index attributes so highlight_card can target them.
+  let _inpageShelfEl = null;
+  function _removeInpageShelf() {
+    if (_inpageShelfEl) { _inpageShelfEl.remove(); _inpageShelfEl = null; }
+  }
+  function _injectInPageCards(products) {
+    _removeInpageShelf();
+    if (!Array.isArray(products) || !products.length) return;
+    const seen = new Set();
+    const unique = products.filter(p => {
+      const id = p && (p.id || p.product_id);
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (!unique.length) return;
+    const shelf = document.createElement('div');
+    shelf.className = 'wa-inpage-shelf';
+    shelf.style.maxHeight = '260px';
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark' ||
+      window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if (isDark) shelf.classList.add('dark');
+    const fmtPrice = n => {
+      const val = Number(String(n || '0').replace(/[^\d.]/g, '')) || 0;
+      return (CFG.currency || '₹') + val.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+    const esc = s => { const d = document.createElement('div'); d.textContent = String(s || ''); return d.innerHTML; };
+    const escAttr = s => String(s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    shelf.innerHTML = `
+      <div class="wa-inpage-header">
+        <span class="wa-inpage-title">Speako AI Top Picks</span>
+        <button class="wa-inpage-close" aria-label="Close shelf">&times;</button>
+      </div>
+      <div class="wa-inpage-scroll">
+        ${unique.map((p, i) => {
+          const stockStatus = String(p.stock_status || '').toLowerCase();
+          const inStock = !stockStatus || stockStatus === 'instock' || stockStatus === 'onbackorder';
+          const isBackorder = stockStatus === 'onbackorder';
+          const qty = p.stock_quantity;
+          const lowStock = qty !== null && qty !== undefined && qty > 0 && qty < 5;
+          const onSale = !!(p.on_sale || (p.sale_price && p.sale_price !== p.regular_price));
+          const displayPrice = onSale ? p.sale_price : (p.price || p.regular_price || 0);
+          const imgSrc = p.image_url || (p.images && p.images[0] && p.images[0].src) || '';
+          return `<div class="wa-inpage-card" data-product-card-index="${i}">
+            ${i === 0 ? '<div class="wa-ai-top-pick">AI Top Pick</div>' : ''}
+            ${imgSrc ? `<img class="wa-inpage-card-img" src="${escAttr(imgSrc)}" alt="${escAttr(p.name)}" loading="lazy" onerror="this.style.display='none'">` : ''}
+            <div class="wa-inpage-card-body">
+              <div class="wa-inpage-card-name">${esc(p.name)}</div>
+              <div class="wa-inpage-card-price">${fmtPrice(displayPrice)}</div>
+              <div class="wa-inpage-card-stock">
+                <span class="wa-stock-dot ${!inStock ? 'out' : lowStock ? 'low' : 'in'}"></span>
+                ${!inStock ? 'Out of stock' : lowStock ? 'Only '+qty+' left' : isBackorder ? 'Available (backorder)' : 'In stock'}
+              </div>
+              <button class="wa-inpage-card-add${!inStock ? ' disabled' : ''}" ${!inStock ? 'disabled' : ''} data-id="${escAttr(p.id || p.product_id)}" data-name="${escAttr(p.name)}" data-price="${escAttr(displayPrice)}">
+                ${!inStock ? 'Out of stock' : 'Add to Cart'}
+              </button>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    `;
+    shelf.querySelector('.wa-inpage-close').addEventListener('click', () => _removeInpageShelf());
+    shelf.querySelectorAll('.wa-inpage-card-add').forEach(btn => {
+      btn.addEventListener('click', async function() {
+        if (this.disabled) return;
+        const id = parseInt(this.dataset.id, 10);
+        if (!id) return;
+        showToast('Adding to cart…');
+        try {
+          const res = await fetch('/cart/add.js', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ id, quantity: 1 }),
+          });
+          if (!res.ok) { let e; try { e = await res.json(); } catch(_){} throw new Error((e&&e.description)||'Add failed'); }
+          await new Promise(r => setTimeout(r, 300));
+          await fetchCartShopify(false);
+          showToast('Added to cart!');
+        } catch (err) {
+          showToast(String(err.message || 'Could not add'));
+        }
+      });
+    });
+    document.body.appendChild(shelf);
+    _inpageShelfEl = shelf;
+  }
+
   function renderProducts(products) {
     if (!Array.isArray(products) || !products.length) return;
 
@@ -3107,6 +3856,7 @@
 
     unique.forEach(p => {
       _rememberProduct(p);
+      S.lastShownProduct = { id: p.id || p.product_id, handle: _extractHandle(p), name: p.name, variation_id: null, variation: {} };
       const stockStatus = String(p.stock_status || '').toLowerCase();
       // onbackorder = purchasable in WooCommerce; empty = assume in stock
       const inStock = !stockStatus || stockStatus === 'instock' || stockStatus === 'onbackorder';
@@ -3277,6 +4027,7 @@
   function renderCart(cart) {
     if (!cart) return;
     S.cartSnapshot = cart;
+    _sendCartUpdateToA2A();
     if (cart.is_empty || !cart.item_count) {
       const el = document.createElement('div');
       el.className = 'wa-cart-card';
@@ -3718,6 +4469,10 @@
   let a2aWsToken          = '';     // [4] Short-lived HMAC token for WS auth
   let a2aTokenFetchedAt   = 0;      // [4] Epoch ms when token was last fetched
   let a2aTokenSessionId   = '';     // [4] session_id the cached token was minted for
+  // Micro-handshake gate: block mic capture until server acknowledges page context.
+  // Prevents PDP hallucination race (T_audio ~100ms vs T_handshake ~300ms).
+  let _a2aContextAcknowledged = false;
+
   // Streaming transcript accumulator — chunks from Gemini arrive word-by-word;
   // we append into one bubble and only finalise it on turn_complete / barge-in.
   let _a2aStreamBubble    = null;   // current live DOM element being updated
@@ -3803,6 +4558,10 @@
       a2aReconnectCount = 0;  // [2] reset counter on successful connection
       _a2aStreamBubble  = null;
       _a2aStreamText    = '';
+      _a2aContextAcknowledged = false;
+
+      // Block VAD/speech capture until server acknowledges page context handshake.
+      // Prevents PDP hallucination race (T_audio ~100ms vs T_handshake ~300ms).
 
       // Send initial page_update control frame so the backend Turn Coordinator
       // knows the current URL, cart, and any interrupted flow context.
@@ -3824,16 +4583,35 @@
             }
           } catch (e) { }
 
+          const activeVariant = typeof detectActiveVariantId === 'function' ? detectActiveVariantId() : null;
+          const pageContextPayload = {
+            url: location.href,
+            title: document.title,
+            page_type: (window.Shopify && window.Shopify.analytics && window.Shopify.analytics.meta && window.Shopify.analytics.meta.page && window.Shopify.analytics.meta.page.pageType) || (detectProductId() ? 'product' : 'other'),
+            product_id: typeof detectProductId === 'function' ? detectProductId() : (S.currentPageProduct ? S.currentPageProduct.id : null),
+            product_name: typeof detectProductName === 'function' ? detectProductName() : (S.currentPageProduct ? S.currentPageProduct.name : null),
+            product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+            variant_id: activeVariant,
+            interrupted_flow: interruptedFlow
+          };
+
           ws.send(JSON.stringify({
             type: 'page_update',
-            page_context: {
-              url: location.href,
-              title: document.title,
-              product_id: typeof detectProductId === 'function' ? detectProductId() : null,
-              product_name: typeof detectProductName === 'function' ? detectProductName() : null,
-              interrupted_flow: interruptedFlow
-            },
+            page_context: pageContextPayload,
             cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
+          }));
+
+          // Micro-handshake: server must acknowledge before we start mic
+          ws.send(JSON.stringify({
+            type: 'client.page_context_update',
+            payload: {
+              url: pageContextPayload.url,
+              path: location.pathname,
+              page_type: pageContextPayload.page_type,
+              product_id: pageContextPayload.product_id,
+              product_name: pageContextPayload.product_name,
+              variant_id: activeVariant,
+            }
           }));
         }
       } catch (e) {
@@ -3843,8 +4621,8 @@
       if (startMic) {
         isLiveMode = true;
         orb.classList.add('live');
-        orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-        _a2aStartCapture();
+        orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Syncing…</strong>';
+        // Capture starts only after session.context_acknowledged is received
       } else {
         orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Ready</strong>';
       }
@@ -3866,8 +4644,16 @@
           const msg = JSON.parse(event.data);
 
           if (msg.type === 'ui_action' && msg.action) {
-            // Render product cards, cart updates, etc. — same pipeline as HTTP mode
-            processAction(msg.action).catch(() => {});
+            processAction(msg.action).catch(e => console.warn('[WooAgent A2A] ui_action failed:', msg.action?.type, e));
+          }
+
+          // ── [FIX 3] Micro-handshake: server acknowledged page context → safe to open mic ──
+          if (msg.type === 'session.context_acknowledged') {
+            _a2aContextAcknowledged = true;
+            if (isLiveMode && !a2aStream) {
+              orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
+              _a2aStartCapture();
+            }
           }
 
           // ── [1] Barge-in: backend detected user interruption ──────────
@@ -3878,6 +4664,13 @@
             // Barge-in: user interrupted — seal whatever text arrived so far
             _a2aStreamBubble = null;
             _a2aStreamText   = '';
+          }
+
+          // ── User transcript: local voice command intercept (all providers) ──
+          // For navigation and add-to-cart commands, act immediately instead of
+          // waiting for the backend brain pipeline. Deduplicates via S._localAddHandled.
+          if (msg.type === 'user_transcript' && msg.text) {
+            if (handleLocalVoiceCommand(msg.text)) return;
           }
 
           // ── Gemini 3.1: transcript — chunks arrive word-by-word ──────────
@@ -4033,6 +4826,7 @@
     } catch (err) {
       console.warn('[WooAgent A2A] Mic error:', err);
       stopA2AMode();
+      if (_resumePending) return; // silent fail during auto-resume
       _a2aFallback();
     }
   }
@@ -4108,6 +4902,8 @@
   // Stops the currently playing AudioBufferSourceNode and drains the queue so
   // the AI goes silent the moment the user starts speaking over it.
   function flushAudioQueue() {
+    // Cancel any pending navigation — user interrupted, don't redirect
+    _pendingNavigation = null;
     // Stop the currently playing source node immediately
     if (a2aCurrentSource) {
       try {
@@ -4130,6 +4926,11 @@
     a2aReconnectCount = 0;  // [2] reset so next startA2AMode gets fresh attempts
     flushAudioQueue();      // [1] stop any playing audio immediately
     _a2aStopCapture();
+    if (_voiceOnlyMode) {
+      _voiceOnlyMode = false;
+      voicePill.style.display = 'none';
+      fab.classList.remove('voice-nav-active');
+    }
     if (geminiSocket) {
       try { geminiSocket.close(1000, 'user stopped'); } catch (e) {}
       geminiSocket = null;
@@ -4156,6 +4957,121 @@
       return true;
     } catch (e) {
       return false;
+    }
+  }
+
+  let _voiceOnlyMode = false;
+
+  // ── startVoiceOnly: play greeting → THEN start A2A mic (no echo bleed) ─
+  function startVoiceOnly() {
+    _voiceOnlyMode = true;
+    primeAudioEngines();
+    localStorage.setItem('_wa_mic_perm_granted', '1');
+    voicePill.style.display = 'flex';
+    fab.classList.add('voice-nav-active');
+    if (!S.greeted) {
+      // First visit: play greeting audio first, THEN start A2A
+      S.greeted = true;
+      localStorage.setItem('_wa_greeted', '1');
+      _greetThenA2A();
+    } else {
+      // Returning: start A2A immediately (no greeting needed)
+      _startA2A();
+    }
+  }
+
+  // ── _greetThenA2A: fetch greeting → play audio → THEN start A2A ──────
+  async function _greetThenA2A() {
+    try {
+      const r = await api('/greet', {
+        session_id: S.sessionId,
+        store_name: CFG.store_name,
+        language: S.language,
+        cart_context: (S.cartSnapshot && typeof S.cartSnapshot.is_empty !== 'undefined') ? S.cartSnapshot : null,
+        current_page: {
+          url: location.href,
+          title: document.title,
+          product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
+          product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
+          product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
+          variant_id: detectActiveVariantId()
+        }
+      });
+      S.language = r.language_detected || r.language || S.language;
+      if (r.has_cart && r.cart_summary) updateBadge(r.cart_summary.item_count);
+      // Play greeting audio and WAIT for it to finish
+      await speakWithFallback(
+        r.audio_base64,
+        r.greeting_text || `Hi! Welcome to ${CFG.store_name}. How can I help you today?`,
+        S.language,
+        r.audio_format
+      );
+    } catch (e) {
+      // Greeting failed — continue silently
+    }
+    _startA2A();
+  }
+
+  // ── _startA2A: connect A2A WS + start mic capture ────────────────────
+  function _startA2A() {
+    if (A2A_ENABLED) {
+      startA2AMode();
+    } else {
+      startLiveModeHTTP();
+    }
+  }
+
+  // ── stopVoiceOnly: tear down voice-only mode ─────────────────────────
+  function stopVoiceOnly() {
+    _voiceOnlyMode = false;
+    voicePill.style.display = 'none';
+    fab.classList.remove('voice-nav-active');
+    if (isLiveMode) stopLiveMode();
+  }
+
+  // ── showMicPermissionBanner: ask for mic access, then fire greeting ─────
+  function showMicPermissionBanner() {
+    if (S.micPermissionAsked || S.micPermissionGranted) return;
+    const banner = document.createElement('div');
+    banner.className = 'wa-mic-banner';
+    banner.innerHTML = `
+      <span class="wa-mic-icon">🎤</span>
+      <span class="wa-mic-text">Enable Voice Assistant to shop hands-free</span>
+      <button class="wa-mic-btn" id="wa-enable-mic">Enable Voice</button>
+    `;
+    root.appendChild(banner);
+    root.querySelector('#wa-enable-mic').addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop());
+        S.micPermissionGranted = true;
+        localStorage.setItem('_wa_mic_perm_asked', '1');
+        banner.remove();
+        startVoiceOnly();
+      } catch (e) {
+        showToast('Microphone access denied');
+      }
+    });
+  }
+
+  // ── _sendCartUpdateToA2A: push fresh cart to WebSocket after mutations ──
+  // Voice turns reuse the initial page_update cart — without this the backend's
+  // session_cart["value"] stays stale and all remove/clear/quantity handlers
+  // think the cart is empty.
+  function _sendCartUpdateToA2A() {
+    if (!geminiSocket || geminiSocket.readyState !== WebSocket.OPEN) return;
+    try {
+      const cart = (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot))
+        ? S.cartSnapshot : null;
+      if (cart) {
+        geminiSocket.send(JSON.stringify({
+          type: 'page_update',
+          page_context: {},
+          cart_context: cart,
+        }));
+      }
+    } catch (e) {
+      // non-critical
     }
   }
 
@@ -4428,9 +5344,16 @@
   }
 
   // Called whenever S.speaking becomes false — resumes live listening if active.
-  // 450ms delay lets speaker echo/reverb decay so the mic doesn't pick up the
-  // tail of the bot's own voice and transcribe it as a user message.
+  // Also executes any pending navigation (queued redirect) that was waiting
+  // for TTS to finish so the user hears the full response before the page
+  // navigates away.
   function onSpeakingEnd() {
+    if (_pendingNavigation) {
+      const pn = _pendingNavigation;
+      _pendingNavigation = null;
+      pn();
+      return;
+    }
     // ── A2A guard ──────────────────────────────────────────────────────────
     // In A2A mode the ScriptProcessorNode keeps the mic open CONTINUOUSLY.
     // Calling startRecording() or startLiveRecognition() here would start a
@@ -4550,14 +5473,47 @@
   }
 
   function detectProductId() {
-    if (window.Shopify && window.Shopify.analytics && window.Shopify.analytics.meta && window.Shopify.analytics.meta.product) {
-      return window.Shopify.analytics.meta.product.id;
-    }
-    if (window.meta && window.meta.product) {
-      return window.meta.product.id;
-    }
+    // Source 1: ShopifyAnalytics (most Shopify themes)
+    try {
+      const sa = window.ShopifyAnalytics || (window.Shopify && window.Shopify.analytics);
+      if (sa && sa.meta) {
+        if (sa.meta.product && sa.meta.product.id) return sa.meta.product.id;
+        if (sa.meta.page && sa.meta.page.resourceId) return parseInt(sa.meta.page.resourceId, 10);
+      }
+    } catch (_) {}
+    // Source 2: meta[property="product:id"]
+    try {
+      const metaTag = document.querySelector('meta[property="product:id"]');
+      if (metaTag) return parseInt(metaTag.content, 10);
+    } catch (_) {}
+    // Source 3: window.meta.product (Dawn / older themes)
+    try { if (window.meta && window.meta.product && window.meta.product.id) return window.meta.product.id; } catch (_) {}
+    // Source 4: window.Shopify.product (some custom themes)
+    try { if (window.Shopify && window.Shopify.product && window.Shopify.product.id) return window.Shopify.product.id; } catch (_) {}
+    // Source 5: WooCommerce body class
     const match = document.body.className.match(/postid-(\d+)/);
-    return match ? parseInt(match[1], 10) : null;
+    if (match) return parseInt(match[1], 10);
+    return null;
+  }
+
+  function detectActiveVariantId() {
+    try {
+      const form = document.querySelector('form[action*="/cart/add"]');
+      if (!form) return null;
+      // Shopify variant select or hidden input
+      const input = form.querySelector('input[name="id"]');
+      if (input) {
+        const val = parseInt(input.value, 10);
+        if (Number.isInteger(val) && val > 0) return val;
+      }
+      // Select element with name="id" (theme with <select> for variants)
+      const select = form.querySelector('select[name="id"]');
+      if (select) {
+        const val = parseInt(select.value, 10);
+        if (Number.isInteger(val) && val > 0) return val;
+      }
+    } catch (_) {}
+    return null;
   }
 
   function detectProductName() {
@@ -5058,7 +6014,22 @@
     const acts = _arr(inner.ui_actions, inner.actions, inner.actions_taken,
                       data.ui_actions,  data.actions,  data.actions_taken);
 
+    // Fallback: search all nesting levels for any actions field
     const textVal = inner.text || inner.response_text || data.text || data.response_text || '';
+    if (!acts.length && !textVal) {
+      const deep = (obj) => {
+        if (!obj || typeof obj !== 'object') return [];
+        if (Array.isArray(obj.ui_actions) && obj.ui_actions.length) return obj.ui_actions;
+        if (Array.isArray(obj.actions) && obj.actions.length) return obj.actions;
+        if (Array.isArray(obj.actions_taken) && obj.actions_taken.length) return obj.actions_taken;
+        for (const v of Object.values(obj)) {
+          if (v && typeof v === 'object') { const r = deep(v); if (r.length) return r; }
+        }
+        return [];
+      };
+      const fallback = deep(raw);
+      if (fallback.length) return { ...raw, ui_actions: fallback, actions: fallback, suggested_replies: _arr(inner.suggested_replies, data.suggested_replies) };
+    }
 
     return {
       session_id:      inner.session_id   || data.session_id   || S.sessionId,
@@ -5125,10 +6096,80 @@
     }
   }
 
+
+  // -- Page context tracking: detect product pages on URL change --------------
+  let _lastTrackedUrl = "";
+  function initPageTracking() {
+    function detectPageProduct() {
+      if (location.href === _lastTrackedUrl) return;
+      _lastTrackedUrl = location.href;
+      const m = location.pathname.match(/\/products\/([^/?#]+)/);
+      if (!m) { S.currentPageProduct = null; return; }
+      fetch("/products/" + encodeURIComponent(m[1]) + ".js")
+        .then(function(r) { return r.json(); })
+        .then(function(p) {
+          S.currentPageProduct = { id: p.id, name: p.title, handle: p.handle, url: location.href };
+        })
+        .catch(function() {});
+    }
+    detectPageProduct();
+    var origPushState = history.pushState;
+    history.pushState = function() {
+      origPushState.apply(this, arguments);
+      detectPageProduct();
+    };
+    window.addEventListener("popstate", detectPageProduct);
+  }
+
   // Seed the real cart (badge + snapshot, no chat card) on load so the first
   // message's cart_context already reflects the customer's actual cart.
   if (IS_SHOPIFY) {
     fetchCartShopify(true).catch(() => {});
+    initPageTracking();
+  }
+
+  // ── Turbo / pjax page-transition listeners ────────────────────────────
+  // These keep the A2A WebSocket alive when Shopify Turbo/navigation replaces
+  // the DOM without reloading the widget IIFE.
+  function _reconnectA2A() {
+    // Silent reconnect — no greeting, no banner
+    if (!isA2AConnected) {
+      startA2AMode();
+    }
+    // Restore in-page product cards from sessionStorage
+    try {
+      const stored = sessionStorage.getItem('_wa_inpage_products');
+      if (stored) {
+        const prods = JSON.parse(stored);
+        if (Array.isArray(prods) && prods.length) {
+          _injectInPageCards(prods);
+        }
+        sessionStorage.removeItem('_wa_inpage_products');
+      }
+    } catch (e) {}
+  }
+  document.addEventListener('turbo:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
+  document.addEventListener('page:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
+  document.addEventListener('shopify:section:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
+
+  // Mic permission banner after 2s (only on first visit)
+  if (!S.micPermissionAsked && !S.micPermissionGranted) {
+    setTimeout(showMicPermissionBanner, 2000);
+  }
+
+  // Auto-start voice-only mode on return visit (mic was previously granted)
+  if (localStorage.getItem('_wa_mic_perm_granted') === '1') {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      stream.getTracks().forEach(t => t.stop());
+      S.micPermissionGranted = true;
+      startVoiceOnly();
+    }).catch(() => {
+      // Permission revoked — reset localStorage flags so banner shows next time
+      localStorage.removeItem('_wa_mic_perm_granted');
+      localStorage.removeItem('_wa_mic_perm_asked');
+      S.micPermissionAsked = false;
+      showMicPermissionBanner();
+    });
   }
 
   if (isCheckoutPage()) {
@@ -5174,6 +6215,18 @@
     }, { once: true });
   }
 
+  // ── Restore in-page product cards from sessionStorage (post-redirect) ──────
+  try {
+    const storedProds = sessionStorage.getItem('_wa_inpage_products');
+    if (storedProds) {
+      const prods = JSON.parse(storedProds);
+      if (Array.isArray(prods) && prods.length) {
+        setTimeout(() => { try { _injectInPageCards(prods); } catch(e){} }, 500);
+      }
+      sessionStorage.removeItem('_wa_inpage_products');
+    }
+  } catch (e) {}
+
   // ── Live Shopping Navigator: resume after an agent-driven navigation ────────
   // The redirect handler sets _wa_reopen just before moving the page. On the new
   // page, re-open the panel via the normal reopen path — openPane() restores the
@@ -5181,11 +6234,13 @@
   // voice session, exactly like a manual re-open. Mic permission persists
   // per-origin, so getUserMedia succeeds without a fresh gesture in most browsers.
   try {
-    if (localStorage.getItem('_wa_voice_nav_resume') === '1') {
+    const voiceNavResume = localStorage.getItem('_wa_voice_nav_resume') || sessionStorage.getItem('_wa_voice_nav_resume_session');
+    if (voiceNavResume === '1') {
       localStorage.removeItem('_wa_voice_nav_resume');
+      sessionStorage.removeItem('_wa_voice_nav_resume_session');
       setTimeout(() => {
         try {
-          resumeVoiceNavMode();
+          resumeVoiceNavMode(true);
         } catch (e) { }
       }, 700);
     } else if (LIVE_NAV && localStorage.getItem('_wa_reopen') === '1') {
