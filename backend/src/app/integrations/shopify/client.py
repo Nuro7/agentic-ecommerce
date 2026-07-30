@@ -475,7 +475,7 @@ class ShopifyClient(BaseStoreClient):
         }
         """)
             try:
-                data = await self._admin_graphql(gql, {"q": q_str, "first": first})
+                data = await self._admin_graphql(gql, {"q": q_str, "first": first, "reverse": rev})
             except Exception as exc:
                 logger.warning("Shopify Admin product fallback failed: %s", exc)
                 return None
