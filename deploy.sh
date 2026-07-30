@@ -5,7 +5,7 @@ set -e
 # Called by Drone CI via SSH. Stops old containers before starting new ones
 # to avoid "container name already in use" conflicts.
 
-cd /opt/speako
+cd ~/agentic-ecommerce
 
 echo "[deploy] Stopping existing containers..."
 docker compose -f infra/docker/docker-compose.prod.yml down --remove-orphans
