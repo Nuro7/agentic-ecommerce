@@ -90,6 +90,7 @@ def say(language: str, key: str, **kwargs: Any) -> str:
             "checkout_triggered": "Sure. Let me collect your delivery details first.",
             "cart_opened": "Here is your current cart.",
             "cart_empty": "Your cart is empty right now.",
+            "cart_cleared": "Your cart has been cleared.",
             "removed_from_cart": "Removed {name} from your cart.",
             "no_products": "I couldn't find a close match. Try product name, brand, size, or budget.",
             "no_products_specific": "I couldn't find anything matching '{query}' in this store. Try a different search or browse our catalog.",
@@ -248,4 +249,3 @@ def say(language: str, key: str, **kwargs: Any) -> str:
         return tpl.format(**escaped)
     except (KeyError, ValueError):
         return tpl
-

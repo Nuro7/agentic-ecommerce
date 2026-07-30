@@ -29,6 +29,8 @@ from .text_utils import (
     has_cart_nav_intent,
     has_remove_intent,
     has_add_intent,
+    has_clear_cart_intent,
+    has_quantity_intent,
 )
 from ..retrieval.search import hybrid_search
 from ...core.database import AsyncSessionLocal
@@ -68,6 +70,7 @@ async def run_fast_intent(
     tenant_id: str,
     store_client: Any,
     session_service: Any,
+    cart_context: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     logger.info("[FLOW] fast_intent ENTER session=%s query=%.60s", session_id, message)
     text = str(message or "")
@@ -154,7 +157,7 @@ async def run_fast_intent(
         })
 
     if _wants_cart_navigation(lower):
-        cart = await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
+        cart = cart_context if (cart_context and isinstance(cart_context, dict) and cart_context.get("items")) else await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
         cart_url = str((store_context or {}).get("cart_url") or "/cart")
         # Render inline AND navigate the storefront to the real cart page, so
         # "go to cart" actually moves the page (the #7 indication-driven UX).
@@ -168,36 +171,159 @@ async def run_fast_intent(
         })
 
     if has_cart_view_intent(lower):
-        cart = await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
+        cart = cart_context if (cart_context and isinstance(cart_context, dict) and cart_context.get("items")) else await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
         return with_actions_alias({
             "response_text": say(language, "cart_opened"),
             "ui_actions": [{"type": "show_cart", "payload": {"cart": normalize_cart_payload(cart)}}],
             "suggested_replies": ["Checkout now", "Show products"],
         })
 
-    if has_remove_intent(lower):
-        cart = await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
+    # ── Clear cart ──────────────────────────────────────────────
+    if has_clear_cart_intent(lower):
+        cart = cart_context if (cart_context and isinstance(cart_context, dict) and cart_context.get("items")) else await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
         items = cart.get("items") if isinstance(cart.get("items"), list) else []
         if not items:
             return with_actions_alias({
-                "response_text": say(language, "cart_empty"),
-                "ui_actions": [{"type": "show_cart", "payload": {"cart": normalize_cart_payload(cart)}}],
+                "response_text": "Your cart is already empty.",
+                "ui_actions": [],
                 "suggested_replies": ["Show products"],
             })
-        target = items[-1]
-        target_product_id = (
-            target.get("product_id")
-            or (target.get("product") or {}).get("id")
-            or (target.get("merchandise") or {}).get("id")
-        )
+        mutate_actions = []
+        for item in items:
+            k = item.get("cart_item_key") or item.get("key") or item.get("variant_id") or item.get("id")
+            if k:
+                mutate_actions.append({"type": "mutate_cart", "payload": {"cart_item_key": str(k), "quantity": 0}})
+        mutate_actions.append({"type": "cart_updated", "payload": {}})
         return with_actions_alias({
-            "response_text": say(language, "removed_from_cart", name=target.get("name", "item")),
-            "ui_actions": [{
-                "type": "remove_from_cart",
-                "payload": {"product_id": target_product_id},
-            }],
+            "response_text": "Cleared your cart.",
+            "ui_actions": mutate_actions,
+            "suggested_replies": ["Show products", "Show my cart"],
+        })
+
+    # ── Remove from cart ────────────────────────────────────────
+    if has_remove_intent(lower):
+        cart = cart_context if (cart_context and isinstance(cart_context, dict) and cart_context.get("items")) else await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
+        items = cart.get("items") if isinstance(cart.get("items"), list) else []
+        if not items:
+            return with_actions_alias({
+                "response_text": "Removed from your cart.",
+                "ui_actions": [{"type": "remove_from_cart", "payload": {}}],
+                "suggested_replies": ["Show products", "Show my cart"],
+            })
+
+        target = None
+        ordinal_idx = None
+        if re.search(r"\b(first|1st)\b", lower):
+            ordinal_idx = 0
+        elif re.search(r"\b(second|2nd)\b", lower):
+            ordinal_idx = 1
+        elif re.search(r"\b(third|3rd)\b", lower):
+            ordinal_idx = 2
+        if ordinal_idx is not None and ordinal_idx < len(items):
+            target = items[ordinal_idx]
+        if target is None:
+            target_name = re.sub(r"\b(remove|delete|item|product|from|my|cart|the|this|that)\b", "", lower).strip()
+            if target_name:
+                best_match = None
+                best_score = 0
+                for item in items:
+                    name = str(item.get("name") or item.get("title") or "").lower()
+                    score = len(set(target_name.split()) & set(name.split()))
+                    if score > best_score:
+                        best_score = score
+                        best_match = item
+                if best_match and best_score >= 1:
+                    target = best_match
+        if target is None:
+            target = items[-1]
+
+        name = target.get("name", "item") or "item"
+        item_key = target.get("cart_item_key") or target.get("key") or target.get("variant_id") or target.get("id")
+        payload = {"cart_item_key": str(item_key)} if item_key else {}
+        return with_actions_alias({
+            "response_text": f"Removed {name} from your cart.",
+            "ui_actions": [{"type": "remove_from_cart", "payload": payload}],
             "suggested_replies": ["Show products", "Checkout"],
         })
+
+    # ── Quantity update ─────────────────────────────────────────
+    if has_quantity_intent(lower):
+        cart = cart_context if (cart_context and isinstance(cart_context, dict) and cart_context.get("items")) else await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
+        items = cart.get("items") if isinstance(cart.get("items"), list) else []
+        if not items:
+            return with_actions_alias({
+                "response_text": "Your cart is empty.",
+                "ui_actions": [],
+                "suggested_replies": ["Show products"],
+            })
+
+        ordinal_idx = None
+        if re.search(r"\b(first|1st)\b", lower):
+            ordinal_idx = 0
+        elif re.search(r"\b(second|2nd)\b", lower):
+            ordinal_idx = 1
+        elif re.search(r"\b(third|3rd)\b", lower):
+            ordinal_idx = 2
+
+        target = None
+        if ordinal_idx is not None and ordinal_idx < len(items):
+            target = items[ordinal_idx]
+        if target is None:
+            target_name = re.sub(r"\b(increase|decrease|reduce|change|update|adjust|quantity|qty|of|the|item|product|to|by|from|my|cart)\b", "", lower).strip()
+            if target_name:
+                best_match = None
+                best_score = 0
+                for item in items:
+                    name = str(item.get("name") or item.get("title") or "").lower()
+                    score = len(set(target_name.split()) & set(name.split()))
+                    if score > best_score:
+                        best_score = score
+                        best_match = item
+                if best_match and best_score >= 1:
+                    target = best_match
+        if target is None:
+            target = items[-1]
+
+        current_qty = int(target.get("quantity", 1))
+        is_increase = bool(re.search(r"\b(increase|add more|add another|add one more|more|up|raise|extra)\b", lower))
+        is_decrease = bool(re.search(r"\b(decrease|reduce|less|down|lower|fewer)\b", lower))
+        explicit_qty = None
+        qty_match = re.search(r"\bto\s+(\d+)\b", lower)
+        if qty_match:
+            explicit_qty = int(qty_match.group(1))
+
+        if explicit_qty is not None:
+            new_qty = explicit_qty
+        elif is_decrease:
+            new_qty = max(0, current_qty - 1)
+        elif is_increase:
+            new_qty = current_qty + 1
+        else:
+            new_qty = current_qty
+
+        item_key = target.get("cart_item_key") or target.get("key") or target.get("variant_id") or target.get("id")
+        name = target.get("name", "item") or "item"
+
+        if new_qty <= 0:
+            payload = {"cart_item_key": str(item_key)} if item_key else {}
+            return with_actions_alias({
+                "response_text": f"Removed {name} from your cart.",
+                "ui_actions": [{"type": "remove_from_cart", "payload": payload}],
+                "suggested_replies": ["Show products", "Show my cart"],
+            })
+        elif new_qty == current_qty:
+            return with_actions_alias({
+                "response_text": f"{name} is already at quantity {current_qty}.",
+                "ui_actions": [],
+                "suggested_replies": ["Show products", "Show my cart"],
+            })
+        else:
+            payload = {"cart_item_key": str(item_key), "quantity": new_qty} if item_key else {}
+            return with_actions_alias({
+                "response_text": f"Updated {name} to quantity {new_qty}.",
+                "ui_actions": [{"type": "mutate_cart", "payload": payload}],
+                "suggested_replies": ["Show products", "Show my cart"],
+            })
 
     # Browse / show products fallback (only runs as LLM fallback)
     browse_tokens = [
@@ -226,6 +352,21 @@ async def run_fast_intent(
                 })
         except Exception:
             pass
+
+    # Ordinal/anaphoric navigation bail-out — "first one", "second", "that one",
+    # "take the first one", etc. are navigation references that append_live_navigation
+    # in text_utils.py handles by redirecting to the correct product page. If we let
+    # them hit the generic search fallback below, normalize_discovery_query searches
+    # for the literal phrase and returns a random hallucinated product.
+    _ordinal_nav = re.search(
+        r"\b(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|"
+        r"that one|this one|the one|next one|previous one|last one)\b", lower
+    )
+    if _ordinal_nav and not has_add_intent(lower):
+        # Only return None for pure navigation — add-intent is handled by
+        # _resolve_product_for_add in the caller
+        logger.info("[FLOW] fast_intent ordinal/nav bail-out for: %.60s", text)
+        return None
 
     # Generic product search fallback
     try:
@@ -855,26 +996,22 @@ async def _resolve_product_for_add(
 
     page_context = page_context or {}
 
-    # 0. PDP Add-to-Cart — if on a product page and saying add-related phrase, use page context first
+    # 0. PDP Add-to-Cart — if on a product page, use page context first.
+    #    No regex gate needed: the caller (core.py step 5 or handle_add_to_cart)
+    #    already validated this is an add-to-cart intent before calling us.
     if page_context.get("product_id"):
-        is_add_phrase = re.search(
-            r"\b(add\s+(this|it|to\s*cart|the\s*product)|add\s*$|put\s+(this|it|in\s*(my\s*)?cart)|"
-            r"i('ll| will)\s*take\s+(this|it)|get\s+(this|it)|buy\s+(this|it)|"
-            r"purchase|order\s+this|checkout\s+this)\b", lower,
-        )
-        if is_add_phrase:
-            try:
-                detail = await store_client.get_product_details(int(page_context["product_id"]))
-                if detail and detail.get("id"):
-                    vid = page_context.get("variant_id") or detail.get("variation_id") or detail.get("id")
-                    return {
-                        "id": detail.get("id"),
-                        "name": detail.get("name", "Product"),
-                        "permalink": detail.get("permalink", ""),
-                        "variant_id": int(vid) if vid else detail.get("id"),
-                    }
-            except Exception as e:
-                logger.error("Failed fetching PDP product pid %s: %s", page_context["product_id"], e)
+        try:
+            detail = await store_client.get_product_details(int(page_context["product_id"]))
+            if detail and detail.get("id"):
+                vid = page_context.get("variant_id") or detail.get("variation_id") or detail.get("id")
+                return {
+                    "id": detail.get("id"),
+                    "name": detail.get("name", "Product"),
+                    "permalink": detail.get("permalink", ""),
+                    "variant_id": int(vid) if vid else detail.get("id"),
+                }
+        except Exception as e:
+            logger.error("Failed fetching PDP product pid %s: %s", page_context["product_id"], e)
 
     # 1. Resolve ordinal reference ("first" through "fifth") → active_recommendations or last_products
     #    Skip if query is purely navigation ("show the first one") — let append_live_navigation handle that.

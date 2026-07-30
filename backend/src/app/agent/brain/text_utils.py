@@ -432,6 +432,24 @@ def has_cart_nav_intent(lower: str) -> bool:
     return bool(_CART_NAV_RE.search(lower))
 
 
+def has_clear_cart_intent(lower: str) -> bool:
+    return any(token in lower for token in [
+        "clear cart", "clear my cart", "clear all",
+        "empty cart", "empty my cart",
+        "remove all", "remove all items", "delete all",
+        "remove everything", "cart ko khaali karo",
+    ])
+
+
+def has_quantity_intent(lower: str) -> bool:
+    return bool(re.search(
+        r"\b(increase|decrease|reduce|change|update|adjust|"
+        r"add more|add another|add one more|"
+        r"quantity|qty|double|halve|"
+        r"make it|set to)\b", lower,
+    )) and any(w in lower for w in ["cart", "item", "product", "quantity", "qty"])
+
+
 def has_checkout_intent(lower: str) -> bool:
     return any(token in lower for token in [
         "checkout", "proceed to checkout", "buy now", "place order", "order now",

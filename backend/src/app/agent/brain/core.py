@@ -70,7 +70,7 @@ from .text_utils import (
     summarize_actions_for_voice,
     has_store_info_intent, has_shipping_intent, has_returns_intent,
     has_payment_intent, has_cart_view_intent, has_cart_nav_intent, has_remove_intent,
-    has_add_intent,
+    has_add_intent, has_clear_cart_intent, has_quantity_intent,
     append_live_navigation, client_platform,
 )
 
@@ -522,12 +522,15 @@ async def ask_brain(
         or has_cart_nav_intent(lower_msg)
         or has_remove_intent(lower_msg)
         or has_add_intent(lower_msg)
+        or has_clear_cart_intent(lower_msg)
+        or has_quantity_intent(lower_msg)
     ):
         try:
             result = await run_fast_intent(
                 cleaned_message, session_id, lang, store_context,
                 tenant_id=tenant_id,
                 store_client=store_client, session_service=session_service,
+                cart_context=cart_context,
             )
         except Exception as exc:
             logger.warning("Fast-intent pre-LLM failed: %s", exc)
@@ -780,6 +783,7 @@ async def ask_brain(
                 cleaned_message, session_id, lang, store_context,
                 tenant_id=tenant_id,
                 store_client=store_client, session_service=session_service,
+                cart_context=cart_context,
             )
             logger.info("[FLOW] brain fallback1 fast_intent EXIT has_result=%s session=%s", result is not None, session_id)
         except Exception as exc:
