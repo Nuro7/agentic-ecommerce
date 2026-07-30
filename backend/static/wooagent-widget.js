@@ -232,44 +232,9 @@
     .wa-badge.on { transform: scale(1); }
 
     /* ── PANE ─────────────────────────────────────────────── */
-    .wa-pane {
-      position: fixed;
-      ${CFG.widget_position === 'bottom-left' ? 'left:20px' : 'right:20px'};
-      bottom: 94px;
-      width: 380px;
-      height: min(660px, calc(100dvh - 108px));
-      background: var(--bg0, #08080f);
-      border: 1px solid var(--line2, rgba(255,255,255,0.13));
-      border-radius: var(--r-xl, 28px);
-      box-shadow: var(--shadow);
-      display: flex; flex-direction: column;
-      overflow: hidden;
-      z-index: 2147483645;
-      opacity: 0;
-      transform: translateY(16px) scale(0.96);
-      pointer-events: none;
-      transition: opacity .28s ease, transform .28s cubic-bezier(.34,1.56,.64,1);
-    }
-    /* Ambient glow at the bottom of the pane */
-    .wa-pane::before {
-      content: '';
-      position: absolute; bottom: 0; left: 0; right: 0; height: 200px;
-      background: radial-gradient(ellipse at 50% 110%,
-        ${_waAlpha(PC, 16)} 0%,
-        ${_waAlpha(PC, 6)} 55%,
-        transparent 100%);
-      pointer-events: none; z-index: 0;
-    }
-    .wa-pane.open {
-      opacity: 1; transform: translateY(0) scale(1); pointer-events: auto;
-    }
+    .wa-pane { display: none !important; } /* Chat pane disabled — voice-only */
 
     @media (max-width: 480px) {
-      .wa-pane {
-        left:0 !important; right:0 !important; bottom:0 !important;
-        width:100% !important; height:95dvh !important;
-        border-radius: 20px 20px 0 0 !important; border-bottom:none !important;
-      }
       .wa-fab { right:14px !important; left:auto !important; bottom:16px !important; }
       .wa-card { width: 144px !important; }
       .wa-card-img-wrap { width: 142px !important; }
@@ -1664,10 +1629,8 @@
   }
 
   function startChatMode() {
-    primeAudioEngines();
-    closeMenu();
-    S.mode = 'chat';
-    openPane();
+    // Chat mode disabled — redirect to voice
+    startVoiceNavMode();
   }
 
   function startVoiceNavMode() {
@@ -1759,19 +1722,12 @@
   }
 
   fab.addEventListener('click', () => {
-    if (S.open) { closePane(); return; }
-    if (_resumePending) {
-      _resumePending = false;
-      _clearResumeGesture();
-      startLiveMode();
-      showToast('🎙️ Voice Navigation active.');
-      return;
-    }
     if (S.mode === 'voice_nav') { stopVoiceNavMode(); return; }
-    toggleMenu();
+    startVoiceNavMode();
   });
 
-  menuChat.addEventListener('click', startChatMode);
+  // Chat mode disabled — voice-only. Keep menuChat/MenuMic listeners no-op.
+  menuChat.addEventListener('click', startVoiceNavMode);
   menuMic.addEventListener('click', startVoiceNavMode);
 
   closeBtn.addEventListener('click', closePane);
@@ -1854,50 +1810,13 @@
   }
 
   function openPane() {
-    if (_voiceOnlyMode) {
-      _voiceOnlyMode = false;
-      voicePill.style.display = 'none';
-      fab.classList.remove('voice-nav-active');
-    }
-    primeAudioEngines();
-    S.open = true;
-    pane.classList.add('open');
-    fab.classList.add('open');
-    fab.setAttribute('aria-expanded', 'true');
-    // Only focus text input when it's actually visible (hidden by default in voice-first mode)
-    if (textBar && textBar.classList.contains('visible')) input.focus();
-    if (!S.greeted) {
-      S.greeted = true;
-      localStorage.setItem('_wa_greeted', '1');
-      fetchGreeting();
-      // Pre-connect WebSocket so text input works immediately without tapping orb
-      if (A2A_ENABLED) setTimeout(() => { if (S.open && !isA2AConnected) _startA2AForText(); }, 800);
-    } else {
-      // Restore last conversation messages from localStorage when re-opening
-      let saved = [];
-      try { saved = JSON.parse(localStorage.getItem('_wa_conv') || '[]'); } catch (e) { }
-      if (saved.length && msgs.children.length === 0) {
-        const toShow = saved.slice(-6);
-        toShow.forEach(m => {
-          if (m.role === 'user' || m.role === 'assistant') {
-            addBubble(m.role === 'user' ? 'user' : 'bot', m.content);
-          }
-        });
-      }
-      // Auto-start listening when re-opening (greeting already done)
-      if (CFG.enable_voice && !isLiveMode) {
-        setTimeout(() => { if (S.open && !isLiveMode) startLiveMode(); }, 600);
-      }
-    }
+    // Chat pane disabled — voice-only mode. No UI drawer shown.
   }
 
   function closePane() {
     S.open = false;
     S.mode = 'idle';
-    S._requestingMic = false; // cancel any pending getUserMedia guard
-    pane.classList.remove('open');
-    fab.classList.remove('open');
-    fab.setAttribute('aria-expanded', 'false');
+    S._requestingMic = false;
     stopCurrentAudio();
     if (isLiveMode) stopLiveMode();
   }
@@ -2731,7 +2650,7 @@
           const variantPicker = document.querySelector('.variant-picker, .product-variant-selector, [data-variant-selector], .product__form .variant-selector, .product-form .swatch-wrapper, .product-form select, form[action*="cart/add"] select');
           if (variantPicker) {
             variantPicker.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            window.scrollBy({ top: -80, behavior: 'instant' });
+            window.scrollBy({ top: -90, behavior: 'instant' });
           }
         }
         break;
@@ -2942,7 +2861,7 @@
           cards.forEach(c => c.classList.remove('is-selected', 'highlight-pulse', 'speako-glow'));
           target.classList.add('is-selected', 'highlight-pulse', 'speako-glow');
           target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          window.scrollBy({ top: -80, behavior: 'instant' });
+          window.scrollBy({ top: -90, behavior: 'instant' });
           setTimeout(() => target.classList.remove('highlight-pulse', 'speako-glow'), 3000);
         }
         break;
@@ -2960,7 +2879,7 @@
           }
           if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            window.scrollBy({ top: -80, behavior: 'instant' });
+            window.scrollBy({ top: -90, behavior: 'instant' });
             el.classList.add('speako-highlighted', 'speako-glow');
             setTimeout(() => el.classList.remove('speako-highlighted', 'speako-glow'), 3000);
           }
@@ -3309,7 +3228,7 @@
       const el = document.querySelector(sel);
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        window.scrollBy({ top: -80, behavior: 'instant' });
+        window.scrollBy({ top: -90, behavior: 'instant' });
         return true;
       }
     }
@@ -5057,18 +4976,19 @@
     if (isLiveMode) stopLiveMode();
   }
 
-  // ── showMicPermissionBanner: ask for mic access, then fire greeting ─────
+  // ── showMicPermissionBanner: ask for mic access (on main storefront DOM) ──
   function showMicPermissionBanner() {
     if (S.micPermissionAsked || S.micPermissionGranted) return;
     const banner = document.createElement('div');
     banner.className = 'wa-mic-banner';
+    banner.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1e1b4b;color:#fff;padding:14px 24px;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,0.3);display:flex;align-items:center;gap:12px;font-family:-apple-system,system-ui,sans-serif;font-size:15px;';
     banner.innerHTML = `
-      <span class="wa-mic-icon">🎤</span>
-      <span class="wa-mic-text">Enable Voice Assistant to shop hands-free</span>
-      <button class="wa-mic-btn" id="wa-enable-mic">Enable Voice</button>
+      <span style="font-size:20px;">🎤</span>
+      <span>Enable Voice Assistant to shop hands-free</span>
+      <button style="background:#6366f1;color:#fff;border:none;padding:8px 20px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Enable Voice</button>
     `;
-    root.appendChild(banner);
-    root.querySelector('#wa-enable-mic').addEventListener('click', async () => {
+    document.body.appendChild(banner);
+    banner.querySelector('button').addEventListener('click', async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         stream.getTracks().forEach(t => t.stop());
@@ -6185,10 +6105,10 @@
   document.addEventListener('page:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
   document.addEventListener('shopify:section:load', () => { if (_voiceOnlyMode) _reconnectA2A(); });
 
-  // Mic permission banner DISABLED — chatbot stays closed until FAB click
-  // if (!S.micPermissionAsked && !S.micPermissionGranted) {
-  //   setTimeout(showMicPermissionBanner, 2000);
-  // }
+  // Mic permission banner after 2s (on main storefront DOM)
+  if (!S.micPermissionAsked && !S.micPermissionGranted) {
+    setTimeout(showMicPermissionBanner, 2000);
+  }
 
   // Auto-start voice-only mode on return visit is DISABLED — the chatbot
   // must only open when the user clicks the FAB button. Voice mode was
