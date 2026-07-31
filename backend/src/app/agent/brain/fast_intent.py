@@ -593,8 +593,6 @@ async def handle_product_discovery(
                 {"type": "show_products", "payload": {"products": products}},
                 {"type": "show_products", "payload": {"products": alternatives}},
             ]
-            for idx in range(min(len(products), 4)):
-                actions.append({"type": "highlight_card", "payload": {"target_index": idx, "products": products}})
             first_in_stock = next((p for p in alternatives if p.get("in_stock")), alternatives[0] if alternatives else None)
             if first_in_stock and first_in_stock.get("id"):
                 actions.append({
@@ -611,7 +609,6 @@ async def handle_product_discovery(
             response = f"{name} is currently out of stock, and I couldn't find similar alternatives. Check back later or browse our catalog."
             actions = [
                 {"type": "show_products", "payload": {"products": products}},
-                {"type": "highlight_card", "payload": {"target_index": 0, "products": products}},
             ]
             suggested = ["Show all products", "Browse categories", "Show my cart"]
             last_ids = [p.get("id") for p in products if p.get("id")]
@@ -620,8 +617,6 @@ async def handle_product_discovery(
         actions = [
             {"type": "show_products", "payload": {"products": products}},
         ]
-        for idx in range(min(len(products), 4)):
-            actions.append({"type": "highlight_card", "payload": {"target_index": idx, "products": products}})
         first_in_stock = next((p for p in products if p.get("in_stock")), products[0] if products else None)
         if first_in_stock and first_in_stock.get("id"):
             actions.append({

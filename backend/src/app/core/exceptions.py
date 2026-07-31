@@ -26,3 +26,9 @@ class ForbiddenError(AppError):
 class ValidationError(AppError):
     status_code = 422
     detail = "Validation failed"
+
+
+class StorefrontUnavailableError(Exception):
+    """Raised by the store client when the live Storefront path fails and no
+    Admin fallback is available. Used by retrieval to fall back to the DB cache."""
+

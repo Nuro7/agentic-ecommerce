@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from ..base.commerce import BaseStoreClient
+from ...core.exceptions import StorefrontUnavailableError
 from ...core.http_retry import request_with_retries
 from ...agent.retrieval.attributes import canonical_color, canonical_size, extract_colors, extract_product_sizes
 
@@ -64,6 +65,45 @@ def _product_matches_color(product: Dict[str, Any], color: str) -> bool:
         return True
     blob = " ".join([_product_text_blob(product), _product_structured_blob(product)])
     return req in extract_colors(blob)
+
+
+def _variant_matches_request(attrs: Dict[str, Any], size: Optional[str], color: Optional[str]) -> bool:
+    """True when a variant's selected options match the requested size/colour."""
+    if size:
+        req = canonical_size(size)
+        if req and canonical_size(str((attrs or {}).get("size") or "")) != req:
+            return False
+    if color:
+        req = canonical_color(color)
+        if req and canonical_color(str((attrs or {}).get("color") or "")) != req:
+            return False
+    return True
+
+
+def _sync_matched_variant(product: Dict[str, Any], size: Optional[str], color: Optional[str]) -> Dict[str, Any]:
+    """Override a product's price/stock/name from the LIVE variant that matches
+    the requested size/colour. Guarantees SearchResult is populated from
+    variant-level data (variant.price / variant.availableForSale / variant.title)
+    rather than the product's minimum price. No-op without a size/colour filter."""
+    if not (size or color):
+        return product
+    for v in (product.get("variations_summary") or []):
+        if not isinstance(v, dict):
+            continue
+        if not _variant_matches_request(v.get("attributes") or {}, size, color):
+            continue
+        if v.get("price"):
+            product["price"] = str(v["price"])
+        if v.get("stock_status"):
+            product["stock_status"] = v["stock_status"]
+        if v.get("stock_qty") is not None:
+            product["stock_quantity"] = v["stock_qty"]
+        vtitle = str(v.get("title") or "").strip()
+        name = str(product.get("name") or "")
+        if vtitle and vtitle.lower() not in name.lower():
+            product["name"] = f"{name} - {vtitle}".strip(" -")
+        break
+    return product
 
 
 def _product_text_blob(product: Dict[str, Any]) -> str:
@@ -358,6 +398,7 @@ class ShopifyClient(BaseStoreClient):
                 "price": v.get("price", {}).get("amount", price),
                 "stock_status": "instock" if v.get("availableForSale") else "outofstock",
                 "stock_qty": v.get("quantityAvailable"),
+                "title": v.get("title", ""),
             })
 
         attributes = []
@@ -435,6 +476,7 @@ class ShopifyClient(BaseStoreClient):
                 "price": str(v.get("price", price)),
                 "stock_status": "instock" if v_in_stock else "outofstock",
                 "stock_qty": qty,
+                "title": v.get("title", ""),
             })
 
         compare = str(max(compares)) if compares else "0"
@@ -483,7 +525,7 @@ class ShopifyClient(BaseStoreClient):
                 "(tenant has no Shopify Admin token â€” reinstall via OAuth).",
                 self.store_domain or "?",
             )
-            return []
+            raise StorefrontUnavailableError(f"no admin token for {self.store_domain or '?'}")
         # Build the Shopify query. CRITICAL: pass the search terms so Shopify returns
         # RELEVANT products â€” NOT just the first N alphabetical (which on a big catalog
         # are all "Aâ€¦" names, so "Câ€¦asio G-Shock" never gets fetched). Shopify ANDs
@@ -509,7 +551,7 @@ class ShopifyClient(BaseStoreClient):
               priceRangeV2 { minVariantPrice { amount currencyCode } }
               options { name values }
               variants(first: 10) { edges { node {
-                id inventoryQuantity price compareAtPrice
+                id title inventoryQuantity price compareAtPrice
                 selectedOptions { name value }
               } } }
             } }
@@ -542,7 +584,7 @@ class ShopifyClient(BaseStoreClient):
                 sort_key = "TITLE"  # RELEVANCE errors without a text term
         products = await _fetch(admin_q, sort_key, reverse, 100)
         if products is None:
-            return []
+            raise StorefrontUnavailableError(f"Admin search unreachable for {self.store_domain or '?'}")
         # Fallback: when the exact-AND query matched nothing (customer used a word
         # the store never uses — "sneakers" for "running shoes", or a typo), OR the
         # tokens and browse a BIGGER window so the fuzzy ranker below can still
@@ -551,8 +593,13 @@ class ShopifyClient(BaseStoreClient):
             products = await _fetch(
                 "status:active AND (" + " OR ".join(terms) + ")", sort_key, reverse, 250
             )
+            if products is None:
+                raise StorefrontUnavailableError(f"Admin search unreachable for {self.store_domain or '?'}")
         if terms and not products:
-            products = await _fetch("status:active", "TITLE", False, 150) or []
+            products = await _fetch("status:active", "TITLE", False, 150)
+            if products is None:
+                raise StorefrontUnavailableError(f"Admin search unreachable for {self.store_domain or '?'}")
+        products = products or []
         fetched = len(products)
 
         # Client-side relevance: typo-tolerant token match against name/tags/desc.
@@ -604,6 +651,11 @@ class ShopifyClient(BaseStoreClient):
             products = [p for p in products if _product_matches_size(p, size)]
         if color:
             products = [p for p in products if _product_matches_color(p, color)]
+        # Sync live variant price/stock/name for the requested size/colour so the
+        # price filter below (and downstream SearchResults) use the VARIANT, not
+        # the product's minimum price.
+        if size or color:
+            products = [_sync_matched_variant(p, size, color) for p in products]
         if min_price is not None:
             products = [p for p in products if _safe_float(p.get("price")) >= min_price]
         if max_price is not None:
@@ -640,6 +692,7 @@ class ShopifyClient(BaseStoreClient):
         limit: int = 6,
         sort_by: Optional[str] = None,
         sort_order: Optional[str] = None,
+        raise_on_error: bool = False,
     ) -> List[Dict[str, Any]]:
         sort_key = self._SORT_MAP.get(sort_by) if sort_by else "RELEVANCE"
         reverse = True if (sort_order or "").lower() == "desc" else False
@@ -694,7 +747,7 @@ class ShopifyClient(BaseStoreClient):
                 variants(first: 10) {
                   edges {
                     node {
-                      id availableForSale quantityAvailable
+                      id title availableForSale quantityAvailable
                       price { amount }
                       selectedOptions { name value }
                     }
@@ -706,11 +759,13 @@ class ShopifyClient(BaseStoreClient):
         }
         """
         products: List[Dict[str, Any]] = []
+        storefront_error = False
         try:
             data = await self._storefront(GQL, {"query": gql_query, "first": per_page, "sortKey": sort_key, "reverse": reverse})
             edges = data.get("products", {}).get("edges", [])
             products = [self._normalize_product_node(e["node"]) for e in edges]
         except Exception as exc:
+            storefront_error = True
             # Storefront token missing/revoked (e.g. from an uninstalled app) or
             # products not published to the Storefront channel. Fall through to the
             # Admin API, which sees ALL products with the app's Admin token.
@@ -727,6 +782,11 @@ class ShopifyClient(BaseStoreClient):
                 products = [p for p in products if _product_matches_size(p, size)]
             if products and color:
                 products = [p for p in products if _product_matches_color(p, color)]
+            # Sync live variant price/stock/name for the requested size/colour so
+            # the price filter below (and downstream SearchResults) use the VARIANT,
+            # not the product's minimum price.
+            if products:
+                products = [_sync_matched_variant(p, size, color) for p in products]
             logger.info(
                 "Shopify attribute filter: %d match after size=%r color=%r for query=%r store=%s",
                 len(products), size, color, query or "(browse)", self.store_domain or "?",
@@ -751,15 +811,31 @@ class ShopifyClient(BaseStoreClient):
         if products:
             products = products[: max(1, min(int(limit or 6), 40))]
 
-        if not products and self.admin_token:
-            products = await self._admin_search_products(
-                query=query, min_price=min_price, max_price=max_price,
-                in_stock_only=in_stock_only, size=size, color=color, limit=limit,
-                sort_key=sort_key, reverse=reverse,
+        admin_error = False
+        if not products:
+            try:
+                if not self.admin_token:
+                    raise StorefrontUnavailableError(
+                        f"no admin token for {self.store_domain or '?'}"
+                    )
+                products = await self._admin_search_products(
+                    query=query, min_price=min_price, max_price=max_price,
+                    in_stock_only=in_stock_only, size=size, color=color, limit=limit,
+                    sort_key=sort_key, reverse=reverse,
+                )
+            except StorefrontUnavailableError:
+                admin_error = True
+                logger.warning("Shopify Admin search unavailable for %s", self.store_domain or "?")
+
+        # Live path (Storefront + Admin) fully down — surface so retrieval can
+        # fall back to the DB cache instead of returning a false empty result.
+        if raise_on_error and storefront_error and admin_error:
+            raise StorefrontUnavailableError(
+                f"Live store search unavailable for {self.store_domain or '?'}"
             )
 
         if products:
-            await self._cache_set(cache_key, products, ttl=300)
+            await self._cache_set(cache_key, products, ttl=60)
         return products
 
     async def fetch_all_products_storefront(
@@ -792,7 +868,7 @@ class ShopifyClient(BaseStoreClient):
                 variants(first: 10) {
                   edges {
                     node {
-                      id availableForSale quantityAvailable
+                      id title availableForSale quantityAvailable
                       price { amount }
                       selectedOptions { name value }
                     }

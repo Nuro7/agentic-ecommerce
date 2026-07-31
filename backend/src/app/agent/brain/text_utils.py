@@ -874,6 +874,13 @@ def bind_highlight_target(response_text: str, ui_actions: List[Dict[str, Any]]) 
             target_index = exact_matches[0]
 
     if target_index is None:
+        # No grounded product reference in the reply — drop any ungrounded
+        # highlight so the glow can never land on an arbitrary default index
+        # (e.g. a hardcoded target_index: 0).
+        ui_actions[:] = [
+            a for a in ui_actions
+            if not (isinstance(a, dict) and a.get("type") == "highlight_card")
+        ]
         return
 
     # Rewrite the first highlight_card action (or add one next to show_products).

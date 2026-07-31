@@ -2,11 +2,12 @@
 
 Call:  results = await hybrid_search(tenant_id, query, redis, store_client)
 
-Pipeline:
-  L0  normalize(query)              →  NormalizedQuery   (~0.5ms)
-  L1  l1_get(cache_key)            →  hit? return early  (~3ms)
-  L3  l3_search (BM25 + vector + RRF)  cached DB search  (~20-50ms)
-  →   store_client.search_products(query)  live API fallback  (~200-500ms)
+Pipeline (Storefront-primary):
+  L0  normalize(query)                  →  NormalizedQuery   (~0.5ms)
+  L1  l1_get(cache_key)                 →  hit? return early  (~3ms, TTL 60s)
+  LIVE  store_client.search_products()  →  Storefront API (PRIMARY, ~200-500ms)
+  L3  l3_search (BM25 + vector + RRF)   →  DB cache FALLBACK (only when the
+                                           live Storefront path is unavailable)
   →   l1_set (write-through cache)
   →   return list[SearchResult]
 """
@@ -100,23 +101,14 @@ async def hybrid_search(
         )
         return results
 
-    # ── L3: Cached DB search (BM25 + Vector + RRF) — PRIMARY when DB available ──
+    # ── LIVE STOREFRONT API — PRIMARY for every query ─────────────────────────
+    # Fresh price/stock straight from the store; attribute + price filters are
+    # applied client-side by the store client. Raises StorefrontUnavailableError
+    # (raise_on_error=True) only when the whole live path is down, never on a
+    # genuine empty result.
+    live_failed = store_client is None
     results: list[SearchResult] = []
-    if db is not None:
-        try:
-            bm25_results, vec_results = await l3_search(db, tenant_id, nq)
-            results = _rerank(bm25_results, vec_results, nq, top_n=limit)
-            logger.info(
-                "Search L3 HIT  tenant=%s query='%s'  n=%d  (%.1fms)",
-                tenant_id, nq.clean[:40], len(results),
-                (time.monotonic() - t0) * 1000,
-            )
-        except Exception as exc:
-            logger.warning("L3 search failed, falling back to live API: %s", exc)
-            results = []
-
-    # ── Live API fallback (or primary when no DB session) ──────────────────────
-    if not results and store_client is not None:
+    if store_client is not None:
         try:
             raw = await store_client.search_products(
                 query=nq.clean or "",
@@ -128,6 +120,7 @@ async def hybrid_search(
                 limit=limit,
                 sort_by=sort_by,
                 sort_order=sort_order,
+                raise_on_error=True,
             )
             _client_name = type(store_client).__name__
             platform = getattr(store_client, "_platform", None) or (
@@ -142,7 +135,26 @@ async def hybrid_search(
                 (time.monotonic() - t0) * 1000,
             )
         except Exception as exc:
-            logger.error("Live API search failed: %s", exc)
+            live_failed = True
+            logger.warning(
+                "Search LIVE failed, falling back to DB cache: %s", exc,
+            )
+
+    # ── DB CACHE (hybrid_search / pgvector) — FALLBACK ────────────────────────
+    # Consulted ONLY when the live Storefront path is unavailable. A live search
+    # that returned [] is an honest "no match" and never hits the (stale) cache.
+    if live_failed and not results and db is not None:
+        try:
+            bm25_results, vec_results = await l3_search(db, tenant_id, nq)
+            results = _rerank(bm25_results, vec_results, nq, top_n=limit)
+            logger.info(
+                "Search L3 FALLBACK tenant=%s query='%s'  n=%d  (%.1fms)",
+                tenant_id, nq.clean[:40], len(results),
+                (time.monotonic() - t0) * 1000,
+            )
+        except Exception as exc:
+            logger.warning("L3 DB fallback failed: %s", exc)
+            results = []
 
     # ── Write-through cache ────────────────────────────────────────────────────
     if results:

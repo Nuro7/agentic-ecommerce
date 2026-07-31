@@ -27,7 +27,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-_L1_TTL = 300          # 5 minutes
+_L1_TTL = 60           # 60 seconds — storefront-primary freshness window
 _L2_TTL = 900          # 15 minutes
 _SEMANTIC_THRESHOLD = 0.97   # cosine similarity floor for L2 hit. Tightened from
                              # 0.92: attribute-variant queries ("red"/"blue" shoes)
