@@ -29,7 +29,12 @@ logger = logging.getLogger(__name__)
 
 class PipelineRouter:
     """
-    Routes each voice WebSocket session through the provider cascade:
+    Routes each voice WebSocket session through the provider cascade.
+
+    Default (voice_provider=gemini_live):
+      Gemini Live (PRIMARY) → OpenAI Realtime (FALLBACK) → Text (DEGRADED)
+
+    With voice_provider=openai:
       OpenAI Realtime (PRIMARY) → Gemini Live (FALLBACK) → Text (DEGRADED)
 
     Instantiate once at startup and store in app.state.pipeline_router.
@@ -38,6 +43,8 @@ class PipelineRouter:
     def __init__(self, session_service: Any) -> None:
         self._session_service = session_service
         self._pipeline_c = PipelineC(session_service)
+
+        self._gemini_primary = (settings.voice_provider or "gemini_live").lower().strip() != "openai"
 
         self._breaker_a = CircuitBreaker(
             name="A", failure_threshold=2, recovery_timeout=30.0
@@ -52,11 +59,13 @@ class PipelineRouter:
                   voice_enabled: bool = True, tenant_id: str = DEV_TENANT_ID) -> None:
         """
         Route this session through the best available pipeline/provider.
-        Cascade: OpenAI Realtime (primary) → Gemini Live (fallback) → Text (degraded).
+        Cascade order follows `settings.voice_provider`:
+          gemini_live (default) → Gemini Live (primary) → OpenAI Realtime (fallback) → Text.
+          openai                → OpenAI Realtime (primary) → Gemini Live (fallback) → Text.
         Logs every pipeline start, failure, and fallback so operators can see which
         model is active per session.
         """
-        provider_choice = (settings.voice_provider or "openai").lower().strip()
+        provider_choice = (settings.voice_provider or "gemini_live").lower().strip()
 
         # ── Helper: try a single provider, return True on success ─────────────
         async def _try_provider(
@@ -65,10 +74,6 @@ class PipelineRouter:
             breaker: CircuitBreaker | None,
             fallback_name: str,
         ) -> bool:
-            if name == "OpenAI Realtime" and provider_choice == "gemini_live":
-                return False  # skip when user explicitly chose the other
-            if name == "Gemini Live" and provider_choice == "openai":
-                pass  # always try as fallback even when openai is primary
             if breaker and not breaker.is_available():
                 cooldown = breaker.health().get("recovery_in", 0)
                 logger.warning(
@@ -100,11 +105,17 @@ class PipelineRouter:
                 )
                 return False
 
-        # ── Cascade: OpenAI Realtime (A) → Gemini Live (B) → Text (C) ────────
-        cascade = [
-            ("OpenAI Realtime", OpenAIVoiceProvider, self._breaker_a, "Gemini Live"),
-            ("Gemini Live", GeminiLiveProvider, self._breaker_b, "Text"),
-        ]
+        # ── Cascade: primary provider follows voice_provider setting ───────────
+        if provider_choice == "openai":
+            cascade = [
+                ("OpenAI Realtime", OpenAIVoiceProvider, self._breaker_a, "Gemini Live"),
+                ("Gemini Live", GeminiLiveProvider, self._breaker_b, "Text"),
+            ]
+        else:
+            cascade = [
+                ("Gemini Live", GeminiLiveProvider, self._breaker_b, "OpenAI Realtime"),
+                ("OpenAI Realtime", OpenAIVoiceProvider, self._breaker_a, "Text"),
+            ]
 
         for name, cls, breaker, fb_name in cascade:
             ok = await _try_provider(name, cls, breaker, fb_name)
@@ -151,25 +162,40 @@ class PipelineRouter:
 
     @property
     def active_pipeline(self) -> str:
-        if self._breaker_a.state == "closed":
-            return "OpenAI Realtime (primary)"
-        if self._breaker_b.state == "closed":
-            return "Gemini Live (fallback)"
+        if self._gemini_primary:
+            if self._breaker_b.state == "closed":
+                return "Gemini Live (primary)"
+            if self._breaker_a.state == "closed":
+                return "OpenAI Realtime (fallback)"
+        else:
+            if self._breaker_a.state == "closed":
+                return "OpenAI Realtime (primary)"
+            if self._breaker_b.state == "closed":
+                return "Gemini Live (fallback)"
         return "Text (degraded)"
 
     def health(self) -> dict:
+        if self._gemini_primary:
+            openai_desc = "FALLBACK — GPT Realtime voice"
+            gemini_desc = "PRIMARY — Gemini Live voice"
+            cascade_order = "Gemini Live → OpenAI Realtime → Text"
+        else:
+            openai_desc = "PRIMARY — GPT Realtime voice"
+            gemini_desc = "FALLBACK — Gemini Live voice"
+            cascade_order = "OpenAI Realtime → Gemini Live → Text"
         return {
             "active_pipeline": self.active_pipeline,
             "voice_provider_setting": settings.voice_provider,
+            "cascade_order": cascade_order,
             "openai_realtime": {
                 **self._breaker_a.health(),
                 "model": settings.openai_realtime_model,
-                "description": "PRIMARY — GPT Realtime voice",
+                "description": openai_desc,
             },
             "gemini_live": {
                 **self._breaker_b.health(),
                 "model": settings.gemini_live_model,
-                "description": "FALLBACK — Gemini Live voice",
+                "description": gemini_desc,
             },
             "text_fallback": {
                 "state":       "always_available",

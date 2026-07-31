@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     stt_provider: str = "grok"   # grok | groq | deepgram
 
     # Voice Provider (gemini_live, openai)
-    voice_provider: str = "openai"
+    voice_provider: str = "gemini_live"
     openai_realtime_model: str = "gpt-realtime-2.1-mini"
     openai_realtime_voice: str = "alloy"
     openai_realtime_temperature: float = 0.6
