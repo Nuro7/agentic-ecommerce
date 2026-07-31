@@ -73,6 +73,23 @@ _IN_STOCK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ── Occasion detection ────────────────────────────────────────────────────────
+# Soft relevance signal ("for a wedding", "office wear") — extracted so the
+# searchbar/search can surface it as a chip, never a hard DB/storefront filter
+# (stores rarely tag products by occasion).
+_OCCASIONS: list[tuple[str, re.Pattern]] = [
+    ("wedding", re.compile(
+        r"\b(?:wedding|weddings|bride|groom|bridal|marriage|shaadi)\b", re.IGNORECASE)),
+    ("party", re.compile(
+        r"\b(?:party|birthday|anniversary|festive|festival|diwali|christmas|"
+        r"new\s*year|celebration|sangeet|reception)\b", re.IGNORECASE)),
+    ("office", re.compile(
+        r"\b(?:office|interview|corporate|business|workwear|work\s+wear|"
+        r"office\s+wear)\b", re.IGNORECASE)),
+    ("daily", re.compile(
+        r"\b(?:daily|casual|everyday|regular|routine)\b", re.IGNORECASE)),
+]
+
 # ── Currency and price word patterns to strip from search query ──
 _CURRENCY_WORDS_RE = re.compile(
     r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?|cents?)\b",
@@ -152,6 +169,7 @@ class NormalizedQuery:
     cache_key: str = ""               # deterministic key for L1 lookup
     size: Optional[str] = None        # extracted size (e.g., "9", "M", "UK 9")
     color: Optional[str] = None       # extracted colour (e.g., "tan", "black")
+    occasion: Optional[str] = None    # soft intent hint (e.g., "wedding", "office")
 
     def is_empty(self) -> bool:
         return not self.clean.strip()
@@ -181,6 +199,9 @@ def normalize(raw_query: str) -> NormalizedQuery:
 
     # 5b. Extract colour BEFORE stripping (e.g., "tan", "black dress" → "black")
     color = _extract_color(text)
+
+    # 5c. Extract occasion BEFORE stripping ("for a wedding" → "wedding")
+    occasion = _extract_occasion(text)
 
     # 6. Extract stock hint + discriminating-attribute flag (before stripping)
     in_stock_only = bool(_IN_STOCK_RE.search(text))
@@ -245,6 +266,7 @@ def normalize(raw_query: str) -> NormalizedQuery:
         cache_key=cache_key,
         size=size,
         color=color,
+        occasion=occasion,
     )
 
 
@@ -307,4 +329,9 @@ def _extract_color(text: str) -> Optional[str]:
     return canonical_color(text)
 
 
-
+def _extract_occasion(text: str) -> Optional[str]:
+    """Extract the query's occasion hint ('for a wedding' → 'wedding')."""
+    for label, pattern in _OCCASIONS:
+        if pattern.search(text):
+            return label
+    return None

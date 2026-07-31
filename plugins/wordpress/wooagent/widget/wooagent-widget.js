@@ -2772,8 +2772,9 @@ try {
         if (isLiveNav) {
           // Show the customer what the agent is doing, then persist a resume flag
           // so the widget re-opens (and voice resumes) after the page loads.
+          const chips = (navReason === 'search') ? _formatSearchFilters(p.filters) : '';
           const label = navReason === 'search'
-            ? ('🔎 Opening the store search for "' + (p.query || '') + '"…')
+            ? ('🔎 Opening the store search for "' + (p.query || '') + '"…' + chips)
             : (navReason === 'product'
               ? '🛍️ Taking you to the product page…'
               : '🛒 Taking you to your cart…');
@@ -4355,6 +4356,25 @@ try {
   let _a2aStreamBubble    = null;   // current live DOM element being updated
   let _a2aStreamText      = '';     // accumulated text for this turn
 
+  // Mic preload state — audio is buffered before context ack, then streamed live.
+  let a2aPrebuffer       = [];    // PCM chunks captured before context ack (replayed on ack)
+  let a2aLiveStreaming   = false; // true once ack received → chunks stream live to socket
+  let a2aMicReady        = false; // AudioWorklet running (pre-ack preload)
+
+  // ── Filter chips for search redirects (from backend `filters` payload) ──
+  function _formatSearchFilters(filters) {
+    if (!filters || typeof filters !== 'object') return '';
+    const sym = (typeof CFG !== 'undefined' && CFG.currency) || '₹';
+    const parts = [];
+    if (filters.max_price != null) parts.push('Under ' + sym + filters.max_price);
+    if (filters.min_price != null) parts.push('Above ' + sym + filters.min_price);
+    if (filters.size)     parts.push('Size ' + filters.size);
+    if (filters.color)    parts.push(String(filters.color).charAt(0).toUpperCase() + String(filters.color).slice(1));
+    if (filters.occasion) parts.push(String(filters.occasion).charAt(0).toUpperCase() + String(filters.occasion).slice(1));
+    if (filters.in_stock_only) parts.push('In stock');
+    return parts.length ? '\n  • ' + parts.join(' · ') : '';
+  }
+
   // Convert backend HTTP URL → WebSocket URL (http→ws, https→wss)
   function _a2aWsUrl(token) {
     const base = (CFG.agent_api_url || 'http://localhost:8000').replace(/\/$/, '');
@@ -4505,7 +4525,11 @@ try {
         isLiveMode = true;
         orb.classList.add('live');
         orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Syncing…</strong>';
-        // Capture starts only after session.context_acknowledged is received
+        // Preload the mic NOW (buffer, don't send) so the first "hi" isn't lost
+        // during the handshake + getUserMedia/AudioWorklet setup window.
+        _a2aPreloadMic();
+        // Safety: if the ack never arrives (lost frame), start streaming anyway.
+        setTimeout(() => { if (isLiveMode && !a2aLiveStreaming && a2aMicReady) _a2aFlushPrebuffer(); }, 4000);
       } else {
         orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Ready</strong>';
       }
@@ -4533,9 +4557,9 @@ try {
           // ── [FIX 3] Micro-handshake: server acknowledged page context → safe to open mic ──
           if (msg.type === 'session.context_acknowledged') {
             _a2aContextAcknowledged = true;
-            if (isLiveMode && !a2aStream) {
+            if (isLiveMode) {
               orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-              _a2aStartCapture();
+              _a2aStartCapture();   // flushes preloaded buffer first, then streams live
             }
           }
 
@@ -4651,61 +4675,94 @@ try {
   // ── _a2aStartCapture: mic → AudioWorklet 16kHz PCM → WebSocket ───────
   let a2aMicCtx, a2aMicSource, a2aMicWorklet;
 
-  async function _a2aStartCapture() {
-    if (a2aStream) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000, channelCount: 1 }
-      });
-      a2aStream = stream;
-      startWaveform(stream);
+  // Shared mic setup: getUserMedia + AudioWorklet. Chunks are BUFFERED until
+  // a2aLiveStreaming flips true (context_acknowledged) so the user's FIRST
+  // utterance isn't dropped during the handshake + mic-setup window.
+  async function _a2aInitMic() {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000, channelCount: 1 }
+    });
+    a2aStream = stream;
+    startWaveform(stream);
 
-      a2aMicCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-      a2aMicSource = a2aMicCtx.createMediaStreamSource(stream);
+    a2aMicCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    if (a2aMicCtx.state === 'suspended') { try { await a2aMicCtx.resume(); } catch (e) {} }
+    a2aMicSource = a2aMicCtx.createMediaStreamSource(stream);
 
-      // ── Inline AudioWorklet for zero-latency PCM conversion ──
-      const workletCode = `
-        class PcmProcessor extends AudioWorkletProcessor {
-          constructor() {
-            super();
-            this.buffer = new Int16Array(320); // 320 samples = 640 bytes = 20ms at 16kHz (was 256ms — too large for Gemini 3.1 VAD)
-            this.offset = 0;
-          }
-          process(inputs, outputs, parameters) {
-            const input = inputs[0];
-            if (input && input.length > 0 && input[0]) {
-              const float32Array = input[0];
-              for (let i = 0; i < float32Array.length; i++) {
-                const s = Math.max(-1, Math.min(1, float32Array[i]));
-                this.buffer[this.offset++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                if (this.offset >= this.buffer.length) {
-                  const copy = new Int16Array(this.buffer);
-                  this.port.postMessage(copy.buffer, [copy.buffer]);
-                  this.offset = 0;
-                }
+    // ── Inline AudioWorklet for zero-latency PCM conversion ──
+    const workletCode = `
+      class PcmProcessor extends AudioWorkletProcessor {
+        constructor() {
+          super();
+          this.buffer = new Int16Array(320);
+          this.offset = 0;
+        }
+        process(inputs, outputs, parameters) {
+          const input = inputs[0];
+          if (input && input.length > 0 && input[0]) {
+            const float32Array = input[0];
+            for (let i = 0; i < float32Array.length; i++) {
+              const s = Math.max(-1, Math.min(1, float32Array[i]));
+              this.buffer[this.offset++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+              if (this.offset >= this.buffer.length) {
+                const copy = new Int16Array(this.buffer);
+                this.port.postMessage(copy.buffer, [copy.buffer]);
+                this.offset = 0;
               }
             }
-            return true;
           }
+          return true;
         }
-        registerProcessor('pcm-processor', PcmProcessor);
-      `;
-      // Create a blob URL so we don't need a standalone processor.js file on the server
-      const blob = new Blob([workletCode], { type: 'application/javascript' });
-      const workletUrl = URL.createObjectURL(blob);
+      }
+      registerProcessor('pcm-processor', PcmProcessor);
+    `;
+    // Create a blob URL so we don't need a standalone processor.js file on the server
+    const blob = new Blob([workletCode], { type: 'application/javascript' });
+    const workletUrl = URL.createObjectURL(blob);
 
-      await a2aMicCtx.audioWorklet.addModule(workletUrl);
-      a2aMicWorklet = new AudioWorkletNode(a2aMicCtx, 'pcm-processor');
+    await a2aMicCtx.audioWorklet.addModule(workletUrl);
+    a2aMicWorklet = new AudioWorkletNode(a2aMicCtx, 'pcm-processor');
 
-      a2aMicWorklet.port.onmessage = (e) => {
+    a2aMicWorklet.port.onmessage = (e) => {
+      if (a2aLiveStreaming) {
         if (geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
           geminiSocket.send(e.data); // e.data is the raw PCM Int16 ArrayBuffer
         }
-      };
+      } else if (a2aPrebuffer.length < 100) {
+        a2aPrebuffer.push(e.data);  // ~20ms each → cap ~2s
+      }
+    };
 
-      a2aMicSource.connect(a2aMicWorklet);
-      a2aMicWorklet.connect(a2aMicCtx.destination); // Required to keep Node alive in Chrome
+    a2aMicSource.connect(a2aMicWorklet);
+    a2aMicWorklet.connect(a2aMicCtx.destination); // Required to keep Node alive in Chrome
+    a2aMicReady = true;
+  }
 
+  // Flush pre-ack buffered audio, then switch to live streaming.
+  function _a2aFlushPrebuffer() {
+    a2aLiveStreaming = true;
+    while (a2aPrebuffer.length) {
+      const chunk = a2aPrebuffer.shift();
+      if (geminiSocket && geminiSocket.readyState === WebSocket.OPEN) geminiSocket.send(chunk);
+    }
+  }
+
+  // Preload the mic as soon as the socket opens (before ack) so the first
+  // command is captured; audio sits in a2aPrebuffer until the session is live.
+  async function _a2aPreloadMic() {
+    if (a2aStream || a2aMicReady) return;
+    try {
+      await _a2aInitMic();
+    } catch (err) {
+      console.warn('[WooAgent A2A] Mic preload error:', err);
+    }
+  }
+
+  async function _a2aStartCapture() {
+    if (a2aStream) { _a2aFlushPrebuffer(); return; }  // already preloaded
+    try {
+      await _a2aInitMic();
+      _a2aFlushPrebuffer();
     } catch (err) {
       console.warn('[WooAgent A2A] Mic error:', err);
       stopA2AMode();
@@ -4716,6 +4773,9 @@ try {
 
   // ── _a2aStopCapture: stop mic and AudioWorklet encode ──────────────────
   function _a2aStopCapture() {
+    a2aPrebuffer     = [];
+    a2aLiveStreaming = false;
+    a2aMicReady      = false;
     if (a2aMicWorklet) {
       try { a2aMicWorklet.disconnect(); } catch (e) {}
       a2aMicWorklet = null;

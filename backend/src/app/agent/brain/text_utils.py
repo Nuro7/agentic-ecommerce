@@ -66,13 +66,15 @@ def append_live_navigation(
     base_url = str(ctx.get("url") or "").strip()
     here = str(current_url or "").strip().rstrip("/")
 
-    def _push(url: str, reason: str, nav_query: str = "") -> None:
+    def _push(url: str, reason: str, nav_query: str = "", filters: Optional[dict] = None) -> None:
         if not url or url.rstrip("/") == here:
             return
         delay = 0 if reason == "search" else 1500
         payload: Dict[str, Any] = {"url": url, "reason": reason, "delay_ms": delay}
         if nav_query:
             payload["query"] = nav_query
+        if filters:
+            payload["filters"] = filters
         ui_actions.append({"type": "redirect", "payload": payload})
 
     lower_query = str(query or "").strip().lower()
@@ -118,8 +120,11 @@ def append_live_navigation(
     # Search Page Navigation
     search_match = re.search(r"\b(search for|search\b|look for|find\b)\s+(.+?)(?:\s*please|\s*thanks|\s*$)", lower_query)
     if search_match:
-        sq = search_match.group(2).strip().replace(" ", "+")
-        _push((base_url.rstrip("/") if base_url else "") + f"/search?q={sq}", "search")
+        raw = search_match.group(2).strip()
+        sq, filters = build_searchbar_query(raw)
+        if sq:
+            sq_url = (base_url.rstrip("/") if base_url else "") + f"/search?q={sq.replace(' ', '+')}"
+            _push(sq_url, "search", sq, filters)
         return
 
     # Home Page Navigation
@@ -171,12 +176,12 @@ def append_live_navigation(
             return
 
     # Multiple products shown â†’ redirect to the storefront search page
-    # with a normalized (conversational filler removed) query.
-    nav_query = normalize_discovery_query(query) if isinstance(products, list) and len(products) > 1 else query
+    # with a normalized (conversational filler removed) query + structured filters.
+    nav_query, filters = build_searchbar_query(query) if isinstance(products, list) and len(products) > 1 else (query, None)
     if nav_query:
         search_url = storefront_search_url(base_url, platform, nav_query)
         if search_url:
-            _push(search_url, "search", nav_query)
+            _push(search_url, "search", nav_query, filters)
             return
 
 
@@ -185,6 +190,27 @@ def append_live_navigation(
 def normalize_discovery_query(message: str) -> str:
     # Strip apostrophes so contractions (i'll, i'm, etc.) don't interfere with \b
     cleaned = message.lower().replace("'", " ").replace("`", " ")
+    # Leading greetings ("hi", "hello") are not search terms
+    cleaned = re.sub(r"^\s*(?:hi|hello|hey|yo|good\s+(?:morning|afternoon|evening))\b[\s,]*", " ", cleaned, flags=re.IGNORECASE)
+    # 1) Price/currency phrases BEFORE the stopword pass — "under 500" must be
+    #    removed as a unit. Otherwise the stopword regex drops "under" first and
+    #    the bare "500" leaks into the storefront searchbar query.
+    cleaned = re.sub(r"\b(?:under|below|less\s+than|above|over|more\s+than|upto|up\s+to|max|maximum)\s+\d+(?:\.\d+)?\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\s*\d+(?:\.\d+)?\b", " ", cleaned)
+    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\b", " ", cleaned)
+    cleaned = re.sub(r"[₹$€£]", " ", cleaned)
+    # Strip size keywords from search query (they are passed as structured filters)
+    cleaned = re.sub(r"\b(?:size|sized?)\s*(?:uk|us|eu)?\s*\d+(?:\.\d+)?\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(xxs?|xs|s|m|l|xl|xxl|xxxl|2xl|3xl|small|medium|large|xsmall|xsm|xlarge)\b", " ", cleaned, flags=re.IGNORECASE)
+    # Strip colour words + colour filler from search query (structured `color` filter)
+    cleaned = re.sub(
+        r"\b(?:\b(?:black|white|red|blue|green|yellow|orange|purple|pink|brown|grey|gray|tan|beige|navy|maroon|gold|silver|olive|teal|indigo|violet|cream|ivory|charcoal|crimson|magenta|turquoise|cyan|wine|mauve|rust|bordeaux|mustard|offwhite|multicolor|multicolour|colorful)\b|colour|color)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    # 2) Stopword pass (filler/occasion words are not storefront search terms)
     cleaned = re.sub(
         r"\b(?:"
         r"show|find|search|products?|items?|available|availability|"
@@ -208,22 +234,33 @@ def normalize_discovery_query(message: str) -> str:
         r")\b",
         " ", cleaned
     )
-    cleaned = re.sub(r"\b(?:under|below|less\s+than|above|over|more\s+than|upto|up\s+to|max|maximum)\s+\d+(?:\.\d+)?\b", " ", cleaned)
-    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\s*\d+(?:\.\d+)?\b", " ", cleaned)
-    cleaned = re.sub(r"\b\d+(?:\.\d+)?\s*(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\b", " ", cleaned)
-    cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\b", " ", cleaned)
-    cleaned = re.sub(r"[₹$€£]", " ", cleaned)
-    # Strip size keywords from search query (they are passed as structured filters)
-    cleaned = re.sub(r"\b(?:size|sized?)\s*(?:uk|us|eu)?\s*\d+(?:\.\d+)?\b", " ", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\b(xxs?|xs|s|m|l|xl|xxl|xxxl|2xl|3xl|small|medium|large|xsmall|xsm|xlarge)\b", " ", cleaned, flags=re.IGNORECASE)
-    # Strip colour words + colour filler from search query (structured `color` filter)
-    cleaned = re.sub(
-        r"\b(?:\b(?:black|white|red|blue|green|yellow|orange|purple|pink|brown|grey|gray|tan|beige|navy|maroon|gold|silver|olive|teal|indigo|violet|cream|ivory|charcoal|crimson|magenta|turquoise|cyan|wine|mauve|rust|bordeaux|mustard|offwhite|multicolor|multicolour|colorful)\b|colour|color)\b",
-        " ",
-        cleaned,
-        flags=re.IGNORECASE,
-    )
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def build_searchbar_query(message: str) -> tuple[str, dict]:
+    """Split a discovery utterance into (searchbar query, structured filters).
+
+    The searchbar gets the clean core query ("formal shoes"); price/size/colour/
+    occasion are extracted as structured filters so they NEVER leak into the
+    storefront searchbar text (e.g. "under 500" must not become "...shoes 500").
+    """
+    from ..retrieval.normalizer import normalize
+
+    nq = normalize(message or "")
+    filters: dict = {}
+    if nq.min_price is not None:
+        filters["min_price"] = nq.min_price
+    if nq.max_price is not None:
+        filters["max_price"] = nq.max_price
+    if nq.size:
+        filters["size"] = nq.size
+    if nq.color:
+        filters["color"] = nq.color
+    if nq.occasion:
+        filters["occasion"] = nq.occasion
+    if nq.in_stock_only:
+        filters["in_stock_only"] = True
+    return normalize_discovery_query(message), filters
 
 
 def normalize_availability_query(message: str) -> str:
