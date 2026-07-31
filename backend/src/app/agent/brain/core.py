@@ -926,7 +926,7 @@ async def ask_brain(
         append_live_navigation(
             ui_actions,
             store_context=store_context,
-            query=result.get("clean_query") or _search_query or cleaned_message,
+            query=result.get("clean_query") or cleaned_message or _search_query,
             platform=client_platform(store_client),
             current_url=str((page_context or {}).get("url") or ""),
             active_recommendations=active_recommendations,

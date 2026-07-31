@@ -115,8 +115,10 @@ _SIZE_LETTER_PHRASE_RE = re.compile(
 _SIZE_LETTER_RE = re.compile(r"\b(?:x{0,2}[sl]|m)\b", re.IGNORECASE)
 
 # Numeric sizes: "size 9", "uk 9", "eu 42", "9", "9.5", "9 uk".
+# The optional (?:is|are|of)? bridges filler between the label and the number
+# so "my size is 9" / "size of 9" extract a size instead of being skipped.
 _SIZE_KEYWORD_RE = re.compile(
-    r"(?:size|sized?|shoe\s+size|uk|us|eu)\s*(\d{1,2}(?:\.\d{1,2})?)",
+    r"(?:size|sized?|shoe\s+size|uk|us|eu)\s*(?:is|are|of)?\s*(\d{1,2}(?:\.\d{1,2})?)",
     re.IGNORECASE,
 )
 _SIZE_LABEL_AFTER_RE = re.compile(

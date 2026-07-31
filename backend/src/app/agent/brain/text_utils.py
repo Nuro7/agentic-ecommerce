@@ -201,7 +201,9 @@ def normalize_discovery_query(message: str) -> str:
     cleaned = re.sub(r"\b(?:rs|inr|usd|\$|₹|€|£|dollars?|rupees?|pounds?|euros?|bucks?)\b", " ", cleaned)
     cleaned = re.sub(r"[₹$€£]", " ", cleaned)
     # Strip size keywords from search query (they are passed as structured filters)
-    cleaned = re.sub(r"\b(?:size|sized?)\s*(?:uk|us|eu)?\s*\d+(?:\.\d+)?\b", " ", cleaned, flags=re.IGNORECASE)
+    # Handles both "size 9" and "my size is 9" phrasing.
+    cleaned = re.sub(r"\b(?:size|sized?)\s*(?:uk|us|eu)?\s*(?:is|are|of)?\s*\d+(?:\.\d+)?\b", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:size|sized?)\s+(?:uk|us|eu)\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(xxs?|xs|s|m|l|xl|xxl|xxxl|2xl|3xl|small|medium|large|xsmall|xsm|xlarge)\b", " ", cleaned, flags=re.IGNORECASE)
     # Strip colour words + colour filler from search query (structured `color` filter)
     cleaned = re.sub(
@@ -216,7 +218,7 @@ def normalize_discovery_query(message: str) -> str:
         r"show|find|search|products?|items?|available|availability|"
         r"compare|cart|checkout|please|l(?:oo)?king\s+for|"
         r"list|that|this|those|these|the|a|an|"
-        r"want|is|are|do|does|can|have|has|there|any|which|tell|me|about|"
+        r"want|am|is|are|was|were|do|does|can|have|has|there|any|which|tell|me|about|"
         r"you|in|stock|check|for|what|see|some|my|your|his|"
         r"her|our|their|its|brother|sister|mother|father|friend|wife|husband|"
         r"son|daughter|birthday|anniversary|wedding|party|gift|present|"

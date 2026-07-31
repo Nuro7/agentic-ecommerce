@@ -2796,6 +2796,12 @@ try {
             targetUrl = parsed.pathname + parsed.search + parsed.hash;
           }
         } catch (e) {}
+        // Apply Shopify-native filter params to search redirects so the store
+        // itself filters results (price/size) — not just the display chips.
+        if (isLiveNav && navReason === 'search' && IS_SHOPIFY && p.filters) {
+          const fq = _shopifyFilterQuery(p.filters);
+          if (fq) targetUrl += (targetUrl.includes('?') ? '&' : '?') + fq;
+        }
         // Save in-page products and voice state to sessionStorage for restore after navigation
         try {
           if (window._wa_lastProducts && Array.isArray(window._wa_lastProducts) && window._wa_lastProducts.length) {
@@ -4351,6 +4357,23 @@ try {
   let a2aPrebuffer       = [];    // PCM chunks captured before context ack (replayed on ack)
   let a2aLiveStreaming   = false; // true once ack received → chunks stream live to socket
   let a2aMicReady        = false; // AudioWorklet running (pre-ack preload)
+
+  // Shopify-native filter query string (filter.v.price.lte / gte, option, availability).
+  // Appended to the /search URL so the store itself narrows results by price/size.
+  function _shopifyFilterQuery(filters) {
+    if (!filters || typeof filters !== 'object') return '';
+    const num = (v) => {
+      const n = Number(v);
+      return Number.isInteger(n) ? String(n) : String(n);
+    };
+    const parts = [];
+    if (filters.max_price != null) parts.push('filter.v.price.lte=' + encodeURIComponent(num(filters.max_price)));
+    if (filters.min_price != null) parts.push('filter.v.price.gte=' + encodeURIComponent(num(filters.min_price)));
+    if (filters.size)      parts.push('filter.v.option.size=' + encodeURIComponent(filters.size));
+    if (filters.color)     parts.push('filter.v.option.color=' + encodeURIComponent(filters.color));
+    if (filters.in_stock_only) parts.push('filter.v.availability=1');
+    return parts.join('&');
+  }
 
   // ── Filter chips for search redirects (from backend `filters` payload) ──
   function _formatSearchFilters(filters) {

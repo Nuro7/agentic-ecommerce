@@ -137,10 +137,10 @@ _NOISE_RE = re.compile(
 )
 
 # ── Size/attribute patterns to extract as structured filters (not search text) ──
-# Covers "size 9", "size uk 9", "uk 9", "us 9", "eu 42" AND "9 uk" so a labeled
-# size never pollutes the storefront query text.
+# Covers "size 9", "size is 9", "size uk 9", "uk 9", "us 9", "eu 42" AND "9 uk"
+# so a labeled size never pollutes the storefront query text.
 _SIZE_RE = re.compile(
-    r"\b(?:(?:size|sized?)\s*(?:uk|us|eu)?|(?:uk|us|eu))\s*(\d{1,2}(?:\.\d+)?)\b"
+    r"\b(?:(?:size|sized?)\s*(?:uk|us|eu)?\s*(?:is|are|of)?|(?:uk|us|eu))\s*(\d{1,2}(?:\.\d+)?)\b"
     r"|\b(\d{1,2}(?:\.\d+)?)\s*(?:uk|us|eu)\b",
     re.IGNORECASE,
 )
