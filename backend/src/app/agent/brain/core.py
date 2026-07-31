@@ -66,6 +66,7 @@ from .fast_intent import (
     handle_order_tracking,
     handle_add_to_cart,
     handle_pdp_auto_tour,
+    _wants_collections,
 )
 from .llm_loop import run_llm_agent, retry_with_stricter_prompt
 from .text_utils import (
@@ -604,6 +605,7 @@ async def ask_brain(
         or has_add_intent(lower_msg)
         or has_clear_cart_intent(lower_msg)
         or has_quantity_intent(lower_msg)
+        or _wants_collections(lower_msg)
     ):
         try:
             result = await run_fast_intent(
@@ -971,6 +973,28 @@ async def ask_brain(
                 break
         if _highlight_idx is not None:
             ui_actions.pop(_highlight_idx)
+        # Embed the top recommended products (id/name/price) so the widget can
+        # glow the matching cards and describe them AFTER landing on the search
+        # page — this is what makes the "best 4-5 recommendations" experience work.
+        _pending_products: List[Dict[str, Any]] = []
+        for _a in ui_actions:
+            if isinstance(_a, dict) and _a.get("type") == "show_products":
+                _prods = (_a.get("payload") or {}).get("products") or []
+                for _p in _prods:
+                    if isinstance(_p, dict) and _p.get("id"):
+                        _pending_products.append({
+                            "id": _p.get("id"),
+                            "name": str(_p.get("name") or ""),
+                            "price": _p.get("price"),
+                            "handle": str(_p.get("permalink") or "").split("/products/")[-1].split("?")[0].rstrip("/"),
+                        })
+                break
+        if _pending_products:
+            _pending["products"] = _pending_products[:5]
+        # Embed structured filters so the widget can apply them client-side
+        # (themes that ignore filter.v.* URL params still get the right results).
+        if _search_redirect["payload"].get("filters"):
+            _pending["filters"] = _search_redirect["payload"]["filters"]
         # Embed pending payload into redirect
         _search_redirect["payload"]["pending_search"] = _pending
         # Shorten response text — voice will replay after landing

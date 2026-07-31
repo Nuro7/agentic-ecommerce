@@ -2836,6 +2836,21 @@ try {
             if (p.query) {
               sessionStorage.setItem('_wa_pending_search', p.query);
             }
+            // Persist the deferred search-page experience (voice text, highlight,
+            // recommended products, filters) so the widget can replay them AFTER
+            // the page load — the theme's own search box gets filled, results are
+            // filtered client-side, and the best 4-5 cards are highlighted.
+            if (navReason === 'search' && p.pending_search) {
+              try {
+                sessionStorage.setItem('_wa_search_pending', JSON.stringify(p.pending_search));
+              } catch (_e) {}
+            }
+            if (p.filters) {
+              try { sessionStorage.setItem('_wa_search_filters', JSON.stringify(p.filters)); } catch (_e) {}
+            }
+            if (p.query) {
+              try { sessionStorage.setItem('_wa_search_spec', p.query); } catch (_e) {}
+            }
           } catch (e) {}
           if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
             goToCheckout();
@@ -3061,6 +3076,7 @@ try {
         try {
           sessionStorage.setItem('_wa_voice_active', '1');
           sessionStorage.setItem('_wa_pending_search', q);
+          sessionStorage.setItem('_wa_search_spec', q);
           if (S.mode === 'voice_nav') {
             localStorage.setItem('_wa_voice_nav_resume', '1');
           }
@@ -3383,8 +3399,11 @@ try {
   // One "scroll" utterance produces BOTH a local intercept AND a backend
   // ui_action ~1-3s later — dedup so the page doesn't jump twice per command.
   function _scrollDedup() {
+    // Tiny debounce only — collapses the rare backend-echo + local-path double
+    // fire of ONE utterance. 3s was far too aggressive and silently ate the
+    // customer's repeated "scroll down … scroll down again" commands.
     const now = Date.now();
-    if (S._lastScroll && (now - S._lastScroll) < 3000) return true;
+    if (S._lastScroll && (now - S._lastScroll) < 450) return true;
     S._lastScroll = now;
     return false;
   }
@@ -6617,6 +6636,176 @@ try {
 
   // ── Restore in-page product cards from sessionStorage — REMOVED (no shelf) ──
   try { sessionStorage.removeItem('_wa_inpage_products'); } catch (e) {}
+
+  // ── Search-page experience replay (fill search box, enforce filters, glow) ──
+  // After an AI search redirect, the backend embeds the pending spec, filters
+  // and top products. On the search results page we (1) fill the theme's search
+  // input with the FULL user spec, (2) apply price/size/colour filters client-side
+  // (themes often ignore filter.v.* URL params), and (3) glow the best 4-5 cards.
+  (function() {
+    const isSearchPage = /\/search\b/.test(location.pathname) || /[?&]s=/.test(location.search);
+    if (!isSearchPage) return;
+
+    const PROD_SEL = '.grid__item, .product-card, .product-grid-item, [data-product-id], .card-wrapper, .type-product, .product, li.product, .wc-block-grid__product';
+    const PRICE_SEL = '.price, .price__regular, .price__sale, .product-price, [data-price], .wc-block-grid__product-price, .woocommerce-Price-amount, .money';
+
+    function _cardPrice(el) {
+      let best = null;
+      const priceEls = el.querySelectorAll(PRICE_SEL);
+      if (priceEls.length) {
+        for (const pe of priceEls) {
+          const m = String(pe.textContent || '').replace(/,/g, '').match(/[\d]+(?:\.\d+)?/);
+          if (m) {
+            const v = parseFloat(m[0]);
+            if (v > 0 && (best === null || v < best)) best = v;
+          }
+        }
+      }
+      if (best !== null) return best;
+      const m = String(el.textContent || '').replace(/,/g, '').match(/[₹$€£]\s?\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:usd|inr|rs)/i);
+      return m ? parseFloat(m[0].replace(/[^0-9.]/g, '')) : null;
+    }
+
+    function _cardHasAnySize(el, wanted) {
+      const text = String(el.textContent || '').toLowerCase();
+      const sizes = text.match(/(?:size|sizes?)\s*[:.]?\s*(\d+(?:\.\d+)?)/g);
+      if (!sizes) return true; // no explicit size advertised → keep
+      return sizes.some(s => s.includes(String(wanted)));
+    }
+
+    function _cardColorConflict(el, wanted) {
+      const colors = ['black','white','red','blue','green','yellow','orange','purple','pink','brown','grey','gray','tan','beige','navy','maroon','gold','silver','olive','teal','indigo','violet','cream','ivory','charcoal','crimson','magenta','turquoise','cyan'];
+      const text = String(el.textContent || '').toLowerCase();
+      const wantedL = String(wanted).toLowerCase();
+      for (const c of colors) {
+        if (c === wantedL) continue;
+        if (new RegExp('\\b' + c + '\\b').test(text)) return true;
+      }
+      return false;
+    }
+
+    function _cardHref(el) {
+      const a = el.tagName === 'A' ? el : (el.querySelector('a[href*="/products/"]') || el.closest('a[href*="/products/"]'));
+      return a ? (a.getAttribute('href') || '') : '';
+    }
+
+    function _applyPendingSearchPage() {
+      let pending = null, filters = null, spec = '';
+      try {
+        pending = JSON.parse(sessionStorage.getItem('_wa_search_pending') || 'null');
+      } catch (_e) {}
+      try {
+        filters = JSON.parse(sessionStorage.getItem('_wa_search_filters') || 'null');
+      } catch (_e) {}
+      try { spec = sessionStorage.getItem('_wa_search_spec') || ''; } catch (_e) {}
+
+      if (!pending && !filters && !spec) return false;
+
+      // 1) Fill the theme's search box with the full user spec.
+      if (spec) {
+        const inputs = document.querySelectorAll('input[name="q"], input[type="search"], .search__input, .search-form input, #Search-In-Modal, .predictive-search__input');
+        for (const inp of inputs) {
+          if (inp && !inp.value.trim()) {
+            inp.value = spec;
+            try {
+              if (typeof inp.dispatchEvent === 'function') {
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+                inp.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            } catch (_e) {}
+            break;
+          }
+        }
+      }
+
+      // 2) Enforce filters client-side (price / size / colour).
+      const maxPrice = filters && filters.max_price != null ? Number(filters.max_price) : null;
+      const minPrice = filters && filters.min_price != null ? Number(filters.min_price) : null;
+      const sizeF   = filters && filters.size ? String(filters.size) : '';
+      const colorF  = filters && filters.color ? String(filters.color) : '';
+      let hiddenCount = 0;
+      let totalCards = 0;
+
+      if (maxPrice != null || minPrice != null || sizeF || colorF) {
+        const cards = document.querySelectorAll(PROD_SEL);
+        totalCards = cards.length;
+        cards.forEach(card => {
+          let hide = false;
+          const price = _cardPrice(card);
+          if (!hide && price != null) {
+            if (maxPrice != null && price > maxPrice) hide = true;
+            if (!hide && minPrice != null && price < minPrice) hide = true;
+          }
+          if (!hide && sizeF && !_cardHasAnySize(card, sizeF)) hide = true;
+          if (!hide && colorF && _cardColorConflict(card, colorF)) hide = true;
+          if (hide) {
+            card.style.display = 'none';
+            hiddenCount++;
+          }
+        });
+      }
+
+      // 3) Glow the recommended (best 4-5) product cards.
+      const prods = (pending && Array.isArray(pending.products)) ? pending.products.slice(0, 5) : [];
+      if (prods.length) {
+        const cards = Array.from(document.querySelectorAll(PROD_SEL)).filter(c => c.style.display !== 'none');
+        const matched = [];
+        for (const p of prods) {
+          const pid = p.id;
+          const handle = p.handle ? String(p.handle).replace(/^\//, '') : '';
+          let found = cards.find(c =>
+            (c.getAttribute('data-product-id') && String(c.getAttribute('data-product-id')) === String(pid)) ||
+            (handle && _cardHref(c).indexOf(handle) !== -1)
+          );
+          if (!found && handle) {
+            found = cards.find(c => _cardHref(c).indexOf('/products/') !== -1);
+          }
+          if (found && matched.indexOf(found) === -1) matched.push(found);
+        }
+        // Fallback: if no id/handle matched, glow the first N visible cards.
+        if (!matched.length) {
+          for (const c of cards) { if (matched.length >= prods.length) break; matched.push(c); }
+        }
+        matched.forEach(card => {
+          card.style.outline = 'none';
+          card.style.border = '2px solid #6366f1';
+          card.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
+          card.style.transition = 'all 0.3s ease-in-out';
+          card.setAttribute('data-wa-glowed', '1');
+        });
+        if (matched[0]) {
+          try { matched[0].scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
+        }
+      }
+
+      // 4) Feedback + cleanup.
+      if ((hiddenCount || totalCards) && (maxPrice != null || minPrice != null)) {
+        const cur = (typeof CFG !== 'undefined' && CFG.currency) || '';
+        if (totalCards > 0 && hiddenCount === totalCards) {
+          const msg = maxPrice != null
+            ? 'No products match ' + (cur || '') + maxPrice + ' or less on this page. Showing filtered results only.'
+            : 'No products match those filters on this page.';
+          showToast(msg);
+        }
+      }
+      try {
+        sessionStorage.removeItem('_wa_search_pending');
+        sessionStorage.removeItem('_wa_search_filters');
+        sessionStorage.removeItem('_wa_search_spec');
+      } catch (_e) {}
+      return true;
+    }
+
+    // Run once the grid is rendered; retry for themes that load results async.
+    let _attempts = 0;
+    const _tries = () => {
+      try {
+        if (_applyPendingSearchPage()) return;
+      } catch (_e) {}
+      if (++_attempts < 6) setTimeout(_tries, 800);
+    };
+    setTimeout(_tries, 300);
+  })();
 
   // Auto-resume voice mode after search redirect
   (function() {

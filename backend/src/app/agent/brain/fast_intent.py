@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .canned import say
 from .text_utils import (
+    client_platform,
     normalize_discovery_query,
     normalize_availability_query,
     extract_add_query,
@@ -73,6 +74,22 @@ def _first_available_variant_id(detail: Dict[str, Any]) -> int:
 # brain's fast-intent gate (core.py) can share it.
 def _wants_cart_navigation(lower: str) -> bool:
     return has_cart_nav_intent(lower)
+
+
+def _wants_collections(lower: str) -> bool:
+    """True for "show me all the collections/categories in the store" phrasing.
+
+    Deliberately narrow — "catalog"/"show all products" is handled separately by
+    product discovery (it should show products), while this only fires for an
+    explicit collections/categories request.
+    """
+    return bool(re.search(
+        r"\b(all (?:the )?collections|show (?:me )?collections|browse collections|"
+        r"list collections|collections? in (?:the )?(?:store|shop)|open collections|"
+        r"browse categories|shop by (?:category|collection)|all the categories|"
+        r"^collections?$|^categories$)\b",
+        lower,
+    ))
 
 
 async def safe_get_cart(
@@ -185,6 +202,36 @@ async def run_fast_intent(
             "response_text": store_reply,
             "ui_actions": [{"type": "show_store_info", "payload": store_info_payload}],
             "suggested_replies": ["Show products", "Show my cart", "Browse"],
+        })
+
+    # ── Collections / Categories ("show me all the collections in the store") ─
+    # A real store concept, not a product search — route it to the store's
+    # collections page and name what's available instead of answering
+    # "that's not available in the store".
+    if _wants_collections(lower):
+        base_url = str((store_context or {}).get("url") or "").strip().rstrip("/")
+        _platform = client_platform(store_client)
+        collections_url = (base_url or "") + (
+            "/collections" if _platform != "woocommerce" else "/product-category"
+        )
+        names = []
+        try:
+            categories = await store_client.get_categories()
+            for c in (categories or []):
+                if isinstance(c, dict) and c.get("name"):
+                    names.append(str(c["name"]))
+        except Exception as _col_exc:
+            logger.warning("get_categories failed for collections intent: %s", _col_exc)
+        if names:
+            listed = ", ".join(names[:6])
+            more = f", and {len(names) - 6} more" if len(names) > 6 else ""
+            response_text = f"We have {len(names)} collections: {listed}{more}. Opening the collections page for you."
+        else:
+            response_text = "Opening the collections page for you — browse by category there."
+        return with_actions_alias({
+            "response_text": response_text,
+            "ui_actions": [{"type": "redirect", "payload": {"url": collections_url, "reason": "collections"}}],
+            "suggested_replies": ["Show all products", "Show my cart", "Back to home"],
         })
 
     if _wants_cart_navigation(lower):
