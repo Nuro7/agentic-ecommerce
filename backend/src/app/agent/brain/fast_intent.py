@@ -39,6 +39,36 @@ from ...core.database import AsyncSessionLocal
 logger = logging.getLogger(__name__)
 
 
+def _first_available_variant_id(detail: Dict[str, Any]) -> int:
+    """Return the first purchasable variant ID from a product detail dict, or 0.
+
+    Shopify and WooCommerce both expose their variant list under ``variations``
+    (Shopify also under ``variations_summary``). Never fall back to the product
+    ID here — Shopify's /cart/add.js rejects a product ID with "Cannot find
+    variant" (product IDs and variant IDs are distinct namespaces on Shopify).
+    """
+    if not isinstance(detail, dict):
+        return 0
+    variations = detail.get("variations") or detail.get("variations_summary") or []
+    if not isinstance(variations, list):
+        return 0
+    for v in variations:
+        if isinstance(v, dict) and v.get("id"):
+            status = str(v.get("stock_status") or "").lower()
+            if status != "outofstock":
+                try:
+                    return int(v["id"])
+                except (TypeError, ValueError):
+                    continue
+    for v in variations:
+        if isinstance(v, dict) and v.get("id"):
+            try:
+                return int(v["id"])
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
 # Backwards-compatible local alias — the matcher now lives in text_utils so the
 # brain's fast-intent gate (core.py) can share it.
 def _wants_cart_navigation(lower: str) -> bool:
@@ -733,7 +763,13 @@ async def handle_buy_now(
             "suggested_replies": ["Show products"],
         })
 
-    variant_id = product.get("variant_id") or product.get("id")
+    variant_id = product.get("variant_id") or 0
+    if not variant_id:
+        try:
+            _buy_detail = await store_client.get_product_details(int(product["id"]))
+            variant_id = _first_available_variant_id(_buy_detail)
+        except Exception:
+            pass
     product_id = int(product["id"])
     name = product.get("name", "Product")
     handle = product.get("handle", "")
@@ -1027,12 +1063,14 @@ async def handle_add_to_cart(
             "suggested_replies": ["Show products"],
         })
 
-    variant_id = product.get("variant_id") or product.get("id")
+    variant_id = product.get("variant_id") or 0
 
     try:
         detail = await store_client.get_product_details(int(product["id"]))
     except Exception:
         detail = {}
+    if not variant_id:
+        variant_id = _first_available_variant_id(detail)
 
     if detail and detail.get("variants") and len(detail["variants"]) > 1:
         options = detail.get("options", [])
@@ -1165,12 +1203,12 @@ async def _resolve_product_for_add(
         try:
             detail = await store_client.get_product_details(int(page_context["product_id"]))
             if detail and detail.get("id"):
-                vid = page_context.get("variant_id") or detail.get("variation_id") or detail.get("id")
+                vid = page_context.get("variant_id") or _first_available_variant_id(detail)
                 return {
                     "id": detail.get("id"),
                     "name": detail.get("name", "Product"),
                     "permalink": detail.get("permalink", ""),
-                    "variant_id": int(vid) if vid else detail.get("id"),
+                    "variant_id": int(vid) if vid else 0,
                 }
         except Exception as e:
             logger.error("Failed fetching PDP product pid %s: %s", page_context["product_id"], e)
@@ -1209,7 +1247,7 @@ async def _resolve_product_for_add(
                             "id": detail.get("id"),
                             "name": detail.get("name", "Product"),
                             "permalink": detail.get("permalink", ""),
-                            "variant_id": detail.get("variation_id") or detail.get("id"),
+                            "variant_id": _first_available_variant_id(detail),
                         }
             except Exception as e:
                 logger.error("Failed fetching last_product ordinal %s: %s", target_index, e)
@@ -1228,7 +1266,7 @@ async def _resolve_product_for_add(
                         "id": detail.get("id"),
                         "name": detail.get("name", "Product"),
                         "permalink": detail.get("permalink", ""),
-                        "variant_id": detail.get("variation_id") or detail.get("id"),
+                        "variant_id": _first_available_variant_id(detail),
                     }
             except Exception as e:
                 logger.error("Failed fetching context product for pid %s: %s", current_pid, e)
@@ -1253,7 +1291,7 @@ async def _resolve_product_for_add(
                                 "id": detail.get("id"),
                                 "name": detail.get("name", "Product"),
                                 "permalink": detail.get("permalink", ""),
-                                "variant_id": detail.get("variation_id") or detail.get("id"),
+                                "variant_id": _first_available_variant_id(detail),
                             }
             except Exception as e:
                 logger.warning("SessionFacts fallback failed for anaphoric reference: %s", e)
@@ -1289,7 +1327,7 @@ async def _resolve_product_for_add(
                         "id": detail.get("id"),
                         "name": detail.get("name", "Product"),
                         "permalink": detail.get("permalink", ""),
-                        "variant_id": detail.get("variation_id") or detail.get("id"),
+                        "variant_id": _first_available_variant_id(detail),
                     }
         except Exception as e:
             logger.debug("SessionFacts fallback failed: %s", e)

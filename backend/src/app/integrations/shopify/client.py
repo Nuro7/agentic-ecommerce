@@ -1224,7 +1224,27 @@ class ShopifyClient(BaseStoreClient):
         product_name: Optional[str] = None,
         price: Optional[str] = None,
     ) -> Dict[str, Any]:
-        vid = variation_id or product_id
+        # Shopify Storefront cart lines need a ProductVariant GID — a product ID
+        # is NOT a valid variant ID ("Cannot find variant"). When no variant was
+        # resolved, pick the first purchasable variant of the product.
+        vid = variation_id or 0
+        if not vid:
+            try:
+                _detail = await self.get_product_details(int(product_id))
+                for _v in (_detail.get("variations") or []):
+                    if isinstance(_v, dict) and _v.get("id"):
+                        if str(_v.get("stock_status") or "").lower() != "outofstock":
+                            vid = _gid_to_int(str(_v["id"]))
+                            break
+                if not vid:
+                    for _v in (_detail.get("variations") or []):
+                        if isinstance(_v, dict) and _v.get("id"):
+                            vid = _gid_to_int(str(_v["id"]))
+                            break
+            except Exception as _exc:
+                logger.warning("Shopify add_to_cart: failed to resolve variant for product %s: %s", product_id, _exc)
+        if not vid:
+            raise RuntimeError("No purchasable variant found for this product")
         variant_gid = _int_to_variant_gid(int(vid))
         qty = max(1, int(quantity or 1))
 

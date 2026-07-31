@@ -248,12 +248,28 @@ async def execute_tool_call(
         # Look up product to get handle + permalink for the widget's AJAX call
         product_handle = ""
         product_permalink = ""
+        product_detail = {}
         try:
             product_detail = await store_client.get_product_details(product_id)
             product_handle = str(product_detail.get("handle") or "")
             product_permalink = str(product_detail.get("permalink") or "")
         except Exception:
             pass
+
+        # Shopify /cart/add.js needs a real variant ID — never the product ID.
+        # If the LLM didn't pass one, pick the first purchasable variant.
+        if not variation_id:
+            for v in (product_detail.get("variations") or product_detail.get("variations_summary") or []):
+                if isinstance(v, dict) and v.get("id"):
+                    status = str(v.get("stock_status") or "").lower()
+                    if status != "outofstock":
+                        variation_id = safe_int(v.get("id"), 0)
+                        break
+            if not variation_id:
+                for v in (product_detail.get("variations") or product_detail.get("variations_summary") or []):
+                    if isinstance(v, dict) and v.get("id"):
+                        variation_id = safe_int(v.get("id"), 0)
+                        break
 
         actions.append({
             "type": "add_to_cart",

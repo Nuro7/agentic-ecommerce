@@ -2469,28 +2469,12 @@ try {
       }
 
       case 'add_to_cart':
-        const variationId = act.payload ? parseInt(act.payload.variant_id || act.payload.variation_id, 10) || 0 : 0;
-        const productId = act.payload && act.payload.product_id ? parseInt(act.payload.product_id, 10) : 0;
-        const quantity = Math.max(1, parseInt(act.payload.quantity, 10) || 1);
-        
-        const addId = variationId > 0 ? variationId : productId;
-        
-        if (addId > 0) {
-          console.log('[WooAgent A2C] Native AJAX add:', { productId, variationId, quantity, addId });
-          try {
-            const addRes = await fetch('/cart/add.js', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-              body: JSON.stringify({
-                id: addId,
-                quantity: quantity,
-              }),
-            });
-            if (!addRes.ok) {
-              let errMsg = 'Add to cart failed';
-              try { const e = await addRes.json(); errMsg = e.description || e.message || errMsg; } catch (_) {}
-              throw new Error(errMsg);
-            }
+        try {
+          // Platform-aware add that resolves the REAL Shopify variant ID from the
+          // product handle when the payload only carries a product ID (Shopify's
+          // /cart/add.js rejects a product ID with 422 "Cannot find variant").
+          await addToCartDispatch(act.payload || {});
+          if (IS_SHOPIFY) {
             // Wait for add.js to settle, then refresh cart before opening drawer
             await new Promise(r => setTimeout(r, 300));
             await fetchCartShopify(false);
@@ -2502,13 +2486,13 @@ try {
             }
             const drawerEl = document.querySelector('.cart-drawer');
             if (drawerEl) drawerEl.classList.add('active');
-            showToast('Added to cart!');
-          } catch (error) {
-            const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
-            console.error('[WooAgent A2C] add-to-cart failed:', message);
-            addBubble('bot', message);
-            showToast(message);
           }
+          showToast('Added to cart!');
+        } catch (error) {
+          const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
+          console.error('[WooAgent A2C] add-to-cart failed:', message);
+          addBubble('bot', message);
+          showToast(message);
         }
         break;
 
@@ -3301,6 +3285,13 @@ try {
 
   async function addToCartShopify(payload) {
     let variantId = parseInt(payload && (payload.variation_id || payload.variant_id), 10);
+    // Shopify product IDs and variant IDs live in different namespaces. If a stale
+    // payload falls back to the product ID (product_id === variant_id), treat it as
+    // "no variant" and resolve the real one from the handle below.
+    const pId = parseInt(payload && payload.product_id, 10);
+    if (Number.isInteger(variantId) && variantId > 0 && Number.isInteger(pId) && variantId === pId) {
+      variantId = NaN;
+    }
     console.log('[WooAgent A2C] addToCartShopify: payload=', payload, 'explicit variantId=', variantId);
     if (!Number.isInteger(variantId) || variantId <= 0) {
       // No explicit variant: resolve from the handle. Prefer the payload handle,
