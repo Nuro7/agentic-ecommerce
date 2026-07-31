@@ -499,12 +499,6 @@ class ShopifyClient(BaseStoreClient):
         }
         terms = [t for t in re.findall(r"[a-z0-9]+", (query or "").lower())
                  if len(t) > 2 and t not in stop]
-        if terms:
-            admin_q = "status:active AND (" + " OR ".join(terms) + ")"
-        else:
-            admin_q = "status:active"
-            if sort_key == "RELEVANCE":
-                sort_key = "TITLE"  # RELEVANCE errors without a text term
         async def _fetch(q_str: str, sk: str, rev: bool, first: int) -> Optional[List[Dict[str, Any]]]:
             gql = ("""
         query AdminSearch($q: String!, $first: Int!, $reverse: Boolean!) {
@@ -535,12 +529,28 @@ class ShopifyClient(BaseStoreClient):
                 out.append(p)
             return out
 
+        # Fetch strategy: try a TIGHT AND query first so Shopify returns only the
+        # products matching EVERY token ("formal shoes" -> formal AND shoes). A
+        # single OR'd token can be near-universal (every product title here ends in
+        # "Shoes"), which fills the window with casual/sports shoes and buries the
+        # real matches (the BATA formal line) outside the fetched page.
+        if terms:
+            admin_q = "status:active AND (" + " AND ".join(terms) + ")"
+        else:
+            admin_q = "status:active"
+            if sort_key == "RELEVANCE":
+                sort_key = "TITLE"  # RELEVANCE errors without a text term
         products = await _fetch(admin_q, sort_key, reverse, 100)
         if products is None:
             return []
-        # Typo path: a SEARCH whose (misspelled) terms matched nothing in Shopify's
-        # exact search — fetch a browse page so the FUZZY ranker below can still find
-        # it ("gshook"→"g-shock"). Shopify has no fuzzy search, so we match locally.
+        # Fallback: when the exact-AND query matched nothing (customer used a word
+        # the store never uses — "sneakers" for "running shoes", or a typo), OR the
+        # tokens and browse a BIGGER window so the fuzzy ranker below can still
+        # match locally. Shopify has no fuzzy search, so we match client-side.
+        if terms and not products:
+            products = await _fetch(
+                "status:active AND (" + " OR ".join(terms) + ")", sort_key, reverse, 250
+            )
         if terms and not products:
             products = await _fetch("status:active", "TITLE", False, 150) or []
         fetched = len(products)
@@ -659,6 +669,12 @@ class ShopifyClient(BaseStoreClient):
 
         gql_query = " ".join(filter_parts) if filter_parts else "*"
         per_page = max(1, min(int(limit or 6), 40))
+        if size or color:
+            # The Storefront query returns only the top-N relevance products, and a
+            # requested size/colour often isn't a separate top product (each BATA
+            # formal colour/size ranks outside the top-6). Widen the window so the
+            # local attribute filter can still find the exact variant.
+            per_page = 40
 
         GQL = """
         query SearchProducts($query: String!, $first: Int!, $sortKey: ProductSortKeys!, $reverse: Boolean!) {
@@ -715,6 +731,25 @@ class ShopifyClient(BaseStoreClient):
                 "Shopify attribute filter: %d match after size=%r color=%r for query=%r store=%s",
                 len(products), size, color, query or "(browse)", self.store_domain or "?",
             )
+
+        # Shopify Storefront silently IGNORES numeric range filters in the search
+        # query ("price:<=100" still returns products at 769+). Apply price/on-sale
+        # client-side like the Admin path does, or a budget search leaks over-budget
+        # products.
+        if products and (min_price is not None or max_price is not None or on_sale is True):
+            if min_price is not None:
+                products = [p for p in products if _safe_float(p.get("price")) >= min_price]
+            if max_price is not None:
+                products = [p for p in products if _safe_float(p.get("price")) <= max_price]
+            if on_sale is True:
+                products = [p for p in products if p.get("on_sale")]
+            logger.info(
+                "Shopify price filter: %d match after min=%r max=%r on_sale=%r for query=%r",
+                len(products), min_price, max_price, on_sale, query or "(browse)",
+            )
+
+        if products:
+            products = products[: max(1, min(int(limit or 6), 40))]
 
         if not products and self.admin_token:
             products = await self._admin_search_products(
