@@ -76,6 +76,7 @@ from .text_utils import (
     has_add_intent, has_clear_cart_intent, has_quantity_intent,
     has_buy_now_intent,
     append_live_navigation, client_platform, bind_highlight_target,
+    detect_ui_command_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -576,9 +577,19 @@ async def ask_brain(
     result: Optional[Dict[str, Any]] = None
     lower_msg = cleaned_message.lower()
 
-    # â”€â”€ Step 5: Intent routing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Step 5a: Pure UI / navigation commands ─────────────────────────────
+    # "scroll down", "go to the top", "go home" are page actions, not product
+    # queries. Answer instantly (no retrieval, no LLM) so the voice path never
+    # replies "couldn't find any products matching scroll down".
+    if result is None:
+        _ui_resp = detect_ui_command_response(cleaned_message, store_context)
+        if _ui_resp is not None:
+            logger.info("[FLOW] brain ui_command fast-path session=%s query=%.60s", session_id, cleaned_message)
+            result = _ui_resp
+
+    # ── Step 5: Intent routing ─────────────────────────────────────────────
     logger.info("[FLOW] brain step5 intent_routing ENTER intent=%s session=%s", intent_result.intent, session_id)
-    if intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
+    if result is None and intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
         result = off_topic_response(lang)
 
     elif (

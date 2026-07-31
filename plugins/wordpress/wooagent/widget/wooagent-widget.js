@@ -3198,6 +3198,23 @@ try {
       const el = (S.pageState && S.pageState.sections && S.pageState.sections[String(target.section).toLowerCase()]) || null;
       return el || null;
     }
+    if (target.by === 'ordinal') {
+      const cards = (S.pageState && S.pageState.clickables) || [];
+      if (!cards.length) return null;
+      const ord = String(target.ord || 'first').toLowerCase();
+      let idx = 0;
+      if (ord === 'last') idx = cards.length - 1;
+      else if (ord === 'next') { S._ordinalIndex = ((S._ordinalIndex ?? -1) + 1); idx = S._ordinalIndex; }
+      else if (ord === 'prev' || ord === 'previous') { S._ordinalIndex = ((S._ordinalIndex ?? 1) - 1); idx = S._ordinalIndex; }
+      else if (ord === '1st' || ord === 'first') idx = 0;
+      else if (ord === '2nd' || ord === 'second') idx = 1;
+      else if (ord === '3rd' || ord === 'third') idx = 2;
+      else if (ord === '4th' || ord === 'fourth') idx = 3;
+      else if (ord === '5th' || ord === 'fifth') idx = 4;
+      idx = Math.max(0, Math.min(cards.length - 1, idx));
+      S._ordinalIndex = idx;
+      return cards[idx].el;
+    }
     if (target.by === 'text' && target.q) {
       const q = String(target.q).toLowerCase().trim();
       const cards = (S.pageState && S.pageState.clickables) || [];
@@ -3321,8 +3338,8 @@ try {
     // Cart actions
     { re: /(add|put)\s+(?:(?:this|it|that)\s+)?(?:to|in)\s+(?:(?:my|the)\s+)?(?:cart|bag)$/i,
       act: (m, t) => buildLocalAddSpec(t) },
-    { re: /^buy\s+(?:this|it|that)$/i,
-      act: (m, t) => buildLocalAddSpec(t) },
+    { re: /^buy\s+(?:this|it|that)(?:\s+now)?$/i,
+      act: (m, t) => buildLocalBuyNowSpec(t) },
     { re: /(remove|delete|take)\s+(?:this|it|that)\s+(?:from|out\s+of)\s+(?:my\s+)?(?:cart|bag)/i,
       act: () => buildLocalRemoveSpec() },
     { re: /^remove\s+(?:this|it)/i,
@@ -3335,7 +3352,7 @@ try {
     { re: /^(?:go\s+to\s+)?(?:checkout|check\s*out)$/i,
       act: { t: 'checkout' } },
     { re: /^buy\s+now$/i,
-      act: { t: 'checkout' } },
+      act: (m, t) => buildLocalBuyNowSpec(t) },
     { re: /^search\s+(?:for\s+)?(.+)/i,
       act: (m) => ({ t: 'search', payload: { query: m[1].trim() } }) },
     // Scroll
@@ -3349,6 +3366,11 @@ try {
       act: { t: 'scroll', top: 0, ack: 'Going to top' } },
     { re: /^(?:scroll\s+to\s+|go\s+to\s+|show\s+)(?:the\s+)?(reviews|description|footer|header|products?|grid|related|size|shipping|policy|variant.?picker|variant.?pick)/i,
       act: (m) => ({ t: 'scroll', target: { section: m[1].toLowerCase() }, block: 'start', ack: 'Here you go' }) },
+    // Click a product by ordinal position ("take first item", "open the 3rd one")
+    { re: /^(?:take|open|show|get|click(?:\s+on)?|go\s+to)\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last|next|previous|prev)\s+(?:item|product|one|result|card)$/i,
+      act: (m) => ({ t: 'click', target: { by: 'ordinal', ord: m[1].toLowerCase() }, ack: 'Opening product' }) },
+    { re: /^(?:take|get|open|show|click(?:\s+on)?)\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last|next|previous|prev)\s*(?:one|item|product|result)?$/i,
+      act: (m) => ({ t: 'click', target: { by: 'ordinal', ord: m[1].toLowerCase() }, ack: 'Opening product' }) },
     // Click a product by name
     { re: /^(?:open|show|click(?:\s+on)?)\s+(?:the\s+)?(.+)/i,
       act: (m) => ({ t: 'click', target: { by: 'text', q: m[1] }, ack: 'Opening product' }) },
@@ -3377,24 +3399,40 @@ try {
   }
 
   function buildLocalAddSpec(t) {
+    refreshPageState();
+    // Prefer the product actually on screen (PDP) — the customer said "add to
+    // cart" while LOOKING at a product page, so that's the intent even if
+    // S.lastShownProduct is stale (left over from an earlier search).
+    const pageCur = (S.pageState && S.pageState.currentProduct) || {};
+    const pdpId = pageCur.id || null;
     const last = S.lastShownProduct;
-    console.log('[WooAgent A2C] Local command matched:', t, 'lastShownProduct:', last);
-    if (!last || !last.id) {
+    const src = (pdpId ? { id: pdpId, variation_id: pageCur.variant_id || 0, handle: (S.currentPageProduct && S.currentPageProduct.handle) || '' } : null) || last;
+    console.log('[WooAgent A2C] Local command matched:', t, 'currentPDP:', pdpId, 'lastShownProduct:', last);
+    if (!src || !src.id) {
       console.warn('[WooAgent A2C] No lastShownProduct — falling through to brain path');
       return null;
     }
     S._localAddHandled = Date.now();
     const payload = {
-      product_id: last.id,
-      variation_id: last.variation_id || 0,
-      variation: last.variation || {},
-      handle: last.handle || '',
+      product_id: src.id,
+      variation_id: src.variation_id || 0,
+      variation: src.variation || {},
+      handle: src.handle || '',
       quantity: 1,
     };
     console.log('[WooAgent A2C] Dispatching local add-to-cart:', payload);
     // Route through processAction so the add_to_cart handler stays the single
     // source of truth for platform-aware cart writes.
     return { t: 'add_to_cart', payload, ack: 'Added to cart' };
+  }
+
+  // "Buy it now" — add the current product, then jump to checkout on success.
+  // Returns null (→ backend) when no product is resolvable locally.
+  function buildLocalBuyNowSpec(t) {
+    const spec = buildLocalAddSpec(t);
+    if (!spec) return null;
+    spec.checkoutAfter = true;
+    return spec;
   }
 
   function buildLocalRemoveSpec() {
@@ -3437,13 +3475,18 @@ try {
       // Custom action (add_to_cart / checkout / search / remove_from_cart) →
       // same processAction pipeline the backend uses. Spoken ack fires after the
       // async handler settles and only when it succeeded (S._localActionOk).
+      // "Buy it now" (checkoutAfter) chains goToCheckout after a successful add.
       try {
         S._localActionOk = null;
         const pr = processAction({ type: spec.t, payload: spec.payload || spec });
         if (pr && typeof pr.then === 'function') {
-          pr.then(() => { if (spec.ack && S._localActionOk !== false) speakLocal(spec.ack); }).catch(() => {});
+          pr.then(() => {
+            if (spec.ack && S._localActionOk !== false) speakLocal(spec.ack);
+            if (spec.checkoutAfter && S._localActionOk !== false) goToCheckout();
+          }).catch(() => {});
         } else if (spec.ack) {
           speakLocal(spec.ack);
+          if (spec.checkoutAfter) goToCheckout();
         }
         return true;
       } catch (_e) {

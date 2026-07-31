@@ -21,6 +21,63 @@ def client_platform(store_client) -> str:
     return "custom"
 
 
+# ── Pure UI / navigation command detection ─────────────────────────────────
+# "scroll down", "go to the top", "go home" are PAGE actions, not product
+# searches. Gemini Live calls ask_brain() for them and the brain used to treat
+# them as searches → "I couldn't find any products matching scroll down".
+# Detect them up-front and answer instantly with a short spoken ack; the widget
+# performs the actual scroll/navigation locally (handleLocalVoiceCommand), so no
+# ui_action is needed for pure scrolls.
+_UI_COMMAND_PATTERNS = [
+    (re.compile(r"^(?:scroll\s+)?(?:down|downwards?|scroll\s+down)$", re.I), "scroll_down"),
+    (re.compile(r"^(?:scroll\s+)?(?:up|upwards?|scroll\s+up)$", re.I), "scroll_up"),
+    (re.compile(r"^(?:scroll\s+to\s+|go\s+to\s+|scroll\s+)(?:the\s+)?(?:bottom|end)$", re.I), "scroll_bottom"),
+    (re.compile(r"^(?:scroll\s+to\s+|go\s+to\s+|scroll\s+)(?:the\s+)?(?:top|beginning|start)$", re.I), "scroll_top"),
+    (re.compile(r"^(?:go\s+to\s+|go\s+|take\s+me\s+to\s+)(?:the\s+)?(?:home|homepage|home\s+page)$", re.I), "home"),
+    (re.compile(r"^home(?:page| page)?$", re.I), "home"),
+]
+
+_UI_COMMAND_ACK = {
+    "scroll_down": "Scrolling down",
+    "scroll_up": "Scrolling up",
+    "scroll_bottom": "Going to the bottom of the page",
+    "scroll_top": "Going to the top of the page",
+    "home": "Taking you to the home page",
+}
+
+
+def detect_ui_command_response(
+    message: Any,
+    store_context: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return an instant spoken ack for pure UI/navigation commands, else None.
+
+    Skips retrieval and the LLM entirely — these are page actions, not product
+    queries. The widget already performs the scroll/navigate locally, so the
+    brain only needs to say the right thing quickly (previously it replied
+    "couldn't find any products" and added LLM latency).
+    """
+    text = str(message or "").strip().rstrip(" .!?।")
+    if not text or len(text) > 40:
+        return None
+    for pattern, kind in _UI_COMMAND_PATTERNS:
+        if pattern.fullmatch(text):
+            actions: List[Dict[str, Any]] = []
+            if kind == "home":
+                base = str((store_context or {}).get("url") or "").strip()
+                if base:
+                    actions.append({
+                        "type": "redirect",
+                        "payload": {"url": base, "reason": "home", "delay_ms": 1500},
+                    })
+            return {
+                "response_text": _UI_COMMAND_ACK.get(kind, ""),
+                "ui_actions": actions,
+                "suggested_replies": [],
+            }
+    return None
+
+
 def storefront_search_url(store_url, platform: str, query) -> Optional[str]:
     """Universal storefront search URL: Shopify /search?q=, Woo /?s=&post_type=product."""
     from urllib.parse import quote_plus
