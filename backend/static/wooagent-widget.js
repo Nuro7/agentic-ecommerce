@@ -1555,6 +1555,7 @@
   S.menuOpen = false;
   S.mode = 'idle'; // 'idle', 'chat', 'voice_nav'
   S.lastShownProduct = null; // {id, handle, name, variation_id, variation} for local voice commands
+  S.pageState = null;        // {sections, clickables, variants, currentProduct} snapshot for resolveTarget
 
   function toggleMenu() {
     S.menuOpen = !S.menuOpen;
@@ -2487,8 +2488,10 @@ try {
             const drawerEl = document.querySelector('.cart-drawer');
             if (drawerEl) drawerEl.classList.add('active');
           }
+          S._localActionOk = true;
           showToast('Added to cart!');
         } catch (error) {
+          S._localActionOk = false;
           const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
           console.error('[WooAgent A2C] add-to-cart failed:', message);
           addBubble('bot', message);
@@ -2523,8 +2526,10 @@ try {
             } else {
               await removeFromCartViaWoo(itemKey);
             }
+            S._localActionOk = true;
           }
         } catch (error) {
+          S._localActionOk = false;
           showToast('Could not remove item from cart.');
         }
         break;
@@ -2953,6 +2958,24 @@ try {
         window.dispatchEvent(new CustomEvent(eventName, { detail }));
         break;
       }
+
+      case 'checkout':
+        goToCheckout();
+        break;
+
+      case 'search': {
+        const q = String((act.payload && act.payload.query) || '').trim();
+        if (!q) break;
+        try {
+          sessionStorage.setItem('_wa_voice_active', '1');
+          sessionStorage.setItem('_wa_pending_search', q);
+          if (S.mode === 'voice_nav') {
+            localStorage.setItem('_wa_voice_nav_resume', '1');
+          }
+        } catch (e) {}
+        window.location.href = '/search?q=' + encodeURIComponent(q);
+        break;
+      }
     }
   }
 
@@ -3102,126 +3125,329 @@ try {
     speechSynthesis.speak(u);
   }
 
-  function handleLocalVoiceCommand(text) {
-    const t = text.trim();
-    if (!t || t.length > 120) return false;
-    // Add to cart — either /cart/add.js (Shopify) or REST (WooCommerce)
-    // Matches: "add to cart", "add this to cart", "put it in cart", "buy this", etc.
-    if (/(add|put)\s+(?:(?:this|it|that)\s+)?(to|in)\s+(?:my\s+)?(cart|bag)$/i.test(t) ||
-        /^buy\s+(?:this|it|that)$/i.test(t)) {
-      const last = S.lastShownProduct;
-      console.log('[WooAgent A2C] Local command matched:', t, 'lastShownProduct:', last);
-      if (!last || !last.id) {
-        console.warn('[WooAgent A2C] No lastShownProduct — falling through to brain path');
-        return false;
+  // ── Data-driven local voice command engine ───────────────────────────────
+  // Commands are DATA, not code. Each row = (intent regex → action spec).
+  // Action specs use a tiny vocabulary: {t: 'scroll'|'navigate'|'click'|'fill'|
+  // 'select'|'speak'} + a `target` descriptor resolved by resolveTarget(). Custom
+  // actions (add_to_cart / checkout / search / remove_from_cart) fall through to
+  // the existing processAction() pipeline — one engine, one dispatch path.
+
+  const SECTION_MAP = {
+    reviews: '#shopify-product-reviews, #product-reviews, [data-product-reviews], .product-reviews',
+    description: '.product-description, [data-product-description], .product__description, [data-product-description-container]',
+    footer: 'footer, .footer, .site-footer',
+    header: 'header, .header, .site-header',
+    products: '.product-grid, .collection, #collection, .collection-products',
+    grid: '.product-grid, .collection',
+    related: '.related-products, .product-recommendations',
+    size: '.size-chart, [data-size-chart], .product__size-chart',
+    shipping: '.shipping-policy, .shipping-info, .product__shipping',
+    policy: '.return-policy, .privacy-policy, .product__policy',
+    variant_picker: '.product-form, .product__form, [data-product-form], .variant-picker, form[action*="cart/add"]',
+    'variant-pick': '.product-form, .product__form, [data-product-form], .variant-picker, form[action*="cart/add"]',
+  };
+  const PRODUCT_CARD_SELECTOR = '.product-card, .product-grid-item, .grid__item, [data-product-id], .card-wrapper, .type-product, .product, li.product, .wc-block-grid__product';
+
+  // Refresh a lightweight page snapshot (sections, product cards, variant
+  // controls) that resolveTarget() uses to turn names/sizes into DOM elements.
+  function refreshPageState() {
+    try {
+      const sections = {};
+      for (const [name, sels] of Object.entries(SECTION_MAP)) {
+        if (sections[name]) continue;
+        for (const sel of sels.split(',')) {
+          const el = document.querySelector(sel.trim());
+          if (el) { sections[name] = el; break; }
+        }
       }
-      S._localAddHandled = Date.now();
-      const payload = {
-        product_id: last.id,
-        variation_id: last.variation_id || 0,
-        variation: last.variation || {},
-        handle: last.handle || '',
-        quantity: 1
-      };
-      console.log('[WooAgent A2C] Dispatching local add-to-cart:', payload);
-      addToCartDispatch(payload).then(() => {
-        console.log('[WooAgent A2C] Local add-to-cart succeeded');
-        speakLocal('Added to cart');
-        showToast('🛒 Added to cart');
-      }).catch(e => {
-        S._localAddHandled = 0;
-        console.error('[WooAgent A2C] Local add-to-cart failed:', e.message);
-        showToast(String(e.message || 'Add to cart failed'));
+      const clickables = [];
+      document.querySelectorAll(PRODUCT_CARD_SELECTOR).forEach((el) => {
+        if (clickables.length >= 40) return;
+        const text = (el.textContent || el.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ').slice(0, 120);
+        const handle = el.getAttribute('data-product-handle') || (el.getAttribute('href') || '').match(/\/products\/([^/?#]+)/)?.[1] || '';
+        if (text || handle) clickables.push({ el, text: text.toLowerCase(), handle: handle.toLowerCase() });
       });
-      return true;
+      const variants = [];
+      document.querySelectorAll('[data-option-value]:not(.hidden):not([disabled]), .swatch, [data-variant-option], .variant-option').forEach((el) => {
+        if (variants.length >= 40) return;
+        const value = (el.getAttribute('data-option-value') || el.getAttribute('data-value') || el.textContent || '').trim();
+        if (value) variants.push({ el, value: value.toLowerCase() });
+      });
+      S.pageState = {
+        sections,
+        clickables,
+        variants,
+        currentProduct: {
+          id: detectProductId(),
+          name: detectProductName(),
+          variant_id: detectActiveVariantId(),
+        },
+      };
+    } catch (_e) {
+      S.pageState = S.pageState || { sections: {}, clickables: [], variants: [], currentProduct: {} };
     }
-    // Remove from cart
-    if (/(remove|delete|take)\s+(this|it|that)\s+(from|out\s+of)\s+(my\s+)?(cart|bag)/i.test(t) ||
-        /^remove\s+(this|it)/i.test(t)) {
-      if (S.cartSnapshot && Array.isArray(S.cartSnapshot.items) && S.cartSnapshot.items.length) {
-        const lastItem = S.cartSnapshot.items[S.cartSnapshot.items.length - 1];
-        if (lastItem && lastItem.cart_item_key) {
-          (IS_SHOPIFY ? removeFromCartShopify(lastItem.cart_item_key) : removeFromCartViaWoo(lastItem.cart_item_key))
-            .then(() => speakLocal('Removed from cart'))
-            .catch(e => showToast(String(e.message || 'Remove failed')));
-          return true;
+  }
+
+  // Resolve a declarative target descriptor → DOM element.
+  // Descriptors: {section:'reviews'} | {by:'text', q:'blue sneakers'} |
+  //              {by:'selector', sel:'.x'} | {kind:'variant'} | {el: HTMLElement}
+  function resolveTarget(target) {
+    if (!target) return null;
+    if (target.el) return target.el;
+    if (target.section) {
+      const el = (S.pageState && S.pageState.sections && S.pageState.sections[String(target.section).toLowerCase()]) || null;
+      return el || null;
+    }
+    if (target.by === 'text' && target.q) {
+      const q = String(target.q).toLowerCase().trim();
+      const cards = (S.pageState && S.pageState.clickables) || [];
+      // Exact title match first, then substring match on the clickable text/handle.
+      for (const c of cards) {
+        if (c.text === q || c.handle === q) return c.el;
+      }
+      for (const c of cards) {
+        if (c.text.includes(q) || q.includes(c.text.slice(0, 12))) return c.el;
+      }
+      // Word-level fuzzy match: every significant word in the query must appear
+      // in the card text ("blue sneakers" ↔ "Blue Running Sneaker").
+      const stem = (w) => w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w;
+      const qWords = q.split(' ').filter(w => w.length > 2);
+      if (qWords.length) {
+        const qStems = qWords.map(stem);
+        for (const c of cards) {
+          const cWords = c.text.split(' ');
+          const cStems = new Set(cWords.map(stem));
+          if (qStems.every(s => cStems.has(s) || c.text.includes(s) || c.handle.includes(s))) return c.el;
         }
       }
-      showToast('No item to remove');
+      return null;
+    }
+    if (target.by === 'selector' && target.sel) return document.querySelector(target.sel);
+    if (target.kind === 'variant') {
+      const picker = document.querySelector('.product-form, .product__form, [data-product-form], .variant-picker, form[action*="cart/add"]');
+      return picker || null;
+    }
+    return null;
+  }
+
+  // ── Generic executors ────────────────────────────────────────────────────
+  function execScroll(spec) {
+    const el = resolveTarget(spec.target);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: spec.block || 'start' });
       return true;
     }
-    // Go to home
-    if (/^(go\s+to\s+)?(home|homepage|home\s+page)$/i.test(t)) {
-      window.location.href = '/';
-      return true;
-    }
-    // Go to cart
-    if (/^(go\s+to|show|view|open)\s+(my\s+)?cart$/i.test(t)) {
-      window.location.href = '/cart';
-      return true;
-    }
-    // Checkout
-    if (/^(go\s+to\s+)?(checkout|check\s*out)$/i.test(t) || /^buy\s+now$/i.test(t)) {
-      goToCheckout();
-      return true;
-    }
-    // Search — only exact match patterns, no conversational ambiguitiy
-    const sm = t.match(/^search\s+(for\s+)?(.+)/i);
-    if (sm && sm[2]) {
-      const query = sm[2].trim();
-      // Persist voice session state before navigation so mic auto-resumes on /search
-      try {
-        sessionStorage.setItem('_wa_voice_active', '1');
-        sessionStorage.setItem('_wa_pending_search', query);
-        if (S.mode === 'voice_nav') {
-          localStorage.setItem('_wa_voice_nav_resume', '1');
-        }
-      } catch (e) {}
-      window.location.href = '/search?q=' + encodeURIComponent(query);
-      return true;
-    }
-    // ── Scroll commands ──────────────────────────────────────────────────
-    // Scroll down
-    if (/^(scroll\s+)?down$/i.test(t) || /^scroll\s+downwards?$/i.test(t)) {
-      window.scrollBy({ top: window.innerHeight * 0.7, behavior: 'smooth' });
-      speakLocal('Scrolling down'); return true;
-    }
-    // Scroll up
-    if (/^(scroll\s+)?up$/i.test(t) || /^scroll\s+upwards?$/i.test(t)) {
-      window.scrollBy({ top: -window.innerHeight * 0.7, behavior: 'smooth' });
-      speakLocal('Scrolling up'); return true;
-    }
-    // Scroll to bottom
-    if (/^(scroll\s+to\s+)?bottom$/i.test(t)) {
+    if (spec.top === 'max') {
       window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-      speakLocal('Going to bottom'); return true;
+      return true;
     }
-    // Scroll to top
-    if (/^(scroll\s+to\s+)?top$/i.test(t)) {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-      speakLocal('Going to top'); return true;
+    if (typeof spec.top === 'number') {
+      window.scrollTo({ top: spec.top, behavior: 'smooth' });
+      return true;
     }
-    // Scroll to section
-    const sectionMatch = t.match(/^(?:scroll\s+to\s+|go\s+to\s+|show\s+)(reviews|description|footer|header|products?|grid|related|size|shipping|policy|variant.?picker|variant.?pick)/i);
-    if (sectionMatch) {
-      const SECTION_MAP = {
-        reviews: '#shopify-product-reviews, #product-reviews, [data-product-reviews], .product-reviews',
-        description: '.product-description, [data-product-description], .product__description, [data-product-description-container]',
-        footer: 'footer, .footer, .site-footer',
-        header: 'header, .header, .site-header',
-        products: '.product-grid, .collection, #collection, .collection-products',
-        grid: '.product-grid, .collection',
-        related: '.related-products, .product-recommendations',
-        size: '.size-chart, [data-size-chart], .product__size-chart',
-        shipping: '.shipping-policy, .shipping-info, .product__shipping',
-        policy: '.return-policy, .privacy-policy, .product__policy',
-        variant_picker: '.product-form, .product__form, [data-product-form], .variant-picker, form[action*="cart/add"]',
-        'variant-pick': '.product-form, .product__form, [data-product-form], .variant-picker, form[action*="cart/add"]',
-      };
-      const selectors = SECTION_MAP[sectionMatch[1].toLowerCase()];
-      if (selectors) {
-        const el = document.querySelector(selectors.split(',')[0].trim());
-        if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); speakLocal('Here you go'); return true; }
+    if (typeof spec.delta === 'number') {
+      window.scrollBy({ top: spec.delta, behavior: 'smooth' });
+      return true;
+    }
+    return false;
+  }
+
+  function execNavigate(spec) {
+    if (!spec.url) return false;
+    try {
+      if (S.mode === 'voice_nav') {
+        localStorage.setItem('_wa_voice_nav_resume', '1');
+      } else {
+        localStorage.setItem('_wa_reopen', '1');
+      }
+    } catch (_e) {}
+    window.location.href = spec.url;
+    return true;
+  }
+
+  function execClick(spec) {
+    const el = resolveTarget(spec.target);
+    if (!el) return false;
+    el.click();
+    return true;
+  }
+
+  function execFill(spec) {
+    const el = resolveTarget(spec.target);
+    if (!el) return false;
+    return setElementValue(el, spec.value);
+  }
+
+  function execSelect(spec) {
+    const value = String(spec.value || '').trim().toLowerCase();
+    if (!value) return false;
+    const variants = (S.pageState && S.pageState.variants) || [];
+    const picker = resolveTarget({ kind: 'variant' });
+    // Normalise controls to plain DOM elements (pageState stores {el, value}).
+    const controls = (variants.length ? variants.map(v => v.el) : (picker ? picker.querySelectorAll('[data-option-value]:not(.hidden):not([disabled]), select, .swatch') : []));
+    for (const v of controls) {
+      const label = (v.getAttribute && (v.getAttribute('data-option-value') || v.getAttribute('data-value')) || v.textContent || '').trim().toLowerCase();
+      if (label === value || label.includes(value) || value.includes(label)) {
+        if (v.tagName === 'SELECT') {
+          setSelectByValueOrLabel(v, value);
+          v.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          v.click();
+        }
+        return true;
+      }
+    }
+    // Fallback: click any radio whose text matches the spoken size/colour.
+    const radios = document.querySelectorAll('[data-option-value]:not(.hidden):not([disabled])');
+    for (const radio of radios) {
+      if (radio.textContent.trim().toLowerCase().includes(value)) {
+        radio.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function execSpeak(spec) {
+    if (spec.text) speakLocal(spec.text);
+    return true;
+  }
+
+  // ── Command table: intent pattern → action spec ──────────────────────────
+  // Keep specific patterns BEFORE generic ones. Each `act` may be a static spec
+  // object or a function (match, transcript) => spec. Returning null from the
+  // function means "not handled locally" → falls through to the backend brain.
+  const COMMANDS = [
+    // Cart actions
+    { re: /(add|put)\s+(?:(?:this|it|that)\s+)?(?:to|in)\s+(?:(?:my|the)\s+)?(?:cart|bag)$/i,
+      act: (m, t) => buildLocalAddSpec(t) },
+    { re: /^buy\s+(?:this|it|that)$/i,
+      act: (m, t) => buildLocalAddSpec(t) },
+    { re: /(remove|delete|take)\s+(?:this|it|that)\s+(?:from|out\s+of)\s+(?:my\s+)?(?:cart|bag)/i,
+      act: () => buildLocalRemoveSpec() },
+    { re: /^remove\s+(?:this|it)/i,
+      act: () => buildLocalRemoveSpec() },
+    // Navigation
+    { re: /^(?:go\s+to\s+|go\s+)?(?:home|homepage|home\s+page)$/i,
+      act: { t: 'navigate', url: '/' } },
+    { re: /^(?:go\s+to|show|view|open)\s+(?:my\s+)?cart$/i,
+      act: { t: 'navigate', url: '/cart' } },
+    { re: /^(?:go\s+to\s+)?(?:checkout|check\s*out)$/i,
+      act: { t: 'checkout' } },
+    { re: /^buy\s+now$/i,
+      act: { t: 'checkout' } },
+    { re: /^search\s+(?:for\s+)?(.+)/i,
+      act: (m) => ({ t: 'search', payload: { query: m[1].trim() } }) },
+    // Scroll
+    { re: /^(?:scroll\s+)?(?:down|downwards?)$/i,
+      act: { t: 'scroll', delta: () => Math.round(window.innerHeight * 0.7), ack: 'Scrolling down' } },
+    { re: /^(?:scroll\s+)?(?:up|upwards?)$/i,
+      act: { t: 'scroll', delta: () => -Math.round(window.innerHeight * 0.7), ack: 'Scrolling up' } },
+    { re: /^(?:scroll\s+to\s+|go\s+to\s+)?(?:bottom|end)$/i,
+      act: { t: 'scroll', top: 'max', ack: 'Going to bottom' } },
+    { re: /^(?:scroll\s+to\s+|go\s+to\s+)?(?:top|beginning)$/i,
+      act: { t: 'scroll', top: 0, ack: 'Going to top' } },
+    { re: /^(?:scroll\s+to\s+|go\s+to\s+|show\s+)(?:the\s+)?(reviews|description|footer|header|products?|grid|related|size|shipping|policy|variant.?picker|variant.?pick)/i,
+      act: (m) => ({ t: 'scroll', target: { section: m[1].toLowerCase() }, block: 'start', ack: 'Here you go' }) },
+    // Click a product by name
+    { re: /^(?:open|show|click(?:\s+on)?)\s+(?:the\s+)?(.+)/i,
+      act: (m) => ({ t: 'click', target: { by: 'text', q: m[1] }, ack: 'Opening product' }) },
+    // Select a variant option (size / colour)
+    { re: /^(?:select|choose|pick)\s+(?:the\s+)?(?:size\s+)?(.+)/i,
+      act: (m) => ({ t: 'select', value: m[1], ack: 'Selected' }) },
+  ];
+
+  const EXECUTORS = {
+    scroll: execScroll,
+    navigate: execNavigate,
+    click: execClick,
+    fill: execFill,
+    select: execSelect,
+    speak: execSpeak,
+  };
+
+  // Resolve function-valued spec fields (e.g. delta: () => innerHeight*0.7).
+  function materializeSpec(spec, m) {
+    if (!spec || typeof spec !== 'object') return spec;
+    const out = {};
+    for (const [k, v] of Object.entries(spec)) {
+      out[k] = typeof v === 'function' ? v(m) : v;
+    }
+    return out;
+  }
+
+  function buildLocalAddSpec(t) {
+    const last = S.lastShownProduct;
+    console.log('[WooAgent A2C] Local command matched:', t, 'lastShownProduct:', last);
+    if (!last || !last.id) {
+      console.warn('[WooAgent A2C] No lastShownProduct — falling through to brain path');
+      return null;
+    }
+    S._localAddHandled = Date.now();
+    const payload = {
+      product_id: last.id,
+      variation_id: last.variation_id || 0,
+      variation: last.variation || {},
+      handle: last.handle || '',
+      quantity: 1,
+    };
+    console.log('[WooAgent A2C] Dispatching local add-to-cart:', payload);
+    // Route through processAction so the add_to_cart handler stays the single
+    // source of truth for platform-aware cart writes.
+    return { t: 'add_to_cart', payload, ack: 'Added to cart' };
+  }
+
+  function buildLocalRemoveSpec() {
+    if (S.cartSnapshot && Array.isArray(S.cartSnapshot.items) && S.cartSnapshot.items.length) {
+      const lastItem = S.cartSnapshot.items[S.cartSnapshot.items.length - 1];
+      if (lastItem && lastItem.cart_item_key) {
+        return { t: 'remove_from_cart', payload: { cart_item_key: lastItem.cart_item_key }, ack: 'Removed from cart' };
+      }
+    }
+    showToast('No item to remove');
+    return { t: 'speak', text: '' };
+  }
+
+  // Single entry point: returns true when handled locally, false → backend.
+  function handleLocalVoiceCommand(text) {
+    const t = String(text || '').trim();
+    if (!t || t.length > 120) return false;
+    refreshPageState();
+    for (const cmd of COMMANDS) {
+      const m = t.match(cmd.re);
+      if (!m) continue;
+      let spec;
+      try {
+        spec = typeof cmd.act === 'function' ? cmd.act(m, t) : cmd.act;
+      } catch (_e) {
+        spec = null;
+      }
+      if (!spec) return false; // guard rejected → fall through to backend
+      spec = materializeSpec(spec, m);
+      const exec = EXECUTORS[spec.t];
+      if (exec) {
+        try {
+          const handled = exec(spec);
+          if (handled && spec.ack) speakLocal(spec.ack);
+          return handled;
+        } catch (_e) {
+          return false;
+        }
+      }
+      // Custom action (add_to_cart / checkout / search / remove_from_cart) →
+      // same processAction pipeline the backend uses. Spoken ack fires after the
+      // async handler settles and only when it succeeded (S._localActionOk).
+      try {
+        S._localActionOk = null;
+        const pr = processAction({ type: spec.t, payload: spec.payload || spec });
+        if (pr && typeof pr.then === 'function') {
+          pr.then(() => { if (spec.ack && S._localActionOk !== false) speakLocal(spec.ack); }).catch(() => {});
+        } else if (spec.ack) {
+          speakLocal(spec.ack);
+        }
+        return true;
+      } catch (_e) {
+        return false;
       }
     }
     return false;
