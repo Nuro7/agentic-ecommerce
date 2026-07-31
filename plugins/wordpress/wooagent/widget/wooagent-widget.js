@@ -1951,7 +1951,7 @@ try {
 
         // Voice activity detection — auto-stop on sustained silence
         const maxVal = Math.max.apply(null, data);
-        const MAX_RECORD_MS = 15000; // 15 seconds hard cap to prevent getting stuck
+        const MAX_RECORD_MS = 30000; // 30 seconds hard cap to prevent getting stuck
         if (maxVal > SILENCE_THRESHOLD) {
           lastSoundTime = Date.now();
         } else if (
