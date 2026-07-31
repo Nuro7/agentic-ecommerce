@@ -2469,7 +2469,17 @@ try {
         break;
       }
 
-      case 'add_to_cart':
+      case 'add_to_cart': {
+        // Dedup: the backend echoes the same utterance as a ui_action ~1-5s after
+        // the widget handled it locally (payload carries _wa_local). Without this
+        // the add fired twice — a cart-refresh race that looked like "took 3-5
+        // tries". Consume the marker here so the next utterance sets a fresh one.
+        if (!(act.payload && act.payload._wa_local) &&
+            S._localAddHandled && (Date.now() - S._localAddHandled) < 15000) {
+          console.log('[WooAgent A2C] Skipping duplicate add_to_cart echo (already handled locally)');
+          S._localAddHandled = null;
+          break;
+        }
         try {
           // Platform-aware add that resolves the REAL Shopify variant ID from the
           // product handle when the payload only carries a product ID (Shopify's
@@ -2498,6 +2508,7 @@ try {
           showToast(message);
         }
         break;
+      }
 
       case 'remove_from_cart':
         try {
@@ -2868,6 +2879,27 @@ try {
         break;
       }
 
+      case 'scroll': {
+        if (_scrollDedup()) break;
+        const st = act.payload || {};
+        const dir = String(st.direction || st.position || '').toLowerCase();
+        const delta = Math.round(window.innerHeight * 0.7);
+        if (dir === 'up' || dir === 'upwards') {
+          window.scrollBy({ top: -delta, behavior: 'smooth' });
+        } else if (dir === 'bottom' || dir === 'end') {
+          window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        } else if (dir === 'top' || dir === 'beginning' || dir === 'start') {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else if (st.top === 'max') {
+          window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        } else if (typeof st.top === 'number') {
+          window.scrollTo({ top: st.top, behavior: 'smooth' });
+        } else {
+          window.scrollBy({ top: delta, behavior: 'smooth' });
+        }
+        break;
+      }
+
       case 'scroll_to': {
         const st = act.payload || {};
         const sel = st.selector || '';
@@ -3118,6 +3150,10 @@ try {
 
   function speakLocal(text) {
     if (S.muted || !window.speechSynthesis) return;
+    // In A2A live mode the backend streams Gemini's spoken reply for the same
+    // turn — speaking locally too double-voices every ack ("Scrolling down"
+    // comes out as two voices). Backend owns speech there.
+    if (isA2AConnected && isLiveMode) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = S.language || 'en';
@@ -3164,8 +3200,19 @@ try {
       document.querySelectorAll(PRODUCT_CARD_SELECTOR).forEach((el) => {
         if (clickables.length >= 40) return;
         const text = (el.textContent || el.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' ').slice(0, 120);
-        const handle = el.getAttribute('data-product-handle') || (el.getAttribute('href') || '').match(/\/products\/([^/?#]+)/)?.[1] || '';
-        if (text || handle) clickables.push({ el, text: text.toLowerCase(), handle: handle.toLowerCase() });
+        // Real product cards link to /products/<handle> (either the card itself
+        // or a child anchor) or carry data-product-id. Generic grid__item matches
+        // (heroes, nav, filter panels) must NOT be treated as listed products —
+        // "first item" used to click whatever DOM order happened to put first.
+        const selfLink = el.matches('a[href*="/products/"]') ? el.getAttribute('href') : '';
+        const childLink = el.querySelector('a[href*="/products/"]');
+        const linkHref = selfLink || (childLink ? childLink.getAttribute('href') : '') || '';
+        const handle = el.getAttribute('data-product-handle')
+          || (el.getAttribute('href') || '').match(/\/products\/([^/?#]+)/)?.[1]
+          || linkHref.match(/\/products\/([^/?#]+)/)?.[1]
+          || '';
+        const isProduct = !!(el.getAttribute('data-product-id') || handle);
+        if (isProduct && text) clickables.push({ el, text: text.toLowerCase(), handle: handle.toLowerCase(), isProduct });
       });
       const variants = [];
       document.querySelectorAll('[data-option-value]:not(.hidden):not([disabled]), .swatch, [data-variant-option], .variant-option').forEach((el) => {
@@ -3199,7 +3246,11 @@ try {
       return el || null;
     }
     if (target.by === 'ordinal') {
-      const cards = (S.pageState && S.pageState.clickables) || [];
+      let cards = (S.pageState && S.pageState.clickables) || [];
+      // Prefer real product cards ("first item" = first LISTED product). Fall
+      // back to all clickables if no card was flagged as a product.
+      const prodCards = cards.filter(c => c && c.isProduct);
+      if (prodCards.length) cards = prodCards;
       if (!cards.length) return null;
       const ord = String(target.ord || 'first').toLowerCase();
       let idx = 0;
@@ -3248,7 +3299,17 @@ try {
   }
 
   // ── Generic executors ────────────────────────────────────────────────────
+  // One "scroll" utterance produces BOTH a local intercept AND a backend
+  // ui_action ~1-3s later — dedup so the page doesn't jump twice per command.
+  function _scrollDedup() {
+    const now = Date.now();
+    if (S._lastScroll && (now - S._lastScroll) < 3000) return true;
+    S._lastScroll = now;
+    return false;
+  }
+
   function execScroll(spec) {
+    if (_scrollDedup()) return true;
     const el = resolveTarget(spec.target);
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: spec.block || 'start' });
@@ -3360,16 +3421,18 @@ try {
       act: { t: 'scroll', delta: () => Math.round(window.innerHeight * 0.7), ack: 'Scrolling down' } },
     { re: /^(?:scroll\s+)?(?:up|upwards?)$/i,
       act: { t: 'scroll', delta: () => -Math.round(window.innerHeight * 0.7), ack: 'Scrolling up' } },
-    { re: /^(?:scroll\s+to\s+|go\s+to\s+)?(?:bottom|end)$/i,
+    { re: /^(?:scroll\s+to\s+|go\s+to\s+|scroll\s+)(?:the\s+)?(?:bottom|end)$/i,
       act: { t: 'scroll', top: 'max', ack: 'Going to bottom' } },
-    { re: /^(?:scroll\s+to\s+|go\s+to\s+)?(?:top|beginning)$/i,
+    { re: /^(?:scroll\s+to\s+|go\s+to\s+|scroll\s+)(?:the\s+)?(?:top|beginning|start)$/i,
       act: { t: 'scroll', top: 0, ack: 'Going to top' } },
     { re: /^(?:scroll\s+to\s+|go\s+to\s+|show\s+)(?:the\s+)?(reviews|description|footer|header|products?|grid|related|size|shipping|policy|variant.?picker|variant.?pick)/i,
       act: (m) => ({ t: 'scroll', target: { section: m[1].toLowerCase() }, block: 'start', ack: 'Here you go' }) },
-    // Click a product by ordinal position ("take first item", "open the 3rd one")
-    { re: /^(?:take|open|show|get|click(?:\s+on)?|go\s+to)\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last|next|previous|prev)\s+(?:item|product|one|result|card)$/i,
+    // Click a product by ordinal position ("take first item", "open the 3rd one").
+    // Leading "can/could you" and trailing "please" are stripped by the normaliser,
+    // but also tolerated here so STT phrasing like "please take the first one" hits.
+    { re: /^(?:(?:can|could|will|would)\s+you\s+|please\s+)?(?:take|open|show|get|click(?:\s+on)?|go\s+to)\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last|next|previous|prev)\s+(?:item|product|one|result|card)$/i,
       act: (m) => ({ t: 'click', target: { by: 'ordinal', ord: m[1].toLowerCase() }, ack: 'Opening product' }) },
-    { re: /^(?:take|get|open|show|click(?:\s+on)?)\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last|next|previous|prev)\s*(?:one|item|product|result)?$/i,
+    { re: /^(?:(?:can|could|will|would)\s+you\s+|please\s+)?(?:take|get|open|show|click(?:\s+on)?)\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last|next|previous|prev)\s*(?:one|item|product|result)?$/i,
       act: (m) => ({ t: 'click', target: { by: 'ordinal', ord: m[1].toLowerCase() }, ack: 'Opening product' }) },
     // Click a product by name
     { re: /^(?:open|show|click(?:\s+on)?)\s+(?:the\s+)?(.+)/i,
@@ -3419,6 +3482,10 @@ try {
       variation: src.variation || {},
       handle: src.handle || '',
       quantity: 1,
+      // Internal marker so processAction() can tell THIS local dispatch apart
+      // from the backend's duplicate echo of the same utterance (which arrives
+      // a second or two later and used to double-add / race the cart refresh).
+      _wa_local: true,
     };
     console.log('[WooAgent A2C] Dispatching local add-to-cart:', payload);
     // Route through processAction so the add_to_cart handler stays the single
@@ -3448,7 +3515,16 @@ try {
 
   // Single entry point: returns true when handled locally, false → backend.
   function handleLocalVoiceCommand(text) {
-    const t = String(text || '').trim();
+    // Normalise the STT transcript so trailing punctuation / filler words don't
+    // make the strict ^...$ command regexes miss ("scroll down." or "scroll down
+    // please" previously fell through to the backend, which spoke the ack but did
+    // NOT scroll — the widget owns the actual scroll).
+    const t = String(text || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .replace(/^please[\s,]+/i, '')
+      .replace(/[\s,]+please\s*$/i, '')
+      .replace(/[.!?।,]+$/g, '');
     if (!t || t.length > 120) return false;
     refreshPageState();
     for (const cmd of COMMANDS) {
@@ -3661,6 +3737,17 @@ try {
   // checkout for the current cart (prefilled when we know the address); on
   // WooCommerce we still let the agent drive (its address flow differs).
   function goToCheckout() {
+    // Persist voice-nav / reopen intent so the widget re-opens and re-attaches
+    // the A2A socket after the checkout page load (without this, checkout
+    // navigated but the voice assistant went silent on the new page).
+    try {
+      if (S.mode === 'voice_nav') {
+        localStorage.setItem('_wa_voice_nav_resume', '1');
+      } else {
+        localStorage.setItem('_wa_reopen', '1');
+      }
+      sessionStorage.setItem('_wa_voice_active', '1');
+    } catch (_e) {}
     if (IS_SHOPIFY) {
       const addr = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
       window.location.href = _shopifyCheckoutUrl(addr);
@@ -4616,6 +4703,10 @@ try {
   // Micro-handshake gate: block mic capture until server acknowledges page context.
   // Prevents PDP hallucination race (T_audio ~100ms vs T_handshake ~300ms).
   let _a2aContextAcknowledged = false;
+  // Keepalive heartbeat — Render/ngrok drop idle WebSockets with close 1006
+  // ("connection reset"), which caused reconnect churn / mic drops. A tiny
+  // {type:'ping'} frame every 20s keeps the socket alive (server ignores it).
+  let _a2aHeartbeat = null;
 
   // Streaming transcript accumulator — chunks from Gemini arrive word-by-word;
   // we append into one bubble and only finalise it on turn_complete / barge-in.
@@ -4740,6 +4831,14 @@ try {
       _a2aStreamBubble  = null;
       _a2aStreamText    = '';
       _a2aContextAcknowledged = false;
+
+      // Keepalive heartbeat while the socket is open — prevents idle-drop 1006s.
+      clearInterval(_a2aHeartbeat);
+      _a2aHeartbeat = setInterval(() => {
+        if (geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
+          try { geminiSocket.send(JSON.stringify({ type: 'ping' })); } catch (_e) {}
+        }
+      }, 20000);
       try {
         sessionStorage.removeItem('_wa_voice_active');
         sessionStorage.removeItem('_wa_pending_search');
@@ -4905,6 +5004,8 @@ try {
     ws.onclose = (ev) => {
       isA2AConnected = false;
       geminiSocket   = null;
+      clearInterval(_a2aHeartbeat);
+      _a2aHeartbeat = null;
       _a2aStopCapture();
 
       // 1008 = policy violation (wrong model / API version / billing) — do not retry, it will never succeed

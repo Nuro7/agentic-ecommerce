@@ -1178,6 +1178,32 @@ async def handle_pdp_auto_tour(
     })
 
 
+def _current_search_query(page_context: Optional[Dict[str, Any]]) -> str:
+    """Extract the live search term from the page the customer is on.
+
+    The widget sends `url` in page_context; on a search page that is e.g.
+    `https://store/search?q=red+sneakers` (Shopify) or `/?s=shoes` (Woo).
+    Used to resolve "first/second item" against the listing the customer is
+    actually looking at, instead of a stale session recommendation cache.
+    """
+    url = str((page_context or {}).get("url") or "").strip()
+    if not url:
+        return ""
+    try:
+        from urllib.parse import urlparse, parse_qs, unquote
+        parsed = urlparse(url)
+        q = (parse_qs(parsed.query).get("q") or [""])[0]
+        if not q:
+            q = (parse_qs(parsed.query).get("s") or [""])[0]
+        if not q and parsed.path:
+            m = re.search(r"/search/(.+)$", parsed.path)
+            if m:
+                q = m.group(1)
+        return unquote(q.strip())
+    except Exception:
+        return ""
+
+
 async def _resolve_product_for_add(
     message: str,
     lower: str,
@@ -1234,6 +1260,21 @@ async def _resolve_product_for_add(
             rec = active_recommendations[target_index]
             if isinstance(rec, dict) and rec.get("id"):
                 return rec
+        # Prefer the CURRENT search page's listing over stale session caches.
+        # "First item" means the first product LISTED on screen right now — a
+        # previous turn's active_recommendations (or last_products) may be from an
+        # older query and resolve to the wrong (often "last") product.
+        _search_q = _current_search_query(page_context)
+        if _search_q:
+            try:
+                matches = await store_client.search_products(query=_search_q, in_stock_only=False, limit=12)
+                if len(matches) > target_index:
+                    best = matches[target_index]
+                    if best and best.get("id"):
+                        return best
+            except Exception as e:
+                logger.error("Failed resolving ordinal %d from current search page '%s': %s",
+                             target_index, _search_q, e)
         last_prods = page_context.get("last_products") or []
         if len(last_prods) > target_index:
             try:

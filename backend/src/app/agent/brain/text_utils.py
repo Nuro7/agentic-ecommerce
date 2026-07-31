@@ -70,6 +70,14 @@ def detect_ui_command_response(
                         "type": "redirect",
                         "payload": {"url": base, "reason": "home", "delay_ms": 1500},
                     })
+            elif kind.startswith("scroll"):
+                # Defence-in-depth: also push a scroll ui_action so the widget
+                # scrolls even when its local transcript intercept misses (STT
+                # punctuation/filler). Widget handles {type:'scroll', payload:{direction}}.
+                actions.append({
+                    "type": "scroll",
+                    "payload": {"direction": kind.replace("scroll_", "")},
+                })
             return {
                 "response_text": _UI_COMMAND_ACK.get(kind, ""),
                 "ui_actions": actions,
