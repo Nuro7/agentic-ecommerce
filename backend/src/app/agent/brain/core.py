@@ -48,6 +48,7 @@ from ..guardrails import (
 )
 from ..schemas import AgentResponse
 from ..retrieval.search import hybrid_search
+from ..retrieval.normalizer import normalize as _normalize_for_size
 from ..classifier import (
     get_classifier, IntentResult,
     CHITCHAT, OFF_TOPIC, STORE_INFO, CART_ACTION,
@@ -74,7 +75,7 @@ from .text_utils import (
     has_payment_intent, has_cart_view_intent, has_cart_nav_intent, has_remove_intent,
     has_add_intent, has_clear_cart_intent, has_quantity_intent,
     has_buy_now_intent,
-    append_live_navigation, client_platform,
+    append_live_navigation, client_platform, bind_highlight_target,
 )
 
 logger = logging.getLogger(__name__)
@@ -251,6 +252,8 @@ async def _run_retrieval(
     redis: Any,
     db_session_factory: Any,
     limit: int = 5,
+    size: Optional[str] = None,
+    color: Optional[str] = None,
 ) -> List[Any]:
     """Run hybrid retrieval search, owning its db session lifecycle."""
     db = None
@@ -268,6 +271,8 @@ async def _run_retrieval(
             db=db,
             store_client=store_client,
             limit=limit,
+            size=size,
+            color=color,
         )
     finally:
         if db is not None:
@@ -664,10 +669,12 @@ async def ask_brain(
         try:
             retrieval_results = await _run_retrieval(
                 query=_search_query,
-                tenant_id=str(store_context.get("tenant_id") or session_id),
+                tenant_id=str(store_context.get("tenant_id") or DEV_TENANT_ID),
                 store_client=store_client,
                 redis=redis,
                 db_session_factory=db_session_factory,
+                size=_normalize_for_size(cleaned_message).size,
+                color=_normalize_for_size(cleaned_message).color,
             )
             retrieval_ran = True  # call completed â€” result may be empty list
             if retrieval_results:
@@ -903,6 +910,13 @@ async def ask_brain(
         if isinstance(result.get("ui_actions"), list)
         else result.get("actions", [])
     )
+
+    # Pillar 4 — bind the highlighted card to the exact product the reply
+    # references (ID or unique name), not the first-in-stock default index.
+    try:
+        bind_highlight_target(response_text, ui_actions)
+    except Exception as _bind_exc:
+        logger.debug("[turn %s] highlight binding skipped: %s", turn_id, _bind_exc)
 
     # â”€â”€ Live Shopping Navigator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Drive the real storefront to match the answer (search page / product page /

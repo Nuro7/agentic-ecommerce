@@ -38,6 +38,8 @@ async def hybrid_search(
     max_price: Optional[float] = None,
     in_stock_only: bool = False,
     category_slug: Optional[str] = None,
+    size: Optional[str] = None,
+    color: Optional[str] = None,
     limit: int = 5,
     sort_by: Optional[str] = None,
     sort_order: Optional[str] = None,
@@ -75,6 +77,10 @@ async def hybrid_search(
         nq.max_price = max_price
     if in_stock_only:
         nq.in_stock_only = True
+    if size is not None:
+        nq.size = size
+    if color is not None:
+        nq.color = color
 
     logger.debug(
         "Search L0: clean='%s' lang=%s min=%.0f max=%.0f stock=%s  (%.1fms)",
@@ -117,6 +123,8 @@ async def hybrid_search(
                 min_price=nq.min_price,
                 max_price=nq.max_price,
                 in_stock_only=nq.in_stock_only,
+                size=nq.size,
+                color=nq.color,
                 limit=limit,
                 sort_by=sort_by,
                 sort_order=sort_order,

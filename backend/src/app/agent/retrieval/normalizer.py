@@ -16,6 +16,8 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .attributes import canonical_color, canonical_size, labeled_size, COLOR_TOKENS
+
 
 # ── Synonym map ───────────────────────────────────────────────────────────────
 # Expands informal or abbreviated terms to canonical product vocabulary.
@@ -86,15 +88,11 @@ _STANDALONE_PRICE_RE = re.compile(
 # from the L2 semantic cache: "red shoes" and "blue shoes" embed >0.92 similar, so
 # a fuzzy hit would return the wrong variant. When any of these match, callers skip
 # L2 and go straight to L3 (exact L1 cache is still safe — it keys on the full text).
-_COLOR_WORDS = (
-    "black", "white", "red", "blue", "green", "yellow", "orange", "purple",
-    "pink", "brown", "grey", "gray", "beige", "gold", "silver", "navy",
-    "maroon", "teal", "cream", "tan", "olive", "burgundy",
-)
+# Colour tokens come from attributes.py (single source of truth).
 _ATTRIBUTE_RE = re.compile(
-    r"\b(?:" + "|".join(_COLOR_WORDS) + r")\b"          # colours
-    r"|\b(?:xs|s|m|l|xl|xxl|xxxl|small|medium|large)\b"  # clothing sizes
-    r"|\b(?:uk|us|eu)\s*\d{1,2}\b"                       # shoe sizes "uk 9"
+    r"\b(?:" + "|".join(COLOR_TOKENS) + r")\b"                     # colours
+    r"|\b(?:xs|s|m|l|xl|xxl|xxxl|small|medium|large)\b"            # clothing sizes
+    r"|\b(?:uk|us|eu)\s*\d{1,2}\b"                                 # shoe sizes "uk 9"
     r"|\b\d+\s*(?:gb|tb|mb|ml|ltr|litre|liter|mah|inch|cm|mm|oz|kg|g|w|wh)\b",  # units
     re.IGNORECASE,
 )
@@ -122,8 +120,11 @@ _NOISE_RE = re.compile(
 )
 
 # ── Size/attribute patterns to extract as structured filters (not search text) ──
+# Covers "size 9", "size uk 9", "uk 9", "us 9", "eu 42" AND "9 uk" so a labeled
+# size never pollutes the storefront query text.
 _SIZE_RE = re.compile(
-    r"\b(?:size|sized?)\s*(?:uk|us|eu)?\s*(\d{1,2}(?:\.\d+)?)\b",
+    r"\b(?:(?:size|sized?)\s*(?:uk|us|eu)?|(?:uk|us|eu))\s*(\d{1,2}(?:\.\d+)?)\b"
+    r"|\b(\d{1,2}(?:\.\d+)?)\s*(?:uk|us|eu)\b",
     re.IGNORECASE,
 )
 # Clothing sizes
@@ -150,6 +151,7 @@ class NormalizedQuery:
     tokens: list[str] = field(default_factory=list)  # clean tokenised words
     cache_key: str = ""               # deterministic key for L1 lookup
     size: Optional[str] = None        # extracted size (e.g., "9", "M", "UK 9")
+    color: Optional[str] = None       # extracted colour (e.g., "tan", "black")
 
     def is_empty(self) -> bool:
         return not self.clean.strip()
@@ -177,6 +179,9 @@ def normalize(raw_query: str) -> NormalizedQuery:
     # 5. Extract size BEFORE stripping (so we can pass it as structured filter)
     size = _extract_size(text)
 
+    # 5b. Extract colour BEFORE stripping (e.g., "tan", "black dress" → "black")
+    color = _extract_color(text)
+
     # 6. Extract stock hint + discriminating-attribute flag (before stripping)
     in_stock_only = bool(_IN_STOCK_RE.search(text))
     has_attribute = bool(_ATTRIBUTE_RE.search(text))
@@ -185,6 +190,7 @@ def normalize(raw_query: str) -> NormalizedQuery:
     #    leading affirmation/negation ("no i need…", "yeah show…").
     text = _LEADING_FILLER_RE.sub("", text)
     text = _NOISE_RE.sub(" ", text)
+    text = re.sub(r"\b(?:i|love|prefer|like|favourite|favorite)\b", " ", text)
 
     # 8. Strip price/stock phrases now (they've been captured)
     text = _PRICE_UNDER_RE.sub(" ", text)
@@ -202,6 +208,15 @@ def normalize(raw_query: str) -> NormalizedQuery:
     text = _CLOTHING_SIZE_RE.sub(" ", text)
     text = re.sub(r"\b(?:size|sized?)\b", " ", text)
 
+    # 10b. Strip colour words + colour filler from search text (colour is passed
+    # as a structured filter, so it must not pollute the storefront query).
+    text = re.sub(
+        r"\b(?:" + "|".join(COLOR_TOKENS) + r"|colour|color|love)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
     # 11. Remove punctuation except hyphens (needed for "t-shirt", "v-neck")
     text = re.sub(r"[^\w\s\-]", " ", text)
 
@@ -216,7 +231,7 @@ def normalize(raw_query: str) -> NormalizedQuery:
     tokens = [t for t in text.split() if len(t) > 1]
 
     # 15. Build deterministic cache key
-    cache_key = _make_cache_key(text, min_price, max_price, in_stock_only, size)
+    cache_key = _make_cache_key(text, min_price, max_price, in_stock_only, size, color)
 
     return NormalizedQuery(
         raw=raw_query,
@@ -229,6 +244,7 @@ def normalize(raw_query: str) -> NormalizedQuery:
         tokens=tokens,
         cache_key=cache_key,
         size=size,
+        color=color,
     )
 
 
@@ -264,7 +280,7 @@ def _extract_prices(text: str) -> tuple[Optional[float], Optional[float]]:
     return min_price, max_price
 
 
-def _make_cache_key(clean: str, min_p: Optional[float], max_p: Optional[float], stock: bool, size: Optional[str] = None) -> str:
+def _make_cache_key(clean: str, min_p: Optional[float], max_p: Optional[float], stock: bool, size: Optional[str] = None, color: Optional[str] = None) -> str:
     parts = [clean]
     if min_p is not None:
         parts.append(f"min{int(min_p)}")
@@ -274,19 +290,21 @@ def _make_cache_key(clean: str, min_p: Optional[float], max_p: Optional[float], 
         parts.append("instock")
     if size:
         parts.append(f"size{size.replace(' ', '')}")
+    if color:
+        parts.append(f"color{color}")
     return ":".join(parts)
 
 
 def _extract_size(text: str) -> Optional[str]:
-    """Extract size from query (e.g., 'size 9', 'UK 9', 'M', 'large')."""
-    # Try "size N" or "UK/US/EU N" patterns
-    size_match = _SIZE_RE.search(text)
-    if size_match:
-        return size_match.group(1)
-    
-    # Try clothing sizes
-    clothing_match = _CLOTHING_SIZE_RE.search(text)
-    if clothing_match:
-        return clothing_match.group(1).upper()
-    
-    return None
+    """Extract a LABELLED size from the query ('size 9' → '9', 'UK 9' → '9',
+    'medium' → 'M'). Bare numbers are ignored here ('Delta-20' is a model, not
+    size 20); bare tool-arg values are still canonicalised by canonical_size()."""
+    return labeled_size(text)
+
+
+def _extract_color(text: str) -> Optional[str]:
+    """Extract + canonicalise the query's colour ('charcoal grey' → 'grey')."""
+    return canonical_color(text)
+
+
+

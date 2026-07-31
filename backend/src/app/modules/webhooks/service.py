@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .repository import WebhookRepository
 from .models import WebhookEvent
 from ...core.database import set_tenant_guc
+from ...agent.retrieval.attributes import extract_colors, extract_sizes
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,37 @@ _IMAGE_ALIASES = ("image_url", "image", "thumbnail", "photo", "picture")
 _CAT_ALIASES   = ("category_slug", "category", "category_name", "type")
 _DESC_ALIASES  = ("description", "details", "body", "summary", "about")
 _URL_ALIASES   = ("permalink", "url", "link", "product_url")
+_ATTR_ALIASES  = ("attributes", "options", "variations", "variants",
+                  "option_values", "attributes_map")
+
+
+def _canonical_attributes(product: dict, name: str, description: str, tags: str):
+    """Canonical colour/size tokens from a raw product dict (store-agnostic)."""
+    blobs = [name, description or "", tags or ""]
+    for key in _ATTR_ALIASES:
+        val = product.get(key)
+        if val is None:
+            continue
+        if isinstance(val, dict):
+            for v in val.values():
+                blobs.extend(str(x) for x in v) if isinstance(v, list) else blobs.append(str(v))
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, dict):
+                    for v in item.values():
+                        blobs.append(str(v) if not isinstance(v, (list, dict)) else str(v))
+                else:
+                    blobs.append(str(item))
+        else:
+            blobs.append(str(val))
+    color_val = product.get("color") or product.get("colour")
+    if color_val:
+        blobs.append(str(color_val))
+    size_val = product.get("size")
+    if size_val:
+        blobs.append(str(size_val))
+    text = " ".join(b for b in blobs if b)
+    return extract_colors(text), extract_sizes(text)
 
 
 def _resolve_field(product: dict, aliases: tuple, default=None):
@@ -431,6 +463,9 @@ class WebhookService:
         if isinstance(tags, list):
             tags = ",".join(str(t) for t in tags)
 
+        description = str(_resolve_field(product, _DESC_ALIASES, "") or "")
+        colors, sizes = _canonical_attributes(product, name, description, tags)
+
         # ── Stock quantity ────────────────────────────────────────────────────
         # Use _resolve_field (not `or`) so that stock_quantity=0 is preserved
         # correctly — `or` would skip 0 (falsy) and check the next alias.
@@ -446,10 +481,12 @@ class WebhookService:
         await self.db.execute(text("""
             INSERT INTO product_cache (
                 id, tenant_id, platform_id, name, description, price, currency,
-                image_url, in_stock, category_slug, tags, stock_quantity, permalink, cached_at
+                image_url, in_stock, category_slug, tags, stock_quantity, permalink,
+                colors, sizes, cached_at
             ) VALUES (
                 :id, :tenant_id, :platform_id, :name, :description, :price, :currency,
-                :image_url, :in_stock, :category_slug, :tags, :stock_quantity, :permalink, :cached_at
+                :image_url, :in_stock, :category_slug, :tags, :stock_quantity, :permalink,
+                :colors, :sizes, :cached_at
             )
             ON CONFLICT (tenant_id, platform_id) DO UPDATE SET
                 name          = EXCLUDED.name,
@@ -462,13 +499,15 @@ class WebhookService:
                 tags          = EXCLUDED.tags,
                 stock_quantity= EXCLUDED.stock_quantity,
                 permalink     = EXCLUDED.permalink,
+                colors        = EXCLUDED.colors,
+                sizes         = EXCLUDED.sizes,
                 cached_at     = EXCLUDED.cached_at
         """), {
             "id":            str(uuid.uuid4()),
             "tenant_id":     tenant_id,
             "platform_id":   platform_id,
             "name":          name,
-            "description":   str(_resolve_field(product, _DESC_ALIASES, "") or ""),
+            "description":   description,
             "price":         price,
             "currency":      str(product.get("currency") or "USD"),
             "image_url":     _resolve_field(product, _IMAGE_ALIASES),
@@ -477,6 +516,8 @@ class WebhookService:
             "tags":          tags or None,
             "stock_quantity": stock_qty,
             "permalink":     _resolve_field(product, _URL_ALIASES),
+            "colors":        colors or None,
+            "sizes":         sizes or None,
             "cached_at":     datetime.now(timezone.utc),
         })
         await self.db.commit()

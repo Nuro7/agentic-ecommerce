@@ -20,6 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .normalizer import NormalizedQuery
+from .attributes import canonical_color, canonical_size
 from .cache import embed_text
 from ...core.database import AsyncSessionLocal
 
@@ -47,6 +48,8 @@ class RawCandidate:
     bm25_pos: int = 0         # position in BM25 list (1-based)
     vec_pos: int = 0          # position in vector list (1-based)
     permalink: str = ""       # product permalink
+    colors: list = field(default_factory=list)   # canonical colour tokens
+    sizes: list = field(default_factory=list)    # canonical size tokens
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -99,6 +102,8 @@ async def bm25_search(
                 category_slug,
                 tags,
                 permalink,
+                colors,
+                sizes,
                 ts_rank(search_vector, plainto_tsquery('english', :query)) AS rank
             FROM product_cache
             WHERE
@@ -107,6 +112,8 @@ async def bm25_search(
                 AND (CAST(:min_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) >= CAST(:min_price AS FLOAT))
                 AND (CAST(:max_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) <= CAST(:max_price AS FLOAT))
                 AND (CAST(:in_stock AS BOOLEAN) IS NULL OR in_stock = CAST(:in_stock AS BOOLEAN))
+                AND (CAST(:size_eq AS TEXT) IS NULL OR :size_eq = ANY(COALESCE(sizes, ARRAY[]::TEXT[])))
+                AND (CAST(:color_eq AS TEXT) IS NULL OR :color_eq = ANY(COALESCE(colors, ARRAY[]::TEXT[])))
             ORDER BY rank DESC
             LIMIT :limit
         """)
@@ -117,6 +124,8 @@ async def bm25_search(
             "min_price":  nq.min_price,
             "max_price":  nq.max_price,
             "in_stock":   True if nq.in_stock_only else None,
+            "size_eq":    canonical_size(nq.size),
+            "color_eq":   canonical_color(nq.color),
             "limit":      _BM25_LIMIT,
         })
         rows = result.mappings().all()
@@ -139,6 +148,8 @@ async def bm25_search(
                     tags=r.get("tags"),
                     bm25_rank=float(r["rank"]),
                     permalink=r.get("permalink") or "",
+                    colors=list(r.get("colors") or []),
+                    sizes=list(r.get("sizes") or []),
                 )
                 for r in rows
             ]
@@ -172,7 +183,8 @@ async def _ilike_search(
                 platform_id, tenant_id, name,
                 COALESCE(description, '') AS description,
                 CAST(price AS FLOAT) AS price,
-                currency, image_url, in_stock, category_slug, tags, permalink
+                currency, image_url, in_stock, category_slug, tags, permalink,
+                colors, sizes
             FROM product_cache
             WHERE
                 tenant_id = :tenant_id
@@ -180,6 +192,8 @@ async def _ilike_search(
                 AND (CAST(:min_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) >= CAST(:min_price AS FLOAT))
                 AND (CAST(:max_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) <= CAST(:max_price AS FLOAT))
                 AND (CAST(:in_stock AS BOOLEAN) IS NULL OR in_stock = CAST(:in_stock AS BOOLEAN))
+                AND (CAST(:size_eq AS TEXT) IS NULL OR :size_eq = ANY(COALESCE(sizes, ARRAY[]::TEXT[])))
+                AND (CAST(:color_eq AS TEXT) IS NULL OR :color_eq = ANY(COALESCE(colors, ARRAY[]::TEXT[])))
             ORDER BY name ASC
             LIMIT :limit
         """)
@@ -189,6 +203,8 @@ async def _ilike_search(
             "min_price": nq.min_price,
             "max_price": nq.max_price,
             "in_stock":  True if nq.in_stock_only else None,
+            "size_eq":   canonical_size(nq.size),
+            "color_eq":  canonical_color(nq.color),
             "limit":     _BM25_LIMIT,
         })
         rows = result.mappings().all()
@@ -206,6 +222,8 @@ async def _ilike_search(
                 tags=r.get("tags"),
                 bm25_rank=0.5,
                 permalink=r.get("permalink") or "",
+                colors=list(r.get("colors") or []),
+                sizes=list(r.get("sizes") or []),
             )
             for r in rows
         ]
@@ -229,7 +247,8 @@ async def _browse_all(
                 platform_id, tenant_id, name,
                 COALESCE(description, '') AS description,
                 CAST(price AS FLOAT) AS price,
-                currency, image_url, in_stock, category_slug, tags, permalink
+                currency, image_url, in_stock, category_slug, tags, permalink,
+                colors, sizes
             FROM product_cache
             WHERE
                 tenant_id = :tenant_id
@@ -261,6 +280,8 @@ async def _browse_all(
                 tags=r.get("tags"),
                 bm25_rank=1.0,
                 permalink=r.get("permalink") or "",
+                colors=list(r.get("colors") or []),
+                sizes=list(r.get("sizes") or []),
             )
             for r in rows
         ]
@@ -305,6 +326,7 @@ async def vector_search(
                 COALESCE(description, '') AS description,
                 CAST(price AS FLOAT) AS price,
                 currency, image_url, in_stock, category_slug, tags, permalink,
+                colors, sizes,
                 1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
             FROM product_cache
             WHERE
@@ -313,6 +335,8 @@ async def vector_search(
                 AND (CAST(:min_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) >= CAST(:min_price AS FLOAT))
                 AND (CAST(:max_price AS FLOAT) IS NULL OR CAST(price AS FLOAT) <= CAST(:max_price AS FLOAT))
                 AND (CAST(:in_stock AS BOOLEAN) IS NULL OR in_stock = CAST(:in_stock AS BOOLEAN))
+                AND (CAST(:size_eq AS TEXT) IS NULL OR :size_eq = ANY(COALESCE(sizes, ARRAY[]::TEXT[])))
+                AND (CAST(:color_eq AS TEXT) IS NULL OR :color_eq = ANY(COALESCE(colors, ARRAY[]::TEXT[])))
             ORDER BY embedding <=> CAST(:embedding AS vector) ASC
             LIMIT :limit
         """)
@@ -324,6 +348,8 @@ async def vector_search(
             "min_price": nq.min_price,
             "max_price": nq.max_price,
             "in_stock":  True if nq.in_stock_only else None,
+            "size_eq":   canonical_size(nq.size),
+            "color_eq":  canonical_color(nq.color),
             "limit":     _VEC_LIMIT,
         })
         rows = result.mappings().all()
@@ -342,6 +368,8 @@ async def vector_search(
                 tags=r.get("tags"),
                 vec_sim=float(r["similarity"]),
                 permalink=r.get("permalink") or "",
+                colors=list(r.get("colors") or []),
+                sizes=list(r.get("sizes") or []),
             )
             for r in rows
         ]

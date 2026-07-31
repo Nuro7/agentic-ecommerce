@@ -20,6 +20,7 @@ from typing import Optional
 
 from .hybrid_search import RawCandidate
 from .normalizer import NormalizedQuery
+from .attributes import canonical_color, canonical_size
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,16 @@ def rerank(
         scored.append((rrf_score, c))
 
     # ── 3. Hard filters ───────────────────────────────────────────────────────
+    size_eq = canonical_size(nq.size)
+    color_eq = canonical_color(nq.color)
+
+    def _passes_attrs(c: RawCandidate) -> bool:
+        if size_eq and size_eq not in (c.sizes or []):
+            return False
+        if color_eq and color_eq not in (c.colors or []):
+            return False
+        return True
+
     filtered: list[tuple[float, RawCandidate]] = []
     for score, c in scored:
         if nq.min_price is not None and c.price < nq.min_price:
@@ -110,13 +121,16 @@ def rerank(
             continue
         if nq.in_stock_only and not c.in_stock:
             continue
+        if not _passes_attrs(c):
+            continue
         filtered.append((score, c))
 
     if not filtered:
         # Relax in-stock filter if nothing passed — better to show out-of-stock than nothing
         filtered = [(s, c) for s, c in scored
                     if (nq.min_price is None or c.price >= nq.min_price)
-                    and (nq.max_price is None or c.price <= nq.max_price)]
+                    and (nq.max_price is None or c.price <= nq.max_price)
+                    and _passes_attrs(c)]
 
     # ── 4. Light rerank — apply boosts ────────────────────────────────────────
     boosted: list[tuple[float, RawCandidate]] = []

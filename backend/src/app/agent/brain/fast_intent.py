@@ -33,6 +33,7 @@ from .text_utils import (
     has_quantity_intent,
 )
 from ..retrieval.search import hybrid_search
+from ..retrieval.normalizer import normalize as _normalize_for_size
 from ...core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -419,6 +420,15 @@ async def handle_product_discovery(
     limit = 24 if wants_all or not query else 8
     in_stock_only = False if wants_all or not query else ("out of stock" not in lower)
     
+    # normalize_discovery_query strips size/price/colour, so re-extract them from
+    # the raw message and pass them as structured filters.
+    nq_raw = _normalize_for_size(message)
+    size = nq_raw.size
+    color = nq_raw.color
+    if min_price is None:
+        min_price = nq_raw.min_price
+    if max_price is None:
+        max_price = nq_raw.max_price
     # Use hybrid_search (L3: BM25 + vector + RRF) instead of live store API
     async with AsyncSessionLocal() as db:
         search_results = await hybrid_search(
@@ -430,6 +440,8 @@ async def handle_product_discovery(
             min_price=min_price,
             max_price=max_price,
             in_stock_only=in_stock_only,
+            size=size,
+            color=color,
             limit=limit,
         )
     

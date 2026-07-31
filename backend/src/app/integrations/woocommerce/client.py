@@ -15,8 +15,41 @@ from urllib.parse import quote
 import httpx
 
 from ..base.commerce import BaseStoreClient
+from ...agent.retrieval.attributes import canonical_color, canonical_size, extract_colors, extract_product_sizes
 
 logger = logging.getLogger(__name__)
+
+
+def _product_text_blob(product: Dict[str, Any]) -> str:
+    """Free text (name) — sizes here must be LABELLED ('UK 9', 'size 9')."""
+    return str(product.get("name") or "")
+
+
+def _product_structured_blob(product: Dict[str, Any]) -> str:
+    """Trusted structured data (attribute option values)."""
+    parts: List[str] = []
+    for a in (product.get("attributes") or []):
+        if isinstance(a, dict):
+            parts.append(str(a.get("option") or a.get("value") or ""))
+    return " ".join(parts)
+
+
+def _product_matches_size(product: Dict[str, Any], size: str) -> bool:
+    req = canonical_size(size)
+    if not req:
+        return True
+    return req in extract_product_sizes(
+        text=_product_text_blob(product),
+        structured=_product_structured_blob(product),
+    )
+
+
+def _product_matches_color(product: Dict[str, Any], color: str) -> bool:
+    req = canonical_color(color)
+    if not req:
+        return True
+    blob = " ".join([_product_text_blob(product), _product_structured_blob(product)])
+    return req in extract_colors(blob)
 
 
 class WooCommerceClient(BaseStoreClient):
@@ -70,6 +103,8 @@ class WooCommerceClient(BaseStoreClient):
         max_price: Optional[float] = None,
         in_stock_only: bool = True,
         on_sale: Optional[bool] = None,
+        size: Optional[str] = None,
+        color: Optional[str] = None,
         limit: int = 6,
         sort_by: Optional[str] = None,
         sort_order: Optional[str] = None,
@@ -84,7 +119,7 @@ class WooCommerceClient(BaseStoreClient):
             wc_order = "desc"
         cache_key = (
             f"catalog:search:{normalized_query}:{category_slug}:"
-            f"{min_price}:{max_price}:{in_stock_only}:{on_sale}:{limit}:{wc_orderby}:{wc_order}"
+            f"{min_price}:{max_price}:{in_stock_only}:{on_sale}:{size}:{color}:{limit}:{wc_orderby}:{wc_order}"
         )
         cached = await self._cache_get(cache_key)
         if isinstance(cached, list):
@@ -194,6 +229,10 @@ class WooCommerceClient(BaseStoreClient):
                 rows = []
 
         products = self._normalize_product_rows(rows, min_price=min_price, max_price=max_price, in_stock_only=in_stock_only)
+        if products and size:
+            products = [p for p in products if _product_matches_size(p, size)]
+        if products and color:
+            products = [p for p in products if _product_matches_color(p, color)]
         if products:
             await self._cache_set(cache_key, products, ttl=300)
         return products

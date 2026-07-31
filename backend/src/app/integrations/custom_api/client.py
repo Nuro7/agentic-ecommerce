@@ -148,6 +148,8 @@ class CustomApiClient(BaseStoreClient):
         max_price: Optional[float] = None,
         in_stock_only: bool = True,
         on_sale: Optional[bool] = None,
+        size: Optional[str] = None,
+        color: Optional[str] = None,
         limit: int = 6,
         sort_by: Optional[str] = None,
         sort_order: Optional[str] = None,
@@ -166,6 +168,10 @@ class CustomApiClient(BaseStoreClient):
             params["max_price"] = max_price
         if on_sale is not None:
             params["on_sale"] = "true" if on_sale else "false"
+        if size:
+            params["size"] = size
+        if color:
+            params["color"] = color
 
         try:
             data = await self._get("/products/search", params)

@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from sqlalchemy import String, Integer, Boolean, DateTime, func, ForeignKey, Numeric, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 from ...core.database import Base
 
@@ -45,3 +46,12 @@ class ProductCache(Base):
     # Added in migration 0006
     stock_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     permalink: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Added in migration 0020 — canonical attribute tokens from attributes.py,
+    # written at ingest time; retrieval filters on them by equality.
+    colors: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True,
+    )
+    sizes: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True,
+    )

@@ -26,6 +26,7 @@ import httpx
 
 from ..base.commerce import BaseStoreClient
 from ...core.http_retry import request_with_retries
+from ...agent.retrieval.attributes import canonical_color, canonical_size, extract_colors, extract_product_sizes
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,56 @@ _DEFAULT_API_VERSION = "2024-01"
 # â”€â”€ Tiny GraphQL helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _gid_to_int(gid: str) -> int:
-    """Convert 'gid://shopify/Product/12345' â†’ 12345."""
+    """Convert 'gid://shopify/Product/12345' â†' 12345."""
     try:
         return int(str(gid).rsplit("/", 1)[-1])
     except Exception:
         return 0
+
+
+def _product_matches_size(product: Dict[str, Any], size: str) -> bool:
+    """True when a product exposes the requested size anywhere (name, tags,
+    option values, or variant attribute values). Used because Shopify's search
+    query syntax can't filter by a variant's selected option value."""
+    req = canonical_size(size)
+    if not req:
+        return True
+    return req in extract_product_sizes(
+        text=_product_text_blob(product),
+        structured=_product_structured_blob(product),
+    )
+
+
+def _product_matches_color(product: Dict[str, Any], color: str) -> bool:
+    """True when a product exposes the requested colour anywhere (name, tags,
+    option values, or variant attribute values)."""
+    req = canonical_color(color)
+    if not req:
+        return True
+    blob = " ".join([_product_text_blob(product), _product_structured_blob(product)])
+    return req in extract_colors(blob)
+
+
+def _product_text_blob(product: Dict[str, Any]) -> str:
+    """Free text (name + tags) — sizes here must be LABELLED ('UK 9', 'size 9')."""
+    return " ".join([
+        str(product.get("name") or ""),
+        " ".join(str(t) for t in (product.get("tags") or []) if t),
+    ])
+
+
+def _product_structured_blob(product: Dict[str, Any]) -> str:
+    """Trusted structured data (option values + variant attribute values)."""
+    parts: List[str] = []
+    for attr in (product.get("attributes") or []):
+        if isinstance(attr, dict):
+            parts.append(str(attr.get("name") or ""))
+            parts.append(" ".join(str(o) for o in (attr.get("options") or [])))
+    for v in (product.get("variations_summary") or []):
+        if isinstance(v, dict):
+            for val in (v.get("attributes") or {}).values():
+                parts.append(str(val or ""))
+    return " ".join(parts)
 
 
 def _int_to_product_gid(product_id: int) -> str:
@@ -422,6 +468,8 @@ class ShopifyClient(BaseStoreClient):
         min_price: Optional[float] = None,
         max_price: Optional[float] = None,
         in_stock_only: bool = False,
+        size: Optional[str] = None,
+        color: Optional[str] = None,
         limit: int = 6,
         sort_key: str = "RELEVANCE",
         reverse: bool = False,
@@ -542,6 +590,10 @@ class ShopifyClient(BaseStoreClient):
             p.pop("_tags", None)
         if in_stock_only:
             products = [p for p in products if p.get("stock_status") == "instock"]
+        if size:
+            products = [p for p in products if _product_matches_size(p, size)]
+        if color:
+            products = [p for p in products if _product_matches_color(p, color)]
         if min_price is not None:
             products = [p for p in products if _safe_float(p.get("price")) >= min_price]
         if max_price is not None:
@@ -573,6 +625,8 @@ class ShopifyClient(BaseStoreClient):
         max_price: Optional[float] = None,
         in_stock_only: bool = True,
         on_sale: Optional[bool] = None,
+        size: Optional[str] = None,
+        color: Optional[str] = None,
         limit: int = 6,
         sort_by: Optional[str] = None,
         sort_order: Optional[str] = None,
@@ -583,7 +637,7 @@ class ShopifyClient(BaseStoreClient):
             reverse = False  # CREATED_AT asc = oldest first
         cache_key = (
             f"catalog:search:{query}:{category_slug}:"
-            f"{min_price}:{max_price}:{in_stock_only}:{on_sale}:{limit}:{sort_key}:{reverse}"
+            f"{min_price}:{max_price}:{in_stock_only}:{on_sale}:{size}:{color}:{limit}:{sort_key}:{reverse}"
         )
         cached = await self._cache_get(cache_key)
         if isinstance(cached, list):
@@ -646,10 +700,26 @@ class ShopifyClient(BaseStoreClient):
             # Admin API, which sees ALL products with the app's Admin token.
             logger.warning("Shopify Storefront search failed (%s) â€” trying Admin API", exc)
 
+        # Client-side attribute filters can prune every Storefront result — the
+        # Storefront query only returns the top-N products by relevance, so a
+        # requested size/colour often isn't in that window even when the product
+        # exists in the catalog. Filter locally first, then fall through to the
+        # Admin API (which fetches up to 100 and matches attributes itself) when
+        # nothing survived.
+        if products and (size or color):
+            if size:
+                products = [p for p in products if _product_matches_size(p, size)]
+            if products and color:
+                products = [p for p in products if _product_matches_color(p, color)]
+            logger.info(
+                "Shopify attribute filter: %d match after size=%r color=%r for query=%r store=%s",
+                len(products), size, color, query or "(browse)", self.store_domain or "?",
+            )
+
         if not products and self.admin_token:
             products = await self._admin_search_products(
                 query=query, min_price=min_price, max_price=max_price,
-                in_stock_only=in_stock_only, limit=limit,
+                in_stock_only=in_stock_only, size=size, color=color, limit=limit,
                 sort_key=sort_key, reverse=reverse,
             )
 

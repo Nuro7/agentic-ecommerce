@@ -204,7 +204,7 @@ def normalize_discovery_query(message: str) -> str:
         r"along|around|about|above|below|near|past|toward|towards|via|"
         r"without|worth|yet|so|but|or|and|nor|if|though|although|unless|"
         r"except|thanks|thank|add|he|she|it|we|they|him|them|office|home|"
-        r"house|work|school|college|i"
+        r"house|work|school|college|i|love|prefer|like|favourite|favorite"
         r")\b",
         " ", cleaned
     )
@@ -216,6 +216,13 @@ def normalize_discovery_query(message: str) -> str:
     # Strip size keywords from search query (they are passed as structured filters)
     cleaned = re.sub(r"\b(?:size|sized?)\s*(?:uk|us|eu)?\s*\d+(?:\.\d+)?\b", " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(xxs?|xs|s|m|l|xl|xxl|xxxl|2xl|3xl|small|medium|large|xsmall|xsm|xlarge)\b", " ", cleaned, flags=re.IGNORECASE)
+    # Strip colour words + colour filler from search query (structured `color` filter)
+    cleaned = re.sub(
+        r"\b(?:\b(?:black|white|red|blue|green|yellow|orange|purple|pink|brown|grey|gray|tan|beige|navy|maroon|gold|silver|olive|teal|indigo|violet|cream|ivory|charcoal|crimson|magenta|turquoise|cyan|wine|mauve|rust|bordeaux|mustard|offwhite|multicolor|multicolour|colorful)\b|colour|color)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -800,3 +807,89 @@ def extract_inline_function_calls(content: str) -> Tuple[List[Tuple[str, Dict[st
 
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return calls, cleaned
+
+
+def bind_highlight_target(response_text: str, ui_actions: List[Dict[str, Any]]) -> None:
+    """Pillar 4 — bind highlight_card to the product the reply actually references.
+
+    The LLM answers "the BATA UK 9 looks great" while the search tool highlighted
+    the first in-stock card (usually index 0), so the glow lands on the wrong shoe.
+    This scans every show_products action, resolves which product the spoken text
+    points at (via an explicit "ID: <n>" reference or a unique full-name match), and
+    rewrites highlight_card.target_index to that product's array index. Single-product
+    lists and unknown references are left untouched (target_index stays as produced).
+    """
+    if not ui_actions or not response_text:
+        return
+
+    shown: List[Dict[str, Any]] = []
+    for a in ui_actions:
+        if not isinstance(a, dict):
+            continue
+        if a.get("type") != "show_products":
+            continue
+        payload = a.get("payload", {})
+        items = payload.get("products") if isinstance(payload, dict) else None
+        if isinstance(items, list):
+            shown.extend(p for p in items if isinstance(p, dict))
+    if len(shown) < 2:
+        return
+
+    lowered = response_text.lower()
+
+    # Explicit "ID: <n>" reference (same format the output guardrail validates).
+    pid_refs = [m for m in re.findall(r"\bID\s*[:\s]\s*(\d+)\b", response_text, re.IGNORECASE)]
+    target_index: Optional[int] = None
+    for pid in pid_refs:
+        for i, p in enumerate(shown):
+            if str(p.get("id") or p.get("product_id") or "") == pid:
+                target_index = i
+                break
+        if target_index is not None:
+            break
+
+    # Unique leading-word mention: product names carry " - Color Size" suffixes,
+    # so exact full-name substring fails for "the Woodland Boots are great".
+    # Match on the product's first significant words (skipping color/size tokens)
+    # appearing contiguously in the reply.
+    if target_index is None:
+        _SKIP = {
+            "the", "a", "an", "men", "men's", "women", "women's", "kids", "for", "with",
+            "uk", "us", "eu", "size", "color", "colour",
+            "black", "white", "red", "blue", "green", "yellow", "orange", "purple",
+            "pink", "brown", "grey", "gray", "beige", "gold", "silver", "navy",
+            "maroon", "teal", "cream", "tan", "olive", "burgundy",
+        }
+        exact_matches: List[int] = []
+        for i, p in enumerate(shown):
+            words = re.findall(r"[a-z0-9]+", str(p.get("name") or "").lower())
+            words = [w for w in words if w not in _SKIP and not w.isdigit()]
+            lead = words[:3]
+            if not lead:
+                continue
+            needle = " ".join(lead)
+            if needle in lowered:
+                exact_matches.append(i)
+        if len(exact_matches) == 1:
+            target_index = exact_matches[0]
+
+    if target_index is None:
+        return
+
+    # Rewrite the first highlight_card action (or add one next to show_products).
+    highlight_action = next(
+        (a for a in ui_actions if isinstance(a, dict) and a.get("type") == "highlight_card"),
+        None,
+    )
+    if highlight_action is not None:
+        payload = highlight_action.get("payload")
+        if isinstance(payload, dict):
+            payload["target_index"] = target_index
+    else:
+        for a in ui_actions:
+            if isinstance(a, dict) and a.get("type") == "show_products":
+                ui_actions.append({
+                    "type": "highlight_card",
+                    "payload": {"target_index": target_index, "products": a.get("payload", {}).get("products", [])},
+                })
+                break

@@ -40,6 +40,7 @@ from sqlalchemy import text
 
 from ..celery_app import celery_app
 from ..utils import run_async
+from ...agent.retrieval.attributes import parse_product_attributes
 
 logger = logging.getLogger(__name__)
 
@@ -723,15 +724,22 @@ async def _upsert_product(db, product, embedding: Optional[list[float]]) -> None
         "[" + ",".join(str(v) for v in embedding) + "]"
         if embedding else None
     )
+    colors, sizes = parse_product_attributes(
+        name=product.name,
+        description=product.description or product.short_description,
+        tags=product.tags,
+        attributes=product.attributes,
+        variants=product.variants,
+    )
     sql = text("""
         INSERT INTO product_cache
             (id, tenant_id, platform_id, name, description,
              price, currency, image_url, in_stock, stock_quantity,
-             category_slug, tags, permalink, embedding, cached_at)
+             category_slug, tags, permalink, colors, sizes, embedding, cached_at)
         VALUES
             (:id, :tenant_id, :platform_id, :name, :description,
              :price, :currency, :image_url, :in_stock, :stock_quantity,
-             :category_slug, :tags, :permalink,
+             :category_slug, :tags, :permalink, :colors, :sizes,
              CAST(:embedding AS vector),
              NOW())
         ON CONFLICT (tenant_id, platform_id)
@@ -746,6 +754,8 @@ async def _upsert_product(db, product, embedding: Optional[list[float]]) -> None
             category_slug  = EXCLUDED.category_slug,
             tags           = EXCLUDED.tags,
             permalink      = EXCLUDED.permalink,
+            colors         = EXCLUDED.colors,
+            sizes          = EXCLUDED.sizes,
             embedding      = CASE
                                 WHEN EXCLUDED.embedding IS NOT NULL
                                     THEN EXCLUDED.embedding
@@ -773,6 +783,8 @@ async def _upsert_product(db, product, embedding: Optional[list[float]]) -> None
         "category_slug":  (product.category_slug or "")[:255] or None,
         "tags":           product.tags,
         "permalink":      product.permalink or None,
+        "colors":         colors or None,
+        "sizes":          sizes or None,
         "embedding":      emb_str,
     })
 

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .text_utils import safe_int, safe_optional_int, safe_float, normalize_discovery_query
 from ..retrieval.search import hybrid_search
+from ..retrieval.normalizer import normalize as _normalize_for_size
 from ...core.database import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,22 @@ async def execute_tool_call(
         
         # Use hybrid_search (L3: BM25 + vector + RRF) instead of live store API
         # This provides stemming, fuzzy matching, and semantic search
+        # normalize_discovery_query strips size/price/colour from the text, so
+        # re-extract them from the RAW query (or the explicit tool params) and
+        # pass them as structured filters.
+        nq_raw = _normalize_for_size(raw_query)
+        size = str(tool_args.get("size") or "").strip() or None
+        if not size:
+            size = nq_raw.size
+        color = str(tool_args.get("color") or "").strip() or None
+        if not color:
+            color = nq_raw.color
+        min_price = safe_float(tool_args.get("min_price"))
+        if min_price is None:
+            min_price = nq_raw.min_price
+        max_price = safe_float(tool_args.get("max_price"))
+        if max_price is None:
+            max_price = nq_raw.max_price
         async with AsyncSessionLocal() as db:
             search_results = await hybrid_search(
                 tenant_id=tenant_id,
@@ -82,9 +99,11 @@ async def execute_tool_call(
                 redis=None,  # Redis passed from orchestrator if needed
                 db=db,
                 store_client=store_client,
-                min_price=safe_float(tool_args.get("min_price")),
-                max_price=safe_float(tool_args.get("max_price")),
+                min_price=min_price,
+                max_price=max_price,
                 in_stock_only=in_stock_only,
+                size=size,
+                color=color,
                 limit=limit,
                 sort_by=sort_by,
                 sort_order=sort_order,

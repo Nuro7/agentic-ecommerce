@@ -32,6 +32,8 @@ class BaseStoreClient(ABC):
         max_price: Optional[float] = None,
         in_stock_only: bool = True,
         on_sale: Optional[bool] = None,
+        size: Optional[str] = None,
+        color: Optional[str] = None,
         limit: int = 6,
         sort_by: Optional[str] = None,
         sort_order: Optional[str] = None,
