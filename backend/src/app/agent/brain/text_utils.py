@@ -803,10 +803,19 @@ def summarize_actions_for_voice(actions: List[Dict[str, Any]]) -> str:
         if action_type == "show_products":
             products = payload.get("products", []) if isinstance(payload.get("products"), list) else []
             if products:
-                name = str(products[0].get("name") or "")
-                price = str(products[0].get("price") or "")
-                price_text = f", â‚¹{price}" if price else ""
-                return f"{name}{price_text}. Take a look â€” let me know which one you like."
+                # Voice-friendly rundown of the best 4-5 matches so the spoken
+                # reply actually describes the list instead of only one item.
+                top = products[:5]
+                names = []
+                for p in top:
+                    pname = str(p.get("name") or "").strip()
+                    price = str(p.get("price") or "").strip()
+                    names.append(f"{pname}{', ' + price if price else ''}")
+                if len(names) == 1:
+                    return f"I found {names[0]}. Take a look — let me know if you like it."
+                listing = "; ".join(names)
+                more = f" and {len(products) - len(top)} more." if len(products) > len(top) else "."
+                return f"I found these {len(products)} matches: {listing}{more} Which one should I add to your cart?"
             return "Couldn't find a match. Try a different product name or budget?"
 
     return "I completed that request. Tell me what you want to do next."

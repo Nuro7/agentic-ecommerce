@@ -1256,14 +1256,10 @@ async def _resolve_product_for_add(
         target_index = 4
 
     if target_index is not None:
-        if active_recommendations and len(active_recommendations) > target_index:
-            rec = active_recommendations[target_index]
-            if isinstance(rec, dict) and rec.get("id"):
-                return rec
         # Prefer the CURRENT search page's listing over stale session caches.
         # "First item" means the first product LISTED on screen right now — a
-        # previous turn's active_recommendations (or last_products) may be from an
-        # older query and resolve to the wrong (often "last") product.
+        # previous turn's active_recommendations (or Redis last_products) may be
+        # from an older query and resolve to the wrong (often "last") product.
         _search_q = _current_search_query(page_context)
         if _search_q:
             try:
@@ -1275,6 +1271,10 @@ async def _resolve_product_for_add(
             except Exception as e:
                 logger.error("Failed resolving ordinal %d from current search page '%s': %s",
                              target_index, _search_q, e)
+        if active_recommendations and len(active_recommendations) > target_index:
+            rec = active_recommendations[target_index]
+            if isinstance(rec, dict) and rec.get("id"):
+                return rec
         last_prods = page_context.get("last_products") or []
         if len(last_prods) > target_index:
             try:

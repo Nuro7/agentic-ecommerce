@@ -87,6 +87,7 @@
 
   // ── Pending navigation queue — redirected only after TTS finishes ──────────
   let _pendingNavigation = null;
+  let _navTimer = null;
 
   // ── Primary-colour shades, precomputed in JS ────────────────────────────────
   // The core tokens used to rely on CSS color-mix(), which is unsupported in older
@@ -2844,8 +2845,23 @@ try {
         };
 
         _pendingNavigation = performRedirect;
+        // Never fire a redirect while Gemini is still generating/playing its
+        // spoken reply (it used to cut the answer off mid-sentence). If speech
+        // starts, _a2aPlayNext clears the timer and onSpeakingEnd() fires the
+        // redirect after the audio drains. Only use a timer when nothing is
+        // (and stays) audible, with a generous floor so the search page isn't
+        // jumped to before the AI has even started talking.
+        if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
         if (!S.speaking && !a2aIsPlaying) {
-          setTimeout(performRedirect, p.delay_ms || 800);
+          const _minNavDelay = navReason === 'search' ? 2200 : 1500;
+          _navTimer = setTimeout(() => {
+            _navTimer = null;
+            if (_pendingNavigation) {
+              const pn = _pendingNavigation;
+              _pendingNavigation = null;
+              pn();
+            }
+          }, Math.max(parseInt(p.delay_ms, 10) || 800, _minNavDelay));
         }
         break;
       }
@@ -2938,6 +2954,50 @@ try {
         const ev = act.payload || {};
         const eventName = ev.event || '';
         const detail = ev.detail || {};
+
+        // LLM-directed navigation ("go to cart", "show my account", "search for X")
+        // — the brain tells the LLM to emit speako:navigate; route it through the
+        // same redirect logic (resume markers + non-interrupting scheduling).
+        if (eventName === 'speako:navigate' && detail && detail.url) {
+          const navUrl = String(detail.url || '');
+          const reason = String(detail.reason || '');
+          try {
+            if (S.mode === 'voice_nav') {
+              localStorage.setItem('_wa_voice_nav_resume', '1');
+            } else {
+              localStorage.setItem('_wa_reopen', '1');
+            }
+            if (reason === 'search') sessionStorage.setItem('_wa_voice_active', '1');
+          } catch (_e) {}
+          if (reason === 'search' && IS_SHOPIFY && navUrl.includes('/search?q=')) {
+            let targetUrl = navUrl;
+            try {
+              const parsed = new URL(targetUrl, location.origin);
+              targetUrl = parsed.pathname + parsed.search;
+            } catch (_e) {}
+            const _pendingNav = () => { window.location.href = targetUrl; };
+            _pendingNavigation = _pendingNav;
+            if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
+            if (!S.speaking && !a2aIsPlaying) {
+              _navTimer = setTimeout(() => {
+                _navTimer = null;
+                if (_pendingNavigation) {
+                  const pn = _pendingNavigation;
+                  _pendingNavigation = null;
+                  pn();
+                }
+              }, 2200);
+            }
+          } else {
+            let targetUrl = navUrl;
+            try {
+              const parsed = new URL(targetUrl, location.origin);
+              targetUrl = parsed.pathname + parsed.search + parsed.hash;
+            } catch (_e) {}
+            window.location.href = targetUrl;
+          }
+          break;
+        }
 
         if (eventName === 'speako:open_cart_drawer') {
           // Shopify cart drawer — try common theme selectors
@@ -3264,6 +3324,27 @@ try {
       else if (ord === '5th' || ord === 'fifth') idx = 4;
       idx = Math.max(0, Math.min(cards.length - 1, idx));
       S._ordinalIndex = idx;
+      // "first item" should mean the first product the AI *showed/talked about*,
+      // not whatever happens to be first in the theme DOM (heroes, promo rows and
+      // non-product links can sit ahead of the real grid). If the agent's own
+      // recommendation list is populated, align the ordinal to it by id/handle.
+      try {
+        const recs = window._wa_lastProducts;
+        if (Array.isArray(recs) && recs.length > idx && recs[idx]) {
+          const rec = recs[idx];
+          const recId = rec && (rec.id !== undefined ? rec.id : rec.product_id);
+          const recHandle = rec && (rec.handle || (rec.url ? String(rec.url).split('/products/').pop().replace(/[?#].*$/, '') : ''));
+          let match = null;
+          if (recId !== undefined && recId !== null) {
+            match = cards.find(c => c.el && (c.el.getAttribute('data-product-id') === String(recId) || (c.el.closest && c.el.closest('[data-product-id]') && c.el.closest('[data-product-id]').getAttribute('data-product-id') === String(recId))));
+          }
+          if (!match && recHandle) {
+            const rh = String(recHandle).toLowerCase().replace(/\/$/, '');
+            match = cards.find(c => c.handle === rh || (c.url && String(c.url).toLowerCase().indexOf(rh) !== -1));
+          }
+          if (match) return match.el;
+        }
+      } catch (_e) {}
       return cards[idx].el;
     }
     if (target.by === 'text' && target.q) {
@@ -3408,9 +3489,9 @@ try {
     // Navigation
     { re: /^(?:go\s+to\s+|go\s+)?(?:home|homepage|home\s+page)$/i,
       act: { t: 'navigate', url: '/' } },
-    { re: /^(?:go\s+to|show|view|open)\s+(?:my\s+)?cart$/i,
+    { re: /^(?:go\s+to|show|view|open|take\s+me\s+to)\s+(?:my\s+|the\s+)?(?:cart|bag|shopping\s+cart)$/i,
       act: { t: 'navigate', url: '/cart' } },
-    { re: /^(?:go\s+to\s+)?(?:checkout|check\s*out)$/i,
+    { re: /^(?:go\s+to\s+|take\s+me\s+to\s+|proceed\s+to\s+)?(?:checkout|check\s*out)$/i,
       act: { t: 'checkout' } },
     { re: /^buy\s+now$/i,
       act: (m, t) => buildLocalBuyNowSpec(t) },
@@ -5196,6 +5277,9 @@ try {
     }
     a2aIsPlaying = true;
     S.speaking   = true;
+    // A spoken reply is starting — hand the pending redirect over to
+    // onSpeakingEnd() so navigation waits for the full response to finish.
+    if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
 
     // Lazy-init AudioContext (must be after user gesture)
     if (!a2aAudioCtx || a2aAudioCtx.state === 'closed') {
@@ -5231,6 +5315,7 @@ try {
   function flushAudioQueue() {
     // Cancel any pending navigation — user interrupted, don't redirect
     _pendingNavigation = null;
+    if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
     // Stop the currently playing source node immediately
     if (a2aCurrentSource) {
       try {
@@ -5676,6 +5761,7 @@ try {
   // for TTS to finish so the user hears the full response before the page
   // navigates away.
   function onSpeakingEnd() {
+    if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
     if (_pendingNavigation) {
       const pn = _pendingNavigation;
       _pendingNavigation = null;
