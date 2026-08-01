@@ -89,6 +89,34 @@
   let _pendingNavigation = null;
   let _navTimer = null;
 
+  // ── Cart-removal dedup: line keys removed locally, keyed → timestamp ──────
+  // Prevents the backend's echo remove_from_cart (a second or two later) from
+  // re-removing an item that the widget already removed locally, which used to
+  // fail with "Could not remove item from cart" on top of a successful remove.
+  const _recentlyRemoved = {};
+
+  // Resolve the REAL /cart.js line key for Shopify. Backend payloads sometimes
+  // carry a product_id / variant_id / stale session key instead of the hash key
+  // /cart/change.js requires — match against the live cart snapshot so "clear
+  // cart" and "remove <product>" actually remove the right line.
+  function _resolveLineKey(keyOrId) {
+    if (!keyOrId) return '';
+    const s = String(keyOrId).trim();
+    if (!s) return '';
+    if (/^\d+:/.test(s)) return s; // already a /cart.js line key ("123:hash")
+    const snap = (S.cartSnapshot && Array.isArray(S.cartSnapshot.items)) ? S.cartSnapshot.items : [];
+    if (!snap.length) return s;
+    const want = parseInt(s, 10);
+    if (!Number.isInteger(want)) return s;
+    const match = snap.find(i => {
+      const pi = parseInt(i.product_id, 10);
+      const vi = parseInt(i.variation_id, 10);
+      const ki = parseInt(i.cart_item_key, 10);
+      return (Number.isInteger(pi) && pi === want) || (Number.isInteger(vi) && vi === want) || (Number.isInteger(ki) && ki === want);
+    });
+    return match ? (match.cart_item_key || match.key || s) : s;
+  }
+
   // ── Primary-colour shades, precomputed in JS ────────────────────────────────
   // The core tokens used to rely on CSS color-mix(), which is unsupported in older
   // Safari and many in-app webviews (a real slice of Shopify mobile traffic) — when
@@ -2513,24 +2541,31 @@ try {
 
       case 'remove_from_cart':
         try {
-          let itemKey = act.payload && act.payload.cart_item_key;
-          if (!itemKey && act.payload && act.payload.product_id) {
+          const _pay = act.payload || {};
+          // Dedup: this action may be the backend's echo of a removal the widget
+          // already performed locally (same line key within the window) — skip it
+          // so the same item is never removed twice / never toasts "could not".
+          let itemKey = _resolveLineKey(_pay.cart_item_key || _pay.key);
+          if (_recentlyRemoved[String(itemKey)] && (Date.now() - _recentlyRemoved[String(itemKey)] < 15000)) {
+            break;
+          }
+          if (!itemKey && _pay.product_id) {
             // Backend sent product_id (from Storefront API) — match against
             // our local /cart.js snapshot to get the correct change.js key.
             const snap = S.cartSnapshot || {};
             const snapItems = snap.items || [];
-            const pid = parseInt(act.payload.product_id, 10);
+            const pid = parseInt(_pay.product_id, 10);
             const match = snapItems.find(i => {
               const ip = i.product_id || (i.product && i.product.id) || 0;
               return parseInt(ip, 10) === pid;
             });
-            if (match) itemKey = match.key || match.variant_id;
+            if (match) itemKey = match.cart_item_key || match.key;
           }
           if (!itemKey) {
             // Fallback: no key or product_id in payload — remove last item
             const snap = S.cartSnapshot || {};
             const snapItems = snap.items || [];
-            if (snapItems.length) itemKey = snapItems[snapItems.length - 1].key;
+            if (snapItems.length) itemKey = snapItems[snapItems.length - 1].cart_item_key || snapItems[snapItems.length - 1].key;
           }
           if (itemKey) {
             if (IS_SHOPIFY) {
@@ -2539,6 +2574,7 @@ try {
               await removeFromCartViaWoo(itemKey);
             }
             S._localActionOk = true;
+            _recentlyRemoved[String(itemKey)] = Date.now();
           }
         } catch (error) {
           S._localActionOk = false;
@@ -2546,10 +2582,42 @@ try {
         }
         break;
 
+      case 'clear_cart': {
+        const snap = S.cartSnapshot || {};
+        const snapItems = Array.isArray(snap.items) ? snap.items : [];
+        if (!snapItems.length) {
+          S._localActionOk = false;
+          showToast('Your cart is already empty');
+          break;
+        }
+        try {
+          for (const it of snapItems) {
+            const k = it.cart_item_key || it.key;
+            if (!k) continue;
+            if (IS_SHOPIFY) {
+              await removeFromCartShopify(k);
+            } else {
+              await removeFromCartViaWoo(k);
+            }
+            _recentlyRemoved[String(k)] = Date.now();
+          }
+          S._localActionOk = true;
+          showToast('🗑️ Cart cleared');
+        } catch (error) {
+          S._localActionOk = false;
+          showToast('Could not clear cart.');
+        }
+        break;
+      }
+
       case 'mutate_cart': {
         const mc = act.payload || {};
-        const mcKey = String(mc.cart_item_key || mc.key || '');
+        const mcKey = _resolveLineKey(mc.cart_item_key || mc.key || '');
         const mcQty = parseInt(mc.quantity, 10);
+        // Skip a clear/remove echo for a line the widget already removed locally.
+        if (mcKey && mcQty === 0 && _recentlyRemoved[String(mcKey)] && (Date.now() - _recentlyRemoved[String(mcKey)] < 15000)) {
+          break;
+        }
         if (mcKey && Number.isInteger(mcQty) && mcQty >= 0) {
           try {
             if (IS_SHOPIFY) {
@@ -3505,6 +3573,14 @@ try {
       act: () => buildLocalRemoveSpec() },
     { re: /^remove\s+(?:this|it)/i,
       act: () => buildLocalRemoveSpec() },
+    { re: /^remove\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|last)\s+(?:item|product|one|thing)$/i,
+      act: (m) => buildLocalRemoveOrdinalSpec(m[1]) },
+    { re: /^(?:remove\s+all|remove\s+everything|clear|empty)\s+(?:my\s+|the\s+)?(?:cart|bag)$/i,
+      act: () => ({ t: 'clear_cart', ack: 'Cart cleared' }) },
+    { re: /^remove\s+all(?:\s+(?:items|products|things))?\s+(?:from\s+)?(?:my\s+|the\s+)?(?:cart|bag)$/i,
+      act: () => ({ t: 'clear_cart', ack: 'Cart cleared' }) },
+    { re: /^remove\s+(?:the\s+)?(.+?)\s+(?:from\s+|out\s+of\s+)?(?:my\s+|the\s+)?(?:cart|bag)$/i,
+      act: (m) => buildLocalRemoveByNameSpec(m[1]) },
     // Navigation
     { re: /^(?:go\s+to\s+|go\s+)?(?:home|homepage|home\s+page)$/i,
       act: { t: 'navigate', url: '/' } },
@@ -3610,6 +3686,39 @@ try {
       }
     }
     showToast('No item to remove');
+    return { t: 'speak', text: '' };
+  }
+
+  function buildLocalRemoveOrdinalSpec(ord) {
+    const items = (S.cartSnapshot && Array.isArray(S.cartSnapshot.items)) ? S.cartSnapshot.items : [];
+    const o = String(ord).toLowerCase();
+    let idx;
+    if (o === 'last') idx = items.length - 1;
+    else idx = { first: 0, '1st': 0, second: 1, '2nd': 1, third: 2, '3rd': 2 }[o];
+    const item = items[idx];
+    if (item && item.cart_item_key) {
+      return { t: 'remove_from_cart', payload: { cart_item_key: item.cart_item_key }, ack: 'Removed ' + (item.name || 'item') + ' from cart' };
+    }
+    showToast('No item to remove');
+    return { t: 'speak', text: '' };
+  }
+
+  function buildLocalRemoveByNameSpec(name) {
+    const q = String(name).trim().toLowerCase().replace(/[.!?,।]+$/, '');
+    const items = (S.cartSnapshot && Array.isArray(S.cartSnapshot.items)) ? S.cartSnapshot.items : [];
+    if (!items.length) { showToast('Your cart is empty'); return { t: 'speak', text: '' }; }
+    let best = null, bestScore = 0;
+    const tokens = q.split(/\s+/).filter(Boolean);
+    for (const it of items) {
+      const nm = String(it.name || '').toLowerCase();
+      let score = 0;
+      for (const tok of tokens) if (tok && nm.includes(tok)) score++;
+      if (score > bestScore) { bestScore = score; best = it; }
+    }
+    if (best && bestScore >= 1 && best.cart_item_key) {
+      return { t: 'remove_from_cart', payload: { cart_item_key: best.cart_item_key }, ack: 'Removed ' + (best.name || 'item') + ' from cart' };
+    }
+    showToast('Could not find that item in your cart');
     return { t: 'speak', text: '' };
   }
 

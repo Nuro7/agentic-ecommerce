@@ -248,15 +248,9 @@ async def run_fast_intent(
             "suggested_replies": ["Checkout now", "Show products"],
         })
 
-    if has_cart_view_intent(lower):
-        cart = cart_context if (cart_context and isinstance(cart_context, dict) and cart_context.get("items")) else await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
-        return with_actions_alias({
-            "response_text": say(language, "cart_opened"),
-            "ui_actions": [{"type": "show_cart", "payload": {"cart": normalize_cart_payload(cart)}}],
-            "suggested_replies": ["Checkout now", "Show products"],
-        })
-
     # ── Clear cart ──────────────────────────────────────────────
+    # Checked BEFORE has_cart_view_intent: "clear my cart" contains "my cart"
+    # which would otherwise short-circuit into a plain cart view.
     if has_clear_cart_intent(lower):
         cart = cart_context if (cart_context and isinstance(cart_context, dict) and cart_context.get("items")) else await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
         items = cart.get("items") if isinstance(cart.get("items"), list) else []
@@ -279,6 +273,8 @@ async def run_fast_intent(
         })
 
     # ── Remove from cart ────────────────────────────────────────
+    # Checked BEFORE has_cart_view_intent: "remove nike from my cart" contains
+    # "my cart" which would otherwise short-circuit into a plain cart view.
     if has_remove_intent(lower):
         cart = cart_context if (cart_context and isinstance(cart_context, dict) and cart_context.get("items")) else await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
         items = cart.get("items") if isinstance(cart.get("items"), list) else []
@@ -297,6 +293,8 @@ async def run_fast_intent(
             ordinal_idx = 1
         elif re.search(r"\b(third|3rd)\b", lower):
             ordinal_idx = 2
+        elif re.search(r"\b(last)\b", lower):
+            ordinal_idx = len(items) - 1
         if ordinal_idx is not None and ordinal_idx < len(items):
             target = items[ordinal_idx]
         if target is None:
@@ -322,6 +320,14 @@ async def run_fast_intent(
             "response_text": f"Removed {name} from your cart.",
             "ui_actions": [{"type": "remove_from_cart", "payload": payload}],
             "suggested_replies": ["Show products", "Checkout"],
+        })
+
+    if has_cart_view_intent(lower):
+        cart = cart_context if (cart_context and isinstance(cart_context, dict) and cart_context.get("items")) else await safe_get_cart(tenant_id, session_id, store_client=store_client, session_service=session_service)
+        return with_actions_alias({
+            "response_text": say(language, "cart_opened"),
+            "ui_actions": [{"type": "show_cart", "payload": {"cart": normalize_cart_payload(cart)}}],
+            "suggested_replies": ["Checkout now", "Show products"],
         })
 
     # ── Quantity update ─────────────────────────────────────────
