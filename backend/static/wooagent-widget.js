@@ -89,6 +89,16 @@
   let _pendingNavigation = null;
   let _navTimer = null;
 
+  // ── In-flight add-to-cart promise ─────────────────────────────────────────
+  // Buy-now sends [add_to_cart, redirect_checkout] as two separate ui_action
+  // messages. Without sequencing, redirect_checkout can navigate to /checkout
+  // before /cart/add.js settles — landing on an EMPTY cart. Track the add so
+  // the checkout redirect waits for it (and aborts if the add failed).
+  let _pendingAddPromise = null;
+  // True when the most recent add_to_cart failed — survives past the promise's
+  // cleanup so a chained redirect_checkout can still abort the checkout jump.
+  let _addForCheckoutFailed = false;
+
   // ── Cart-removal dedup: line keys removed locally, keyed → timestamp ──────
   // Prevents the backend's echo remove_from_cart (a second or two later) from
   // re-removing an item that the widget already removed locally, which used to
@@ -2522,10 +2532,13 @@ try {
           S._localAddHandled = null;
           break;
         }
-        try {
-          // Platform-aware add that resolves the REAL Shopify variant ID from the
-          // product handle when the payload only carries a product ID (Shopify's
-          // /cart/add.js rejects a product ID with 422 "Cannot find variant").
+        // Platform-aware add that resolves the REAL Shopify variant ID from the
+        // product handle when the payload only carries a product ID (Shopify's
+        // /cart/add.js rejects a product ID with 422 "Cannot find variant").
+        // Expose the operation as a promise so a chained redirect_checkout can
+        // wait for it and only then navigate to checkout.
+        _addForCheckoutFailed = false;
+        _pendingAddPromise = (async () => {
           await addToCartDispatch(act.payload || {});
           if (IS_SHOPIFY) {
             // Wait for add.js to settle, then refresh cart before opening drawer
@@ -2542,12 +2555,19 @@ try {
           }
           S._localActionOk = true;
           showToast('Added to cart!');
+        })();
+        try {
+          await _pendingAddPromise;
+          _addForCheckoutFailed = false;
         } catch (error) {
           S._localActionOk = false;
+          _addForCheckoutFailed = true;
           const message = (error && error.message) ? String(error.message) : 'Could not add to cart.';
           console.error('[WooAgent A2C] add-to-cart failed:', message);
           addBubble('bot', message);
           showToast(message);
+        } finally {
+          _pendingAddPromise = null;
         }
         break;
       }
@@ -2910,8 +2930,28 @@ try {
           }
         } catch (e) {}
 
-        const performRedirect = () => {
+        const performRedirect = async () => {
           _pendingNavigation = null;
+          // Buy-now sequencing: [add_to_cart, redirect_checkout] arrive as two
+          // separate ui_action messages. Wait for the add to settle first — never
+          // take the customer to an empty /checkout because the add hasn't landed.
+          if (_pendingAddPromise) {
+            try {
+              await _pendingAddPromise;
+            } catch (_e) {
+              try { showToast('Could not add to cart — please try again.'); } catch (_ee) {}
+              return;
+            }
+          }
+          // Only a checkout redirect must wait for / trust the preceding add —
+          // search/product/cart navigations are unrelated and must not be blocked
+          // by a stale failed-add flag from an earlier turn.
+          const _isCheckoutNav = !isLiveNav && (!p.url || p.url === '/checkout');
+          if (_isCheckoutNav && _addForCheckoutFailed) {
+            _addForCheckoutFailed = false;
+            try { showToast('Could not add to cart — please try again.'); } catch (_ee) {}
+            return;
+          }
           try {
             sessionStorage.setItem('_wa_voice_active', '1');
             if (p.query) {
@@ -2933,7 +2973,7 @@ try {
               try { sessionStorage.setItem('_wa_search_spec', p.query); } catch (_e) {}
             }
           } catch (e) {}
-          if (IS_SHOPIFY && !isLiveNav && (!p.url || p.url === '/checkout')) {
+          if (IS_SHOPIFY && _isCheckoutNav) {
             goToCheckout();
           } else {
             window.location.href = targetUrl;
@@ -7060,10 +7100,12 @@ try {
           }
         } catch (_e) {}
         // Walk through the recommended cards ONE AT A TIME: highlight only the
-        // current card, then move to the next — never glow all of them at once.
-        // The first recommendation is always highlighted first. NO browser
-        // speechSynthesis here — spoken description comes strictly from the
-        // main A2A/Gemini voice stream.
+        // current card and describe it, then move to the next — never glow all
+        // of them at once. The first recommendation is always the first one
+        // described. Local TTS is skipped while A2A live owns speech (the
+        // backend already described each product before navigating, and those
+        // descriptions are played through the main A2A/Gemini voice stream).
+        const _a2aLiveNow = !!(isA2AConnected && isLiveMode);
         const _glowStyle = (card, on) => {
           if (!card) return;
           card.style.outline = on ? 'none' : '';
@@ -7086,7 +7128,20 @@ try {
           cards.forEach(c => _glowStyle(c, false));
           _glowStyle(card, true);
           try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
-          setTimeout(() => _describeCard(idx + 1), 1600);
+          const p = prods[idx];
+          if (p && p.name && !_a2aLiveNow && window.speechSynthesis) {
+            const prefix = idx === 0 ? 'First, ' : (idx === 1 ? 'Next, ' : 'And this one, ');
+            const _blurb = (p.description && String(p.description).trim()) ? '. ' + String(p.description).trim() : '';
+            const label = prefix + p.name + (p.price ? ', ' + p.price : '') + _blurb + '.';
+            try {
+              window.speechSynthesis.cancel();
+              const u = new SpeechSynthesisUtterance(label);
+              u.lang = S.language || 'en';
+              u.rate = 1.0;
+              window.speechSynthesis.speak(u);
+            } catch (_e) {}
+          }
+          setTimeout(() => _describeCard(idx + 1), 3200);
         };
         setTimeout(() => _describeCard(0), 500);
       }
