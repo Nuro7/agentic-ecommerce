@@ -676,16 +676,6 @@ async def handle_product_discovery(
                 {"type": "show_products", "payload": {"products": products}},
                 {"type": "show_products", "payload": {"products": alternatives}},
             ]
-            first_in_stock = next((p for p in alternatives if p.get("in_stock")), alternatives[0] if alternatives else None)
-            if first_in_stock and first_in_stock.get("id"):
-                actions.append({
-                    "type": "add_to_cart",
-                    "payload": {
-                        "product_id": int(first_in_stock["id"]),
-                        "variation_id": int(first_in_stock.get("variation_id") or first_in_stock["id"]),
-                        "quantity": 1,
-                    }
-                })
             suggested = ["Show options", "Add to cart", "Show my cart"]
             last_ids = [p.get("id") for p in (products + alternatives) if p.get("id")]
         else:
@@ -700,16 +690,6 @@ async def handle_product_discovery(
         actions = [
             {"type": "show_products", "payload": {"products": products}},
         ]
-        first_in_stock = next((p for p in products if p.get("in_stock")), products[0] if products else None)
-        if first_in_stock and first_in_stock.get("id"):
-            actions.append({
-                "type": "add_to_cart",
-                "payload": {
-                    "product_id": int(first_in_stock["id"]),
-                    "variation_id": int(first_in_stock.get("variation_id") or first_in_stock["id"]),
-                    "quantity": 1,
-                }
-            })
         suggested = ["Show options", "Add to cart", "Show my cart"]
         last_ids = [p.get("id") for p in products if p.get("id")]
 
@@ -1309,25 +1289,13 @@ async def _resolve_product_for_add(
         target_index = 4
 
     if target_index is not None:
-        # Prefer the CURRENT search page's listing over stale session caches.
-        # "First item" means the first product LISTED on screen right now — a
-        # previous turn's active_recommendations (or Redis last_products) may be
-        # from an older query and resolve to the wrong (often "last") product.
-        _search_q = _current_search_query(page_context)
-        if _search_q:
-            try:
-                matches = await store_client.search_products(query=_search_q, in_stock_only=False, limit=12)
-                if len(matches) > target_index:
-                    best = matches[target_index]
-                    if best and best.get("id"):
-                        return best
-            except Exception as e:
-                logger.error("Failed resolving ordinal %d from current search page '%s': %s",
-                             target_index, _search_q, e)
-        if active_recommendations and len(active_recommendations) > target_index:
-            rec = active_recommendations[target_index]
-            if isinstance(rec, dict) and rec.get("id"):
-                return rec
+        # Resolve the ordinal against the products the customer ACTUALLY saw on
+        # screen. The widget sends the displayed order in page_context["last_products"]
+        # (it reorders the grid so the top recommendations are the first cards and
+        # glows them one at a time). The session active_recommendations hold the
+        # same recommended list. A fresh storefront search re-run is only a LAST
+        # resort — its relevance order can differ from what was highlighted, which
+        # made "take the first one" select a different (wrong) product.
         last_prods = page_context.get("last_products") or []
         if len(last_prods) > target_index:
             try:
@@ -1345,6 +1313,21 @@ async def _resolve_product_for_add(
                         }
             except Exception as e:
                 logger.error("Failed fetching last_product ordinal %s: %s", target_index, e)
+        if active_recommendations and len(active_recommendations) > target_index:
+            rec = active_recommendations[target_index]
+            if isinstance(rec, dict) and rec.get("id"):
+                return rec
+        _search_q = _current_search_query(page_context)
+        if _search_q:
+            try:
+                matches = await store_client.search_products(query=_search_q, in_stock_only=False, limit=12)
+                if len(matches) > target_index:
+                    best = matches[target_index]
+                    if best and best.get("id"):
+                        return best
+            except Exception as e:
+                logger.error("Failed resolving ordinal %d from current search page '%s': %s",
+                             target_index, _search_q, e)
         logger.warning("Ordinal %d requested but no matching product in active_recommendations (%d) or last_products (%d) — returning None",
                        target_index, len(active_recommendations or []), len(last_prods))
         return None

@@ -987,6 +987,7 @@ async def ask_brain(
                             "name": str(_p.get("name") or ""),
                             "price": _p.get("price"),
                             "handle": str(_p.get("permalink") or "").split("/products/")[-1].split("?")[0].rstrip("/"),
+                            "description": str(_p.get("short_description") or _p.get("description") or "")[:200],
                         })
                 break
         if _pending_products:
@@ -1004,21 +1005,39 @@ async def ask_brain(
         if _pending_products:
             _top = _pending_products[:5]
             _descs = []
+            _top_blurb = ""
             for _pp in _top:
                 _n = str(_pp.get("name") or "").strip()
                 _pr = str(_pp.get("price") or "").strip()
                 if not _n:
                     continue
-                _descs.append(f"{_n}{', ' + _pr if _pr else ''}")
+                _line = f"{_n}{', ' + _pr if _pr else ''}"
+                if not _top_blurb:
+                    _raw = str(_pp.get("description") or "").strip()
+                    if _raw:
+                        _raw = re.sub(r"<[^>]+>", " ", _raw)
+                        _raw = re.sub(r"\s+", " ", _raw).strip()
+                        _words = _raw.split()
+                        if len(_words) > 16:
+                            _raw = " ".join(_words[:16]).rstrip(",.;-") + "..."
+                        if _raw:
+                            _top_blurb = f" {_n} — {_raw}"
+                _descs.append(_line)
             if _descs:
                 _total = len(_pending_products)
                 _q = str(_sq or "matching").strip()
                 if len(_descs) == 1:
-                    response_text = f"I found your best match: {_descs[0]}. Want me to add it to your cart?"
+                    response_text = f"I found your best match: {_descs[0]}."
+                    if _top_blurb:
+                        response_text += f"{_top_blurb}."
+                    response_text += " Want me to add it to your cart?"
                 else:
-                    _head = "; ".join(_descs)
+                    _head = "; ".join(_descs[:3])
                     _tail = f" and {_total - len(_descs)} more" if _total > len(_descs) else ""
-                    response_text = f"I found {_total} {_q} products: {_head}{_tail}. Which one would you like to add to your cart?"
+                    response_text = f"I found {_total} {_q} products: {_head}{_tail}."
+                    if _top_blurb:
+                        response_text += f" The top pick is{_top_blurb}."
+                    response_text += " Which one would you like to add to your cart?"
         if not response_text:
             _sq = _search_redirect["payload"].get("query") or _search_query or ""
             response_text = f"Searching for {_sq}..." if _sq else "Searching..."

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel, Field
@@ -33,6 +33,7 @@ class GreetCurrentPage(BaseModel):
     product_id: Optional[int] = None
     product_name: Optional[str] = None
     variant_id: Optional[int] = None
+    last_products: Optional[List[int]] = None
 
 
 class GreetRequest(BaseModel):
@@ -380,7 +381,7 @@ async def chat_endpoint(
         store_context["customer_name"] = session_meta["customer_name"]
     cp = payload.current_page
     page_context: Dict[str, Any] = (
-        {"url": cp.url, "title": cp.title, "product_id": cp.product_id, "product_name": cp.product_name, "variant_id": cp.variant_id}
+        {"url": cp.url, "title": cp.title, "product_id": cp.product_id, "product_name": cp.product_name, "variant_id": cp.variant_id, "last_products": cp.last_products}
         if cp else {}
     )
 

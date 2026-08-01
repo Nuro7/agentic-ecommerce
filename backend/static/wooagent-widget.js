@@ -2360,7 +2360,8 @@ try {
           product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
           product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
           product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
-          variant_id: detectActiveVariantId()
+          variant_id: detectActiveVariantId(),
+          last_products: displayedSearchProductIds()
         }
       };
 
@@ -5117,6 +5118,7 @@ try {
             product_name: typeof detectProductName === 'function' ? detectProductName() : (S.currentPageProduct ? S.currentPageProduct.name : null),
             product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
             variant_id: activeVariant,
+            last_products: displayedSearchProductIds(),
             interrupted_flow: interruptedFlow
           };
 
@@ -5575,7 +5577,8 @@ try {
           product_id: detectProductId() || (S.currentPageProduct ? S.currentPageProduct.id : null),
           product_name: detectProductName() || (S.currentPageProduct ? S.currentPageProduct.name : null),
           product_handle: S.currentPageProduct ? S.currentPageProduct.handle : null,
-          variant_id: detectActiveVariantId()
+          variant_id: detectActiveVariantId(),
+          last_products: displayedSearchProductIds()
         }
       });
       S.language = r.language_detected || r.language || S.language;
@@ -6082,6 +6085,20 @@ try {
     const match = document.body.className.match(/postid-(\d+)/);
     if (match) return parseInt(match[1], 10);
     return null;
+  }
+
+  // Displayed product order on the current search page (written by the search-page
+  // replay block). The backend reads this via page_context.last_products so ordinal
+  // references ("take the first one") resolve to the exact cards the customer saw
+  // highlighted — never a differently-ordered re-run of the storefront search.
+  function displayedSearchProductIds() {
+    try {
+      const raw = sessionStorage.getItem('_wa_search_displayed');
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      return arr.map(Number).filter(function (n) { return n > 0; });
+    } catch (_) { return []; }
   }
 
   function detectActiveVariantId() {
@@ -6903,6 +6920,28 @@ try {
       // 3) Glow the recommended (best 4-5) product cards.
       const prods = (pending && Array.isArray(pending.products)) ? pending.products.slice(0, 5) : [];
       if (prods.length) {
+        // Remember the exact order we glow so "take the first one" later resolves to
+        // the same card the customer heard about (backend reads it as last_products).
+        try { sessionStorage.setItem('_wa_search_displayed', JSON.stringify(prods.map(p => p.id))); } catch (_e) {}
+        // Push the on-screen order to the backend immediately — voice may have
+        // connected before this snapshot was written, and ordinals must resolve to
+        // the exact highlighted cards, never a re-run storefront ordering.
+        try {
+          if (typeof geminiSocket !== 'undefined' && geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
+            geminiSocket.send(JSON.stringify({
+              type: 'page_update',
+              page_context: {
+                url: location.href,
+                title: document.title,
+                page_type: 'search',
+                product_id: null,
+                product_name: null,
+                variant_id: null,
+                last_products: prods.map(p => p.id)
+              }
+            }));
+          }
+        } catch (_e) {}
         const cards = Array.from(document.querySelectorAll(PROD_SEL)).filter(c => c.style.display !== 'none');
         const matched = [];
         for (const p of prods) {
@@ -6970,7 +7009,8 @@ try {
           const p = prods[idx];
           if (p && p.name && !_a2aLiveNow && window.speechSynthesis) {
             const prefix = idx === 0 ? 'First, ' : (idx === 1 ? 'Next, ' : 'And this one, ');
-            const label = prefix + p.name + (p.price ? ', ' + p.price : '.');
+            const _blurb = (p.description && String(p.description).trim()) ? '. ' + String(p.description).trim() : '';
+            const label = prefix + p.name + (p.price ? ', ' + p.price : '') + _blurb + '.';
             try {
               window.speechSynthesis.cancel();
               const u = new SpeechSynthesisUtterance(label);
@@ -7011,6 +7051,12 @@ try {
       if (++_attempts < 6) setTimeout(_tries, 800);
     };
     setTimeout(_tries, 300);
+
+    // Drop the displayed-order snapshot when leaving the search page so a stale
+    // list never resolves ordinals on a different page.
+    window.addEventListener('pagehide', () => {
+      try { sessionStorage.removeItem('_wa_search_displayed'); } catch (_e) {}
+    });
   })();
 
   // Auto-resume voice mode after search redirect
