@@ -3388,6 +3388,7 @@ try {
       S.pageState = {
         sections,
         clickables,
+        visibleProducts: clickables.filter(c => c && c.isProduct),
         variants,
         currentProduct: {
           id: detectProductId(),
@@ -3429,27 +3430,10 @@ try {
       else if (ord === '5th' || ord === 'fifth') idx = 4;
       idx = Math.max(0, Math.min(cards.length - 1, idx));
       S._ordinalIndex = idx;
-      // "first item" should mean the first product the AI *showed/talked about*,
-      // not whatever happens to be first in the theme DOM (heroes, promo rows and
-      // non-product links can sit ahead of the real grid). If the agent's own
-      // recommendation list is populated, align the ordinal to it by id/handle.
-      try {
-        const recs = window._wa_lastProducts;
-        if (Array.isArray(recs) && recs.length > idx && recs[idx]) {
-          const rec = recs[idx];
-          const recId = rec && (rec.id !== undefined ? rec.id : rec.product_id);
-          const recHandle = rec && (rec.handle || (rec.url ? String(rec.url).split('/products/').pop().replace(/[?#].*$/, '') : ''));
-          let match = null;
-          if (recId !== undefined && recId !== null) {
-            match = cards.find(c => c.el && (c.el.getAttribute('data-product-id') === String(recId) || (c.el.closest && c.el.closest('[data-product-id]') && c.el.closest('[data-product-id]').getAttribute('data-product-id') === String(recId))));
-          }
-          if (!match && recHandle) {
-            const rh = String(recHandle).toLowerCase().replace(/\/$/, '');
-            match = cards.find(c => c.handle === rh || (c.url && String(c.url).toLowerCase().indexOf(rh) !== -1));
-          }
-          if (match) return match.el;
-        }
-      } catch (_e) {}
+      // Strictly the DOM: "first item" means the first product card currently
+      // rendered on this page in DOM order (heroes, promo rows and non-product
+      // links are already filtered out above via isProduct). NEVER re-align to
+      // historical recommendation lists or stale S.lastShownProduct IDs.
       return cards[idx].el;
     }
     if (target.by === 'text' && target.q) {
@@ -3533,8 +3517,29 @@ try {
   }
 
   function execClick(spec) {
-    const el = resolveTarget(spec.target);
+    let el = resolveTarget(spec.target);
     if (!el) return false;
+    // Product cards are frequently container elements (<li class="product">,
+    // <div class="card-wrapper">) whose own click() does nothing. Resolve to the
+    // card's product anchor so "open the first item" actually navigates.
+    const isSelfAnchor = el.tagName === 'A' && /\/products\//.test(el.getAttribute('href') || '');
+    if (!isSelfAnchor) {
+      const link = (el.closest && el.closest('a[href*="/products/"]')) || (el.querySelector && el.querySelector('a[href*="/products/"]'));
+      if (link) el = link;
+    }
+    // Navigating to a product page reloads the page — persist the resume intent so
+    // the A2A mic reconnects after landing (otherwise "open the first item" leaves
+    // the voice assistant silent on the PDP).
+    if (/\/products\//.test(el.getAttribute('href') || '')) {
+      try {
+        sessionStorage.setItem('_wa_voice_active', '1');
+        if (S.mode === 'voice_nav' || _voiceOnlyMode) {
+          localStorage.setItem('_wa_voice_nav_resume', '1');
+        } else {
+          localStorage.setItem('_wa_reopen', '1');
+        }
+      } catch (_e) {}
+    }
     el.click();
     return true;
   }
@@ -3587,6 +3592,14 @@ try {
   const COMMANDS = [
     // Cart actions
     { re: /(add|put)\s+(?:(?:this|it|that)\s+)?(?:to|in)\s+(?:(?:my|the)\s+)?(?:cart|bag)$/i,
+      act: (m, t) => buildLocalAddSpec(t) },
+    { re: /^(?:(?:can|could|will|would)\s+you\s+|please\s+)?(?:add|put)\s+(?:the\s+)?(first|1st|second|2nd|third|3rd|fourth|4th|fifth|5th|last)\s*(?:item|product|one|result|card)?\s+(?:to|in)\s+(?:my\s+|the\s+)?(?:cart|bag)$/i,
+      act: (m) => buildLocalAddOrdinalSpec(m[1]) },
+    // "yes add it" / "sure, add it" — confirm the product on the current PDP.
+    // Requires the explicit "add it" part (a bare "yes"/"ok" does NOT add).
+    // buildLocalAddSpec only succeeds when a PDP product is on screen, so on
+    // any other page this safely falls through to the backend brain.
+    { re: /^(?:yes|yeah|sure|ok|okay|go\s+ahead)\s*,?\s*(?:please\s+)?add\s+(?:it|this|that)\s*(?:to\s+(?:my\s+|the\s+)?(?:cart|bag))?$/i,
       act: (m, t) => buildLocalAddSpec(t) },
     { re: /^buy\s+(?:this|it|that)(?:\s+now)?$/i,
       act: (m, t) => buildLocalBuyNowSpec(t) },
@@ -3665,11 +3678,22 @@ try {
     // S.lastShownProduct is stale (left over from an earlier search).
     const pageCur = (S.pageState && S.pageState.currentProduct) || {};
     const pdpId = pageCur.id || null;
-    const last = S.lastShownProduct;
-    const src = (pdpId ? { id: pdpId, variation_id: pageCur.variant_id || 0, handle: (S.currentPageProduct && S.currentPageProduct.handle) || '' } : null) || last;
-    console.log('[WooAgent A2C] Local command matched:', t, 'currentPDP:', pdpId, 'lastShownProduct:', last);
-    if (!src || !src.id) {
-      console.warn('[WooAgent A2C] No lastShownProduct — falling through to brain path');
+    // Strictly the product on the current PDP — never a stale S.lastShownProduct
+    // left over from an earlier search ("add to cart" here means THIS product).
+    let handle = (S.currentPageProduct && S.currentPageProduct.handle) || '';
+    // Fallback: Shopify themes sometimes expose no product id (no ShopifyAnalytics
+    // meta). The URL handle is always reliable — addToCartShopify resolves the
+    // real variant id from /products/<handle>.js, so "add to cart" still works.
+    if (!handle) {
+      const m = location.pathname.match(/\/products\/([^/?#]+)/);
+      handle = m ? m[1] : '';
+    }
+    const src = pdpId
+      ? { id: pdpId, variation_id: pageCur.variant_id || 0, handle: handle || '' }
+      : (IS_SHOPIFY && handle ? { id: 0, variation_id: 0, handle } : null);
+    console.log('[WooAgent A2C] Local command matched:', t, 'currentPDP:', pdpId, 'handle:', handle);
+    if (!src || (!src.id && !src.handle)) {
+      console.warn('[WooAgent A2C] No PDP product — falling through to brain path');
       return null;
     }
     S._localAddHandled = Date.now();
@@ -3688,6 +3712,48 @@ try {
     // Route through processAction so the add_to_cart handler stays the single
     // source of truth for platform-aware cart writes.
     return { t: 'add_to_cart', payload, ack: 'Added to cart' };
+  }
+
+  // "Add the first/second/… item to cart" — resolves the ordinal STRICTLY against
+  // the product cards currently rendered on the page in DOM order, never a stale
+  // recommendation list or S.lastShownProduct. Returns null → backend when the
+  // resolved card carries no usable product id/handle.
+  function buildLocalAddOrdinalSpec(ord) {
+    refreshPageState();
+    const cardEl = resolveTarget({ by: 'ordinal', ord: String(ord || 'first').toLowerCase() });
+    if (!cardEl) return null;
+    let pid = null;
+    try {
+      const pidEl = (cardEl.getAttribute && cardEl.getAttribute('data-product-id'))
+        ? cardEl
+        : (cardEl.closest && cardEl.closest('[data-product-id]'));
+      if (pidEl && pidEl.getAttribute) pid = parseInt(pidEl.getAttribute('data-product-id'), 10);
+    } catch (_e) {}
+    let handle = '';
+    try { handle = cardEl.getAttribute('data-product-handle') || ''; } catch (_e) {}
+    if (!handle) {
+      const href = (cardEl.getAttribute && cardEl.getAttribute('href'))
+        || (cardEl.querySelector && cardEl.querySelector('a[href*="/products/"]') ? cardEl.querySelector('a[href*="/products/"]').getAttribute('href') : '')
+        || (cardEl.closest && cardEl.closest('a[href*="/products/"]') ? cardEl.closest('a[href*="/products/"]').getAttribute('href') : '');
+      const m = href ? String(href).match(/\/products\/([^/?#]+)/) : null;
+      if (m) handle = m[1];
+    }
+    if (!pid && !handle) {
+      console.warn('[WooAgent A2C] Ordinal card has no product id/handle — falling through to brain');
+      return null;
+    }
+    S._localAddHandled = Date.now();
+    return {
+      t: 'add_to_cart',
+      payload: {
+        product_id: pid,
+        variation_id: 0,
+        handle: handle || '',
+        quantity: 1,
+        _wa_local: true,
+      },
+      ack: 'Added to cart',
+    };
   }
 
   // "Buy it now" — add the current product, then jump to checkout on success.
@@ -4933,10 +4999,6 @@ try {
   // Micro-handshake gate: block mic capture until server acknowledges page context.
   // Prevents PDP hallucination race (T_audio ~100ms vs T_handshake ~300ms).
   let _a2aContextAcknowledged = false;
-  // Keepalive heartbeat — Render/ngrok drop idle WebSockets with close 1006
-  // ("connection reset"), which caused reconnect churn / mic drops. A tiny
-  // {type:'ping'} frame every 20s keeps the socket alive (server ignores it).
-  let _a2aHeartbeat = null;
 
   // True once A2A gave up (max reconnects) and switched to the old HTTP
   // transcribe path. Until then, the A2A mic owns live mode EXCLUSIVELY — the
@@ -5074,13 +5136,9 @@ try {
       _a2aStreamText    = '';
       _a2aContextAcknowledged = false;
 
-      // Keepalive heartbeat while the socket is open — prevents idle-drop 1006s.
-      clearInterval(_a2aHeartbeat);
-      _a2aHeartbeat = setInterval(() => {
-        if (geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
-          try { geminiSocket.send(JSON.stringify({ type: 'ping' })); } catch (_e) {}
-        }
-      }, 20000);
+      // No client-side heartbeat here — the backend ignores {type:'ping'} frames
+      // and a stale timer kept "live" UI alive on a dead socket (mic showed ON but
+      // no reply). Dropped sockets are handled by the onclose auto-reconnect below.
       try {
         sessionStorage.removeItem('_wa_voice_active');
         sessionStorage.removeItem('_wa_pending_search');
@@ -5256,21 +5314,24 @@ try {
     ws.onclose = (ev) => {
       isA2AConnected = false;
       geminiSocket   = null;
-      clearInterval(_a2aHeartbeat);
-      _a2aHeartbeat = null;
       _a2aStopCapture();
 
       // 1008 = policy violation (wrong model / API version / billing) — do not retry, it will never succeed
-      const intentional = (ev.code === 1000 || ev.code === 1001 || ev.code === 4003 || ev.code === 1008);
+      // 4003 was previously treated as intentional ("bad token") — that silently
+      // killed reconnects and left the mic on a dead socket ("on but no reply")
+      // until the user toggled voice off/on. A 4003 is normally a stale HMAC
+      // token: retryable — each reconnect mints a fresh token below.
+      const intentional = (ev.code === 1000 || ev.code === 1001 || ev.code === 1008);
       if (ev.code === 1008) {
         console.error('[WooAgent A2A] Model/API error — check GEMINI_LIVE_MODEL and billing:', ev.reason);
         addBubble('bot', 'Voice assistant unavailable — model configuration error. Text chat still works.');
       }
 
       // ── [2] Auto-reconnect with exponential backoff ───────────────────
-      // Reconnect if widget is open or voice_nav mode is active and the close was unintentional,
+      // Reconnect if widget is open, voice_nav is active, OR voice-only mode is
+      // running (panel closed, mic pill live) and the close was unintentional,
       // regardless of whether live/mic mode is active (text also needs WS).
-      if (!intentional && (S.open || S.mode === 'voice_nav') && a2aReconnectCount < A2A_MAX_RECONNECTS) {
+      if (!intentional && (S.open || S.mode === 'voice_nav' || _voiceOnlyMode) && a2aReconnectCount < A2A_MAX_RECONNECTS) {
         a2aReconnectCount++;
         // Force a fresh token on reconnect: the close may have been a token/auth
         // rejection (403 bad token). Reusing the cached token would just fail again
@@ -5282,7 +5343,7 @@ try {
         orbHint.innerHTML = `<span class="wa-live-badge">Live</span> Reconnecting… (${a2aReconnectCount}/${A2A_MAX_RECONNECTS})`;
         console.warn(`[WooAgent A2A] Closed (${ev.code}). Reconnecting in ${delayMs}ms (attempt ${a2aReconnectCount})`);
         setTimeout(() => {
-          if ((S.open || S.mode === 'voice_nav') && !isA2AConnected) {
+          if ((S.open || S.mode === 'voice_nav' || _voiceOnlyMode) && !isA2AConnected) {
             // Re-open with mic if live mode was active, text-only otherwise
             if (isLiveMode) startA2AMode(); else _startA2AForText();
           }
@@ -6920,28 +6981,6 @@ try {
       // 3) Glow the recommended (best 4-5) product cards.
       const prods = (pending && Array.isArray(pending.products)) ? pending.products.slice(0, 5) : [];
       if (prods.length) {
-        // Remember the exact order we glow so "take the first one" later resolves to
-        // the same card the customer heard about (backend reads it as last_products).
-        try { sessionStorage.setItem('_wa_search_displayed', JSON.stringify(prods.map(p => p.id))); } catch (_e) {}
-        // Push the on-screen order to the backend immediately — voice may have
-        // connected before this snapshot was written, and ordinals must resolve to
-        // the exact highlighted cards, never a re-run storefront ordering.
-        try {
-          if (typeof geminiSocket !== 'undefined' && geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
-            geminiSocket.send(JSON.stringify({
-              type: 'page_update',
-              page_context: {
-                url: location.href,
-                title: document.title,
-                page_type: 'search',
-                product_id: null,
-                product_name: null,
-                variant_id: null,
-                last_products: prods.map(p => p.id)
-              }
-            }));
-          }
-        } catch (_e) {}
         const cards = Array.from(document.querySelectorAll(PROD_SEL)).filter(c => c.style.display !== 'none');
         const matched = [];
         for (const p of prods) {
@@ -6978,11 +7017,53 @@ try {
             } catch (_e) {}
           });
         }
+        // Reconcile the displayed-order snapshot with the cards that will ACTUALLY
+        // be highlighted. The recommendation payload and the storefront's own search
+        // results can differ, so "take the first one" must resolve to the real card
+        // the customer sees glowing — never a stale recommendation list.
+        const _cardPid = (card) => {
+          try {
+            const pidEl = (card.getAttribute && card.getAttribute('data-product-id'))
+              ? card
+              : (card.closest ? card.closest('[data-product-id]') : null);
+            const pid = pidEl && pidEl.getAttribute ? parseInt(pidEl.getAttribute('data-product-id'), 10) : NaN;
+            if (Number.isInteger(pid) && pid > 0) return pid;
+          } catch (_e) {}
+          return 0;
+        };
+        const displayedIds = matched
+          .map((card, i) => {
+            const pid = _cardPid(card);
+            if (pid) return pid;
+            const rec = prods[i];
+            return (rec && rec.id) ? rec.id : 0;
+          })
+          .filter(function (n) { return n > 0; });
+        try { sessionStorage.setItem('_wa_search_displayed', JSON.stringify(displayedIds)); } catch (_e) {}
+        // Push the on-screen order to the backend immediately — voice may have
+        // connected before this snapshot was written, and ordinals must resolve to
+        // the exact highlighted cards, never a re-run storefront ordering.
+        try {
+          if (typeof geminiSocket !== 'undefined' && geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
+            geminiSocket.send(JSON.stringify({
+              type: 'page_update',
+              page_context: {
+                url: location.href,
+                title: document.title,
+                page_type: 'search',
+                product_id: null,
+                product_name: null,
+                variant_id: null,
+                last_products: displayedIds
+              }
+            }));
+          }
+        } catch (_e) {}
         // Walk through the recommended cards ONE AT A TIME: highlight only the
-        // current card and describe it, then move to the next — never glow all
-        // of them at once. The first recommendation is always the first one
-        // described. Local TTS is skipped while A2A live owns speech (the
-        // backend already described each product before navigating).
+        // current card, then move to the next — never glow all of them at once.
+        // The first recommendation is always highlighted first. NO browser
+        // speechSynthesis here — spoken description comes strictly from the
+        // main A2A/Gemini voice stream.
         const _glowStyle = (card, on) => {
           if (!card) return;
           card.style.outline = on ? 'none' : '';
@@ -6992,7 +7073,6 @@ try {
           if (on) card.setAttribute('data-wa-glowed', '1');
           else card.removeAttribute('data-wa-glowed');
         };
-        const _a2aLiveNow = !!(isA2AConnected && isLiveMode);
         cards.forEach(c => _glowStyle(c, false));
         const _describeCard = (idx) => {
           if (idx >= matched.length) {
@@ -7006,20 +7086,7 @@ try {
           cards.forEach(c => _glowStyle(c, false));
           _glowStyle(card, true);
           try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
-          const p = prods[idx];
-          if (p && p.name && !_a2aLiveNow && window.speechSynthesis) {
-            const prefix = idx === 0 ? 'First, ' : (idx === 1 ? 'Next, ' : 'And this one, ');
-            const _blurb = (p.description && String(p.description).trim()) ? '. ' + String(p.description).trim() : '';
-            const label = prefix + p.name + (p.price ? ', ' + p.price : '') + _blurb + '.';
-            try {
-              window.speechSynthesis.cancel();
-              const u = new SpeechSynthesisUtterance(label);
-              u.lang = S.language || 'en';
-              u.rate = 1.0;
-              window.speechSynthesis.speak(u);
-            } catch (_e) {}
-          }
-          setTimeout(() => _describeCard(idx + 1), 3200);
+          setTimeout(() => _describeCard(idx + 1), 1600);
         };
         setTimeout(() => _describeCard(0), 500);
       }

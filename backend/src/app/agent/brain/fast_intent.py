@@ -627,15 +627,14 @@ async def handle_product_discovery(
         products.insert(0, best)
     products = products[:6]
 
-    # Build multi-product description for voice (top 3-4 recommendations)
+    # Build a concise, natural voice summary (top 3-4 recommendation names).
     top_products = products[:4]
     product_descriptions = []
-    for i, p in enumerate(top_products):
-        pname = p.get("name", "")
-        pprice = p.get("price", "")
-        pprice_str = f" at ₹{pprice}" if pprice else ""
-        product_descriptions.append(f"Option {i+1} is {pname}{pprice_str}")
-    
+    for p in top_products:
+        pname = str(p.get("name") or "").strip()
+        if pname:
+            product_descriptions.append(pname)
+
     name = products[0].get("name", "")
     price = products[0].get("price", "")
 
@@ -671,7 +670,8 @@ async def handle_product_discovery(
                 "short_description": r.description[:200] if r.description else "",
             })
         if alternatives:
-            response = f"{name} is currently out of stock. Here are some similar options that are available: " + ", ".join(product_descriptions)
+            _alts = ", ".join(product_descriptions[:2]) if product_descriptions else "these"
+            response = f"{name} is currently out of stock. I found similar options like {_alts} that are available."
             actions = [
                 {"type": "show_products", "payload": {"products": products}},
                 {"type": "show_products", "payload": {"products": alternatives}},
@@ -686,7 +686,8 @@ async def handle_product_discovery(
             suggested = ["Show all products", "Browse categories", "Show my cart"]
             last_ids = [p.get("id") for p in products if p.get("id")]
     else:
-        response = ", ".join(product_descriptions) + ". Let me know if you would like to see options or add any to your cart."
+        _lead = product_descriptions[0] if product_descriptions else "our top picks"
+        response = f"I found {len(products)} great matching options for you, starting with {_lead}. Which one would you like me to open?"
         actions = [
             {"type": "show_products", "payload": {"products": products}},
         ]
@@ -1187,13 +1188,39 @@ async def handle_pdp_auto_tour(
     description = detail.get("description") or detail.get("short_description") or ""
     # Clean HTML tags for speech
     clean_desc = re.sub(r'<[^>]+>', '', description).strip()
-    # Take first two sentences for brevity
+    # Take the first sentence only — concise product summary
     sentences = re.split(r'(?<=[.!?])\s+', clean_desc)
-    snippet = ' '.join(sentences[:2]).strip()
+    snippet = (sentences[0] if sentences else '').strip()
     if not snippet:
         snippet = f"The {name} is a great choice."
-    
-    response_text = f"I see you're looking at the {name}. {snippet}"
+
+    # Best-effort: surface the default/active Size so the follow-up question can
+    # say "add size 9 to your cart" instead of a generic prompt.
+    size_hint = ""
+    try:
+        _variants = detail.get("variants") or []
+        _active_variant = None
+        _target_vid = page_context.get("variant_id")
+        for _v in _variants:
+            if isinstance(_v, dict) and _target_vid and int(_v.get("id") or 0) == int(_target_vid):
+                _active_variant = _v
+                break
+        if _active_variant is None and isinstance(_variants, list) and _variants:
+            _active_variant = _variants[0]
+        if isinstance(_active_variant, dict):
+            for _o in (_active_variant.get("options") or []):
+                if isinstance(_o, dict) and str(_o.get("Name") or _o.get("name") or "").strip().lower() == "size":
+                    _val = _o.get("Value") or _o.get("value") or ""
+                    if _val:
+                        size_hint = f" size {_val}"
+                        break
+    except Exception:
+        size_hint = ""
+
+    if size_hint:
+        response_text = f"I see you're looking at the {name}. {snippet} Would you like me to add{size_hint} to your cart, or take you to checkout?"
+    else:
+        response_text = f"I see you're looking at the {name}. {snippet} Would you like me to add it to your cart, or take you to checkout?"
     
     # UI actions: scroll to description, then show variant picker, then scroll to form
     ui_actions = [
