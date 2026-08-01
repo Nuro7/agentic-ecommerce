@@ -111,6 +111,7 @@ def append_live_navigation(
     platform: str,
     current_url: str = "",
     active_recommendations: Optional[List[Any]] = None,
+    last_products: Optional[List[Any]] = None,
 ) -> None:
     """Append ONE `redirect` ui_action matching this turn's answer (in place).
 
@@ -142,6 +143,46 @@ def append_live_navigation(
             payload["filters"] = filters
         ui_actions.append({"type": "redirect", "payload": payload})
 
+    def _display_ordered(recs: List[Any], last_ids: List[Any]) -> List[Any]:
+        """Reorder `recs` to match the order the customer ACTUALLY saw on screen.
+
+        The widget pushes the on-screen card order via page_context.last_products
+        (it reorders the grid and glows cards one at a time). The brain's cached
+        active_recommendations can differ in order from that list, so ordinals
+        ("second item") must resolve against the displayed order — never a stale
+        retrieval order, which sent navigation to the wrong product page.
+        """
+        if not last_ids or not recs:
+            return recs or []
+        by_id: Dict[Any, Any] = {}
+        for r in recs:
+            rid = r.get("id") if isinstance(r, dict) else None
+            try:
+                if rid is not None:
+                    by_id[int(rid)] = r
+            except (TypeError, ValueError):
+                pass
+        ordered: List[Any] = []
+        seen: set = set()
+        for pid in last_ids:
+            try:
+                pid = int(pid)
+            except (TypeError, ValueError):
+                continue
+            if pid in by_id and pid not in seen:
+                ordered.append(by_id[pid])
+                seen.add(pid)
+        for r in recs:
+            rid = r.get("id") if isinstance(r, dict) else None
+            try:
+                rid = int(rid)
+            except (TypeError, ValueError):
+                rid = None
+            if rid not in seen:
+                ordered.append(r)
+                seen.add(rid)
+        return ordered
+
     lower_query = str(query or "").strip().lower()
 
     # Product list navigation from recommendations (e.g. "go to the first product")
@@ -161,10 +202,38 @@ def append_live_navigation(
         elif re.search(r"\b(that|this)\s*(one|product|item)?(?:\s*(?:please|thanks|thank\s*you))*\s*$", lower_query) or lower_query in ("take that", "take this", "that one", "this one", "that product", "this product"):
             target_index = 0
 
-        if target_index is not None and len(active_recommendations) > target_index:
-            prod = active_recommendations[target_index]
-            if isinstance(prod, dict):
-                purl = product_page_url(prod)
+        if target_index is not None:
+            # Resolve against the order the customer ACTUALLY saw on screen —
+            # never the brain's cached retrieval order (which can differ and
+            # sent "take the second item" to the WRONG product page).
+            target_prod = None
+            last_ids = list(last_products or [])
+            if len(last_ids) > target_index:
+                try:
+                    _target_pid = int(last_ids[target_index])
+                except (TypeError, ValueError):
+                    _target_pid = None
+                if _target_pid is not None:
+                    # Exact displayed-card lookup: target_index refers to the
+                    # ON-SCREEN card, whose id is last_products[target_index].
+                    for _r in active_recommendations:
+                        if isinstance(_r, dict):
+                            try:
+                                if int(_r.get("id")) == _target_pid:
+                                    target_prod = _r
+                                    break
+                            except (TypeError, ValueError):
+                                continue
+            if target_prod is None:
+                # Fall back to the display-ordered list (covers order-only
+                # mismatches), then to the plain cached order.
+                recs = _display_ordered(active_recommendations, last_ids)
+                if len(recs) > target_index:
+                    target_prod = recs[target_index]
+                elif len(active_recommendations) > target_index:
+                    target_prod = active_recommendations[target_index]
+            if target_prod is not None and isinstance(target_prod, dict):
+                purl = product_page_url(target_prod)
                 if purl:
                     _push(purl, "product")
                     return

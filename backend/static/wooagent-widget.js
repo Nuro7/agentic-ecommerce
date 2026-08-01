@@ -3535,13 +3535,38 @@ try {
       if (ord === 'last') idx = cards.length - 1;
       else if (ord === 'next') { S._ordinalIndex = ((S._ordinalIndex ?? -1) + 1); idx = S._ordinalIndex; }
       else if (ord === 'prev' || ord === 'previous') { S._ordinalIndex = ((S._ordinalIndex ?? 1) - 1); idx = S._ordinalIndex; }
-      else if (ord === '1st' || ord === 'first') idx = 0;
+      else       if (ord === '1st' || ord === 'first') idx = 0;
       else if (ord === '2nd' || ord === 'second') idx = 1;
       else if (ord === '3rd' || ord === 'third') idx = 2;
       else if (ord === '4th' || ord === 'fourth') idx = 3;
       else if (ord === '5th' || ord === 'fifth') idx = 4;
       idx = Math.max(0, Math.min(cards.length - 1, idx));
       S._ordinalIndex = idx;
+      // Prefer the EXACT card the customer saw GLOWED on a search page. The
+      // replay snapshot (_wa_search_displayed) is the authoritative on-screen
+      // order — without it, "take the second item" could click a different card
+      // than the one the backend resolves (theme DOM order vs displayed order).
+      if (ord === 'last' || ord === 'first' || ord === '1st' || ord === 'second' ||
+          ord === '2nd' || ord === 'third' || ord === '3rd' || ord === 'fourth' ||
+          ord === '4th' || ord === 'fifth' || ord === '5th') {
+        try {
+          const raw = sessionStorage.getItem('_wa_search_displayed');
+          if (raw) {
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr) && arr.length > idx) {
+              const want = Number(arr[idx]);
+              if (want > 0) {
+                const byId = cards.find(c => {
+                  let pidEl = (c.el && c.el.getAttribute && c.el.getAttribute('data-product-id')) ? c.el : null;
+                  if (!pidEl && c.el && c.el.closest) pidEl = c.el.closest('[data-product-id]');
+                  return pidEl && pidEl.getAttribute ? Number(pidEl.getAttribute('data-product-id')) === want : false;
+                });
+                if (byId) return byId.el;
+              }
+            }
+          }
+        } catch (_e) {}
+      }
       // Strictly the DOM: "first item" means the first product card currently
       // rendered on this page in DOM order (heroes, promo rows and non-product
       // links are already filtered out above via isProduct). NEVER re-align to

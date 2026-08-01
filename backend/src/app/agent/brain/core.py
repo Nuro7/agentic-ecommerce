@@ -943,6 +943,7 @@ async def ask_brain(
             platform=client_platform(store_client),
             current_url=str((page_context or {}).get("url") or ""),
             active_recommendations=active_recommendations,
+            last_products=(page_context or {}).get("last_products"),
         )
     except Exception as _nav_exc:
         logger.debug("[turn %s] live-nav skipped: %s", turn_id, _nav_exc)
