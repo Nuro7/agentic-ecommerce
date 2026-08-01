@@ -2043,6 +2043,9 @@ try {
     // Guard: don't start while already recording, awaiting mic permission,
     // loading (agent thinking), speaking (bot audio playing), or muted.
     if (S.recording || S._requestingMic || S.loading || S.speaking || !CFG.enable_voice || S.muted) return;
+    // A2A guard: while the Gemini live mic owns the session (including during
+    // reconnect backoff), never start the old MediaRecorder path on top of it.
+    if (_a2aOwnsLive()) return;
     stopCurrentAudio();
     // mediaDevices is only available on HTTPS or localhost
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -2135,6 +2138,15 @@ try {
 
     // ── NEW: A2A mode ──
     if (A2A_ENABLED) {
+      // A2A gave up → HTTP fallback: orb is push-to-talk (Whisper/SR).
+      if (a2aFallbackActive) {
+        if (S.recording) {
+          stopRecording(); // stop → transcribe → send
+        } else if (!S.loading && !S.speaking && !S.muted) {
+          startRecording();
+        }
+        return;
+      }
       if (isA2AConnected && !a2aStream) {
         // WebSocket open (text-only) — user tapped orb to add voice, start mic now
         isLiveMode = true;
@@ -2184,7 +2196,7 @@ try {
     if (blob.size < 1000) {
       if (isLiveMode) {
         orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-        setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1000);
+        setTimeout(() => { if (isLiveMode && !_a2aOwnsLive() && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1000);
       }
       return;
     }
@@ -2240,7 +2252,7 @@ try {
         }
         if (isLiveMode && (S.open || S.mode === 'voice_nav')) {
           orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-          setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1200);
+          setTimeout(() => { if (isLiveMode && !_a2aOwnsLive() && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1200);
         }
         return;
       }
@@ -2270,7 +2282,7 @@ try {
       }
       if (isLiveMode) {
         orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
-        setTimeout(() => { if (isLiveMode && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1500);
+        setTimeout(() => { if (isLiveMode && !_a2aOwnsLive() && (S.open || S.mode === 'voice_nav') && !S.loading && !S.speaking && !S.recording) startRecording(); }, 1500);
       }
     }
   }
@@ -4917,6 +4929,17 @@ try {
   // {type:'ping'} frame every 20s keeps the socket alive (server ignores it).
   let _a2aHeartbeat = null;
 
+  // True once A2A gave up (max reconnects) and switched to the old HTTP
+  // transcribe path. Until then, the A2A mic owns live mode EXCLUSIVELY — the
+  // old MediaRecorder/SpeechRecognition path must NEVER start alongside it
+  // (two active mics → echo, "Max recording duration reached", "voice
+  // processing failed", garbled/slow turns).
+  let a2aFallbackActive = false;
+
+  function _a2aOwnsLive() {
+    return A2A_ENABLED && isLiveMode && !a2aFallbackActive;
+  }
+
   // Streaming transcript accumulator — chunks from Gemini arrive word-by-word;
   // we append into one bubble and only finalise it on turn_complete / barge-in.
   let _a2aStreamBubble    = null;   // current live DOM element being updated
@@ -5007,6 +5030,7 @@ try {
   // [2] Reconnect-aware: called both on first connect and after backoff delay.
   function startA2AMode() {
     if (isA2AConnected) return;
+    a2aFallbackActive = false; // a fresh A2A attempt re-owns live mode
     _fetchWsToken().then(token => _openA2AWebSocket(token, true));
   }
 
@@ -5619,6 +5643,7 @@ try {
   // ── _a2aFallback: gracefully degrade to old HTTP mode ───────────────────
   function _a2aFallback() {
     // OLD startLiveMode path (Speech Recognition + HTTP) — called on A2A failure
+    a2aFallbackActive = true;
     startLiveModeHTTP();
   }
 
@@ -5672,6 +5697,7 @@ try {
   // OLD stopLiveMode body preserved below as stopLiveModeHTTP() for rollback.
   function stopLiveMode() {
     isLiveMode = false;
+    a2aFallbackActive = false; // next startLiveMode tries A2A fresh
     if (A2A_ENABLED && isA2AConnected) {
       // NEW path: close WebSocket gracefully
       stopA2AMode();
@@ -5688,8 +5714,9 @@ try {
   function startLiveRecognition() {
     // A2A mode: Gemini handles STT natively via continuous PCM stream.
     // Starting Chrome's SpeechRecognition here would compete with the A2A mic
-    // and produce double/garbled transcription. Block it entirely.
-    if (A2A_ENABLED && isA2AConnected) return;
+    // and produce double/garbled transcription. Block it entirely — not just
+    // when connected, but whenever A2A owns live mode (covers reconnect windows).
+    if (_a2aOwnsLive()) return;
 
     if (!isLiveMode || S.loading || S.speaking || S.muted) return;
 
@@ -5901,8 +5928,10 @@ try {
     // Calling startRecording() or startLiveRecognition() here would start a
     // competing capture pipeline (old SpeechRecognition API or MediaRecorder)
     // on top of the live A2A stream, producing garbled/double transcription.
-    // Just update the hint and return — Gemini is already listening.
-    if (A2A_ENABLED && isA2AConnected) {
+    // Just update the hint and return — Gemini is already listening. Guard on
+    // A2A-owns-live (not just connected) so a reconnect backoff window doesn't
+    // start the old recorder → double-mic echo / "Max recording duration".
+    if (_a2aOwnsLive()) {
       orbHint.innerHTML = '<span class="wa-live-badge">Live</span> <strong>Listening…</strong>';
       return;
     }
