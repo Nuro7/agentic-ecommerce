@@ -99,6 +99,17 @@
   // cleanup so a chained redirect_checkout can still abort the checkout jump.
   let _addForCheckoutFailed = false;
 
+  // ── Cart-page auto-reload timer ──────────────────────────────────────────
+  // cart_updated refresh on the /cart page must NEVER fire while a redirect
+  // (e.g. checkout) is queued — the reload used to race the navigation and
+  // wipe _pendingNavigation, leaving the customer stuck on the cart page.
+  let _cartReloadTimer = null;
+
+  // ── Search-page glow/describe timers ─────────────────────────────────────
+  // Registered by the search-page replay loop so barge-in (user speaking) or
+  // Gemini audio starting can stop the glow TTS instantly — no double voice.
+  let _searchGlowTimers = [];
+
   // ── Cart-removal dedup: line keys removed locally, keyed → timestamp ──────
   // Prevents the backend's echo remove_from_cart (a second or two later) from
   // re-removing an item that the widget already removed locally, which used to
@@ -2694,8 +2705,13 @@ try {
           window.jQuery(document.body).trigger('wc_fragment_refresh');
           window.jQuery(document.body).trigger('update_checkout');
         }
-        if (window.location.pathname.includes('/cart') && !window.location.pathname.includes('/checkout')) {
-          setTimeout(() => {
+        if (window.location.pathname.includes('/cart') && !window.location.pathname.includes('/checkout') && !_pendingNavigation) {
+          if (_cartReloadTimer) { clearTimeout(_cartReloadTimer); _cartReloadTimer = null; }
+          _cartReloadTimer = setTimeout(() => {
+            _cartReloadTimer = null;
+            // Never reload once a redirect has been queued — the checkout
+            // navigation would lose the race and the customer stays stuck.
+            if (_pendingNavigation) return;
             window.location.reload();
           }, 1500);
         }
@@ -2932,12 +2948,17 @@ try {
 
         const performRedirect = async () => {
           _pendingNavigation = null;
+          if (_cartReloadTimer) { clearTimeout(_cartReloadTimer); _cartReloadTimer = null; }
           // Buy-now sequencing: [add_to_cart, redirect_checkout] arrive as two
           // separate ui_action messages. Wait for the add to settle first — never
           // take the customer to an empty /checkout because the add hasn't landed.
           if (_pendingAddPromise) {
             try {
               await _pendingAddPromise;
+              // The add settled (a failure would have rejected the promise and
+              // aborted above) — clear any stale failure flag so a plain later
+              // "checkout" isn't falsely blocked by an unrelated failed add.
+              _addForCheckoutFailed = false;
             } catch (_e) {
               try { showToast('Could not add to cart — please try again.'); } catch (_ee) {}
               return;
@@ -3381,6 +3402,40 @@ try {
       if (localStorage.getItem('_wa_voice_nav_resume') === '1') return true;
     } catch (_e) {}
     return false;
+  }
+
+  // Stop the search-page card-glow describe loop (timers + speech) instantly.
+  // Called on barge-in and when Gemini audio starts so the browser TTS never
+  // overlaps the main A2A voice.
+  function _stopSearchGlow() {
+    for (let i = 0; i < _searchGlowTimers.length; i++) {
+      if (_searchGlowTimers[i]) { try { clearTimeout(_searchGlowTimers[i]); } catch (_e) {} }
+    }
+    _searchGlowTimers = [];
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_e) {}
+  }
+
+  // Pick a pleasant FEMALE voice for the search-page card-glow descriptions.
+  // The browser's default is the male "David" voice the customer rejected;
+  // prefer a literal "Aria" voice, else any known-female / natural English
+  // voice, else a local (offline) voice, else fall back to the default.
+  function _pickAriaVoice() {
+    try {
+      const voices = window.speechSynthesis.getVoices();
+      if (!voices || !voices.length) return null;
+      const wants = String(S.language || 'en').slice(0, 2).toLowerCase();
+      const pool = voices.filter(v => (v.lang || '').toLowerCase().startsWith(wants));
+      const src = pool.length ? pool : voices;
+      const nameOf = v => (v.name || '').toLowerCase();
+      const isMale = v => /(david|mark|george|matthew|daniel|alex|fred|james|guy|sebastian|ryan|oliver|eddy|christopher|eric|arthur|ethan|jack|kevin|thomas|william|felix|gordon|greg|brian|charles|joshua|kyle|liam|luke|mason|michael|noah|owen|robert|steven|timothy|todd|zachary|male)/i.test(nameOf(v));
+      const aria = src.find(v => /aria/i.test(nameOf(v)) && /natural|online/i.test(nameOf(v)));
+      if (aria) return aria;
+      const female = src.find(v => /(female|woman|aria|zira|samantha|jenny|michelle|susan|karen|joanna|ivy|hazel|heather|ellie|sonia|tessa|emma|natalie|google us english|google uk english)/i.test(nameOf(v)) && !isMale(v));
+      if (female) return female;
+      const local = src.find(v => !isMale(v) && v.localService);
+      if (local) return local;
+      return null;
+    } catch (_e) { return null; }
   }
 
   // ── Data-driven local voice command engine ───────────────────────────────
@@ -4131,6 +4186,8 @@ try {
       }
       sessionStorage.setItem('_wa_voice_active', '1');
     } catch (_e) {}
+    // Never let the /cart auto-reload fire after we've committed to checkout.
+    if (_cartReloadTimer) { clearTimeout(_cartReloadTimer); _cartReloadTimer = null; }
     if (IS_SHOPIFY) {
       const addr = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
       window.location.href = _shopifyCheckoutUrl(addr);
@@ -5347,6 +5404,9 @@ try {
           // For navigation and add-to-cart commands, act immediately instead of
           // waiting for the backend brain pipeline. Deduplicates via S._localAddHandled.
           if (msg.type === 'user_transcript' && msg.text) {
+            // User is speaking — silence the search-glow TTS first so it never
+            // talks over them or the transcript (and is picked up by the mic).
+            _stopSearchGlow();
             if (handleLocalVoiceCommand(msg.text)) return;
           }
 
@@ -5599,6 +5659,8 @@ try {
     // A spoken reply is starting — hand the pending redirect over to
     // onSpeakingEnd() so navigation waits for the full response to finish.
     if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
+    // Gemini is now talking — stop the search-glow browser TTS (no double voice).
+    _stopSearchGlow();
 
     // Lazy-init AudioContext (must be after user gesture)
     if (!a2aAudioCtx || a2aAudioCtx.state === 'closed') {
@@ -5635,6 +5697,9 @@ try {
     // Cancel any pending navigation — user interrupted, don't redirect
     _pendingNavigation = null;
     if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
+    if (_cartReloadTimer) { clearTimeout(_cartReloadTimer); _cartReloadTimer = null; }
+    // User is speaking — stop the search-glow TTS so it can't overlap the mic.
+    _stopSearchGlow();
     // Stop the currently playing source node immediately
     if (a2aCurrentSource) {
       try {
@@ -7149,11 +7214,12 @@ try {
         // Walk through the recommended cards ONE AT A TIME: highlight only the
         // current card and describe it, then move to the next — never glow all
         // of them at once. The first recommendation is always the first one
-        // described. Local TTS is skipped whenever A2A owns this session's
-        // speech (the backend already described each product before navigating,
-        // and those descriptions are played through the main A2A/Gemini voice
-        // stream) — otherwise the browser's default male voice would read every
-        // card AND Gemini would re-read them: double voice, wrong voice.
+        // described. We speak through the browser's speechSynthesis with a
+        // preferred FEMALE/Aria voice (never the default male voice) because on
+        // this page the backend does not re-describe the products — Gemini only
+        // spoke them on the page BEFORE the redirect. The glow TTS is stopped
+        // the moment the user speaks or Gemini audio starts (see _stopSearchGlow)
+        // so it never overlaps the A2A voice.
         const _glowStyle = (card, on) => {
           if (!card) return;
           card.style.outline = on ? 'none' : '';
@@ -7164,6 +7230,14 @@ try {
           else card.removeAttribute('data-wa-glowed');
         };
         cards.forEach(c => _glowStyle(c, false));
+        // Warm the voice list (Chrome loads it asynchronously).
+        try { if (window.speechSynthesis && window.speechSynthesis.getVoices) window.speechSynthesis.getVoices(); } catch (_e) {}
+        let _glowVoice = null;
+        const _nextGlow = (fn, ms) => {
+          const t = setTimeout(fn, ms);
+          _searchGlowTimers.push(t);
+          return t;
+        };
         const _describeCard = (idx) => {
           if (idx >= matched.length) {
             // Done: leave the first recommendation highlighted as "the best match".
@@ -7177,7 +7251,7 @@ try {
           _glowStyle(card, true);
           try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
           const p = prods[idx];
-          if (p && p.name && !_a2aOwnsSpeech() && window.speechSynthesis) {
+          if (p && p.name && window.speechSynthesis) {
             const prefix = idx === 0 ? 'First, ' : (idx === 1 ? 'Next, ' : 'And this one, ');
             const _blurb = (p.description && String(p.description).trim()) ? '. ' + String(p.description).trim() : '';
             const label = prefix + p.name + (p.price ? ', ' + p.price : '') + _blurb + '.';
@@ -7186,12 +7260,13 @@ try {
               const u = new SpeechSynthesisUtterance(label);
               u.lang = S.language || 'en';
               u.rate = 1.0;
+              if (_glowVoice || (_glowVoice = _pickAriaVoice())) u.voice = _glowVoice;
               window.speechSynthesis.speak(u);
             } catch (_e) {}
           }
-          setTimeout(() => _describeCard(idx + 1), 3200);
+          _nextGlow(() => _describeCard(idx + 1), 3200);
         };
-        setTimeout(() => _describeCard(0), 500);
+        _nextGlow(() => _describeCard(0), 500);
       }
 
       // 4) Feedback + cleanup.
