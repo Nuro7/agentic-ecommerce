@@ -2948,7 +2948,14 @@ try {
         // jumped to before the AI has even started talking.
         if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
         if (!S.speaking && !a2aIsPlaying) {
-          const _minNavDelay = navReason === 'search' ? 2200 : 1500;
+          // A2A live: Gemini may still be generating the spoken reply when the
+          // redirect arrives. A short fallback used to navigate mid-sentence,
+          // cutting off the recommended-product descriptions. In A2A we let
+          // onSpeakingEnd()/turn_complete fire the redirect after the audio has
+          // fully played; the timer is only a generous safety net for a turn
+          // that never produces any audio at all.
+          const _a2aNav = !!_a2aOwnsLive && _a2aOwnsLive();
+          const _minNavDelay = navReason === 'search' ? (_a2aNav ? 25000 : 2200) : (_a2aNav ? 25000 : 1500);
           _navTimer = setTimeout(() => {
             _navTimer = null;
             if (_pendingNavigation) {
@@ -3074,6 +3081,7 @@ try {
             _pendingNavigation = _pendingNav;
             if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
             if (!S.speaking && !a2aIsPlaying) {
+              const _a2aNav = !!_a2aOwnsLive && _a2aOwnsLive();
               _navTimer = setTimeout(() => {
                 _navTimer = null;
                 if (_pendingNavigation) {
@@ -3081,7 +3089,7 @@ try {
                   _pendingNavigation = null;
                   pn();
                 }
-              }, 2200);
+              }, _a2aNav ? 25000 : 2200);
             }
           } else {
             let targetUrl = navUrl;
@@ -5228,6 +5236,15 @@ try {
             }
             _a2aStreamBubble = null;
             _a2aStreamText   = '';
+            // The turn is over. If a live-nav redirect is pending and the audio
+            // has already fully drained (fast/short replies), fire it now instead
+            // of waiting on the long A2A safety net.
+            if (_pendingNavigation && !a2aIsPlaying && (!a2aAudioQueue || a2aAudioQueue.length === 0)) {
+              if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
+              const pn = _pendingNavigation;
+              _pendingNavigation = null;
+              pn();
+            }
           }
 
         } catch (e) { /* ignore malformed frames */ }
@@ -6904,13 +6921,6 @@ try {
         if (!matched.length) {
           for (const c of cards) { if (matched.length >= prods.length) break; matched.push(c); }
         }
-        matched.forEach(card => {
-          card.style.outline = 'none';
-          card.style.border = '2px solid #6366f1';
-          card.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
-          card.style.transition = 'all 0.3s ease-in-out';
-          card.setAttribute('data-wa-glowed', '1');
-        });
         // Reorder: put the recommended cards FIRST in the results grid so the
         // best matches are the first items the customer sees and hears about.
         if (matched.length > 1) {
@@ -6929,9 +6939,49 @@ try {
             } catch (_e) {}
           });
         }
-        if (matched[0]) {
-          try { matched[0].scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
-        }
+        // Walk through the recommended cards ONE AT A TIME: highlight only the
+        // current card and describe it, then move to the next — never glow all
+        // of them at once. The first recommendation is always the first one
+        // described. Local TTS is skipped while A2A live owns speech (the
+        // backend already described each product before navigating).
+        const _glowStyle = (card, on) => {
+          if (!card) return;
+          card.style.outline = on ? 'none' : '';
+          card.style.border = on ? '2px solid #6366f1' : '';
+          card.style.boxShadow = on ? '0 0 20px rgba(99, 102, 241, 0.85)' : '';
+          card.style.transition = 'all 0.3s ease-in-out';
+          if (on) card.setAttribute('data-wa-glowed', '1');
+          else card.removeAttribute('data-wa-glowed');
+        };
+        const _a2aLiveNow = !!(isA2AConnected && isLiveMode);
+        cards.forEach(c => _glowStyle(c, false));
+        const _describeCard = (idx) => {
+          if (idx >= matched.length) {
+            // Done: leave the first recommendation highlighted as "the best match".
+            cards.forEach(c => _glowStyle(c, false));
+            _glowStyle(matched[0], true);
+            try { matched[0].scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
+            return;
+          }
+          const card = matched[idx];
+          cards.forEach(c => _glowStyle(c, false));
+          _glowStyle(card, true);
+          try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
+          const p = prods[idx];
+          if (p && p.name && !_a2aLiveNow && window.speechSynthesis) {
+            const prefix = idx === 0 ? 'First, ' : (idx === 1 ? 'Next, ' : 'And this one, ');
+            const label = prefix + p.name + (p.price ? ', ' + p.price : '.');
+            try {
+              window.speechSynthesis.cancel();
+              const u = new SpeechSynthesisUtterance(label);
+              u.lang = S.language || 'en';
+              u.rate = 1.0;
+              window.speechSynthesis.speak(u);
+            } catch (_e) {}
+          }
+          setTimeout(() => _describeCard(idx + 1), 3200);
+        };
+        setTimeout(() => _describeCard(0), 500);
       }
 
       // 4) Feedback + cleanup.
