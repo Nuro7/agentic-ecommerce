@@ -997,10 +997,31 @@ async def ask_brain(
             _pending["filters"] = _search_redirect["payload"]["filters"]
         # Embed pending payload into redirect
         _search_redirect["payload"]["pending_search"] = _pending
-        # Shorten response text — voice will replay after landing
+        # Describe the best matches NOW (grounded names + prices from the pending
+        # list), then redirect so the widget glows them in the same order on the
+        # search page. Aria speaks these before the redirect fires.
         _sq = _search_redirect["payload"].get("query") or _search_query or ""
-        response_text = f"Searching for {_sq}..." if _sq else "Searching..."
-
+        if _pending_products:
+            _top = _pending_products[:5]
+            _descs = []
+            for _pp in _top:
+                _n = str(_pp.get("name") or "").strip()
+                _pr = str(_pp.get("price") or "").strip()
+                if not _n:
+                    continue
+                _descs.append(f"{_n}{', ' + _pr if _pr else ''}")
+            if _descs:
+                _total = len(_pending_products)
+                _q = str(_sq or "matching").strip()
+                if len(_descs) == 1:
+                    response_text = f"I found your best match: {_descs[0]}. Want me to add it to your cart?"
+                else:
+                    _head = "; ".join(_descs)
+                    _tail = f" and {_total - len(_descs)} more" if _total > len(_descs) else ""
+                    response_text = f"I found {_total} {_q} products: {_head}{_tail}. Which one would you like to add to your cart?"
+        if not response_text:
+            _sq = _search_redirect["payload"].get("query") or _search_query or ""
+            response_text = f"Searching for {_sq}..." if _sq else "Searching..."
     inline_suggestions, response_text = extract_next_suggestions(response_text)
     suggested: List[str] = inline_suggestions or (
         result.get("suggested_replies")

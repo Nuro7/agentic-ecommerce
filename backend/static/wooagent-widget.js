@@ -6911,6 +6911,24 @@ try {
           card.style.transition = 'all 0.3s ease-in-out';
           card.setAttribute('data-wa-glowed', '1');
         });
+        // Reorder: put the recommended cards FIRST in the results grid so the
+        // best matches are the first items the customer sees and hears about.
+        if (matched.length > 1) {
+          const byParent = new Map();
+          for (const card of matched) {
+            const parent = card.parentElement;
+            if (!parent) continue;
+            if (!byParent.has(parent)) byParent.set(parent, []);
+            byParent.get(parent).push(card);
+          }
+          byParent.forEach((list, parent) => {
+            try {
+              for (let i = list.length - 1; i >= 0; i--) {
+                parent.insertBefore(list[i], parent.firstChild);
+              }
+            } catch (_e) {}
+          });
+        }
         if (matched[0]) {
           try { matched[0].scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
         }
