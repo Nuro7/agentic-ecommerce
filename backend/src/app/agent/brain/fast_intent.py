@@ -1375,6 +1375,29 @@ async def _resolve_product_for_add(
             except Exception as e:
                 logger.error("Failed fetching context product for pid %s: %s", current_pid, e)
 
+        # 2a. "this/it/that" right after a search → the TOP GLOWING card the
+        # customer actually saw highlighted on the search page (page_context
+        # carries the on-screen order via last_products). This is what makes
+        # "buy this" after a search redirect work — without it, the anaphora
+        # falls to active_recommendations which can be empty in voice sessions.
+        last_prods = page_context.get("last_products") or []
+        if last_prods:
+            _first_last = last_prods[0]
+            if isinstance(_first_last, dict):
+                _first_last = _first_last.get("id")
+            if _first_last:
+                try:
+                    detail = await store_client.get_product_details(int(_first_last))
+                    if detail and detail.get("id"):
+                        return {
+                            "id": detail.get("id"),
+                            "name": detail.get("name", "Product"),
+                            "permalink": detail.get("permalink", ""),
+                            "variant_id": _first_available_variant_id(detail),
+                        }
+                except Exception as e:
+                    logger.error("Failed fetching top glowing card pid %s: %s", _first_last, e)
+
         if active_recommendations and len(active_recommendations) > 0:
             first_rec = active_recommendations[0]
             if isinstance(first_rec, dict) and first_rec.get("id"):

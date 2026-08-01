@@ -3357,13 +3357,30 @@ try {
     if (S.muted || !window.speechSynthesis) return;
     // In A2A live mode the backend streams Gemini's spoken reply for the same
     // turn — speaking locally too double-voices every ack ("Scrolling down"
-    // comes out as two voices). Backend owns speech there.
-    if (isA2AConnected && isLiveMode) return;
+    // comes out as two voices). Backend owns speech there. Gate on the SESSION
+    // (A2A-enabled voice session), not just the live socket, so ack speech never
+    // leaks out with the browser's default voice while A2A reconnects after a
+    // navigation redirect.
+    if (_a2aOwnsSpeech()) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = S.language || 'en';
     u.rate = 1.0;
     speechSynthesis.speak(u);
+  }
+
+  // True when the A2A/Gemini voice stream owns ALL spoken output for this
+  // session (browser speechSynthesis must stay silent so the customer never
+  // hears a second, different-voiced ack/description). This is true even
+  // between the redirect and the socket reconnecting on the landing page.
+  function _a2aOwnsSpeech() {
+    if (!A2A_ENABLED) return false;
+    try {
+      if (isLiveMode || S.mode === 'voice_nav') return true;
+      if (sessionStorage.getItem('_wa_voice_active') === '1') return true;
+      if (localStorage.getItem('_wa_voice_nav_resume') === '1') return true;
+    } catch (_e) {}
+    return false;
   }
 
   // ── Data-driven local voice command engine ───────────────────────────────
@@ -3641,7 +3658,7 @@ try {
     // any other page this safely falls through to the backend brain.
     { re: /^(?:yes|yeah|sure|ok|okay|go\s+ahead)\s*,?\s*(?:please\s+)?add\s+(?:it|this|that)\s*(?:to\s+(?:my\s+|the\s+)?(?:cart|bag))?$/i,
       act: (m, t) => buildLocalAddSpec(t) },
-    { re: /^buy\s+(?:this|it|that)(?:\s+now)?$/i,
+    { re: /^buy\s+(?:this|it|that)\s*(?:one|product|item|for\s+me)?(?:\s+now)?$/i,
       act: (m, t) => buildLocalBuyNowSpec(t) },
     { re: /(remove|delete|take)\s+(?:this|it|that)\s+(?:from|out\s+of)\s+(?:my\s+)?(?:cart|bag)/i,
       act: () => buildLocalRemoveSpec() },
@@ -3728,9 +3745,39 @@ try {
       const m = location.pathname.match(/\/products\/([^/?#]+)/);
       handle = m ? m[1] : '';
     }
-    const src = pdpId
+    let src = pdpId
       ? { id: pdpId, variation_id: pageCur.variant_id || 0, handle: handle || '' }
       : (IS_SHOPIFY && handle ? { id: 0, variation_id: 0, handle } : null);
+    // "This/it/that" right after a search redirect → the TOP GLOWING card the
+    // customer just watched being highlighted. The search replay marks these
+    // cards with data-wa-glowed; resolve the first one so "buy this" after a
+    // search works locally without a backend round-trip (and doesn't fall to a
+    // PDP-only resolver that returns null on the search page).
+    if (!src || (!src.id && !src.handle)) {
+      try {
+        const glowEl = document.querySelector('[data-wa-glowed="1"]');
+        if (glowEl) {
+          let gPid = null;
+          const pidEl = glowEl.getAttribute && glowEl.getAttribute('data-product-id')
+            ? glowEl
+            : (glowEl.closest && glowEl.closest('[data-product-id]'));
+          if (pidEl && pidEl.getAttribute) gPid = parseInt(pidEl.getAttribute('data-product-id'), 10);
+          let gHandle = '';
+          try { gHandle = glowEl.getAttribute('data-product-handle') || ''; } catch (_e) {}
+          if (!gHandle) {
+            const gHref = (glowEl.getAttribute && glowEl.getAttribute('href'))
+              || (glowEl.querySelector && glowEl.querySelector('a[href*="/products/"]') ? glowEl.querySelector('a[href*="/products/"]').getAttribute('href') : '')
+              || (glowEl.closest && glowEl.closest('a[href*="/products/"]') ? glowEl.closest('a[href*="/products/"]').getAttribute('href') : '');
+            const gm = gHref ? String(gHref).match(/\/products\/([^/?#]+)/) : null;
+            if (gm) gHandle = gm[1];
+          }
+          if (gPid || gHandle) {
+            src = { id: gPid || 0, variation_id: 0, handle: gHandle || '' };
+            console.log('[WooAgent A2C] Resolved "this" to glowing card:', gPid, gHandle);
+          }
+        }
+      } catch (_e) {}
+    }
     console.log('[WooAgent A2C] Local command matched:', t, 'currentPDP:', pdpId, 'handle:', handle);
     if (!src || (!src.id && !src.handle)) {
       console.warn('[WooAgent A2C] No PDP product — falling through to brain path');
@@ -7102,10 +7149,11 @@ try {
         // Walk through the recommended cards ONE AT A TIME: highlight only the
         // current card and describe it, then move to the next — never glow all
         // of them at once. The first recommendation is always the first one
-        // described. Local TTS is skipped while A2A live owns speech (the
-        // backend already described each product before navigating, and those
-        // descriptions are played through the main A2A/Gemini voice stream).
-        const _a2aLiveNow = !!(isA2AConnected && isLiveMode);
+        // described. Local TTS is skipped whenever A2A owns this session's
+        // speech (the backend already described each product before navigating,
+        // and those descriptions are played through the main A2A/Gemini voice
+        // stream) — otherwise the browser's default male voice would read every
+        // card AND Gemini would re-read them: double voice, wrong voice.
         const _glowStyle = (card, on) => {
           if (!card) return;
           card.style.outline = on ? 'none' : '';
@@ -7129,7 +7177,7 @@ try {
           _glowStyle(card, true);
           try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
           const p = prods[idx];
-          if (p && p.name && !_a2aLiveNow && window.speechSynthesis) {
+          if (p && p.name && !_a2aOwnsSpeech() && window.speechSynthesis) {
             const prefix = idx === 0 ? 'First, ' : (idx === 1 ? 'Next, ' : 'And this one, ');
             const _blurb = (p.description && String(p.description).trim()) ? '. ' + String(p.description).trim() : '';
             const label = prefix + p.name + (p.price ? ', ' + p.price : '') + _blurb + '.';
