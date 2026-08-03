@@ -210,7 +210,10 @@ class ShopifyClient(BaseStoreClient):
         )
 
         _url_bytes = (self.store_domain or "shopify-default").encode("utf-8")
-        self._cache_prefix = "shopify:" + hashlib.md5(_url_bytes).hexdigest()[:8] + ":"
+        # 16 hex chars (64 bits) of the store-domain hash — sized to be unique
+        # per store even across large multi-tenant installs, so one shop's cached
+        # products can never leak to another. (Was [:8] / 32 bits — too small.)
+        self._cache_prefix = "shopify:" + hashlib.md5(_url_bytes).hexdigest()[:16] + ":"
 
     @property
     def has_credentials(self) -> bool:
@@ -330,6 +333,22 @@ class ShopifyClient(BaseStoreClient):
             )
         except Exception:
             pass
+
+    async def _cache_clear(self) -> None:
+        """Purge ALL cached keys for THIS store (search, product, categories,
+        store info, collections, reviews). Called when the catalog changes so a
+        stale/unrelated product is never served from Redis after a sync."""
+        if not self.redis:
+            return
+        try:
+            keys = [
+                k async for k in self.redis.scan_iter(match=self._cache_prefix + "*", count=200)
+            ]
+            if keys:
+                await asyncio.wait_for(self.redis.delete(*keys), timeout=2.0)
+                logger.info("Shopify cache cleared store=%s keys=%d", self.store_domain, len(keys))
+        except Exception as exc:
+            logger.warning("Shopify cache clear failed store=%s: %s", self.store_domain, exc)
 
     # â”€â”€ Cart ID persistence (session_id â†’ Shopify cartId) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -1123,7 +1142,7 @@ class ShopifyClient(BaseStoreClient):
                     "slug": n["handle"],
                     "count": count,
                 })
-            await self._cache_set(cache_key, categories, ttl=86400)
+            await self._cache_set(cache_key, categories, ttl=1800)
             return categories
         except Exception as exc:
             logger.error("Shopify get_categories failed: %s", exc)
@@ -1363,6 +1382,90 @@ class ShopifyClient(BaseStoreClient):
             logger.warning("Shopify remove_from_cart failed: %s", exc)
 
         return {"items": [], "item_count": 0, "is_empty": True, "total": "0"}
+
+    async def attach_buyer_identity(
+        self,
+        *,
+        session_id: str,
+        email: Optional[str] = None,
+        phone: Optional[str] = None,
+        address: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Bind the buyer's contact + delivery address to the session's Storefront
+        cart via cartBuyerIdentityUpdate, so Shopify's OWN hosted checkout opens
+        pre-populated (the only way to pre-fill hosted checkout — URL params are
+        ignored and the checkout DOM is cross-origin). Returns the normalized cart
+        with a live checkoutUrl, or an empty cart dict if binding failed.
+        """
+        cart_id = await self._get_cart_id(session_id)
+        if not cart_id:
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+
+        addr = address or {}
+        mailing = {
+            "firstName": (addr.get("first_name") or "").strip() or None,
+            "lastName": (addr.get("last_name") or "").strip() or None,
+            "address1": (addr.get("address_1") or addr.get("address_line1") or "").strip() or None,
+            "city": (addr.get("city") or "").strip() or None,
+            "province": (addr.get("state") or addr.get("province") or "").strip() or None,
+            "zip": (addr.get("postcode") or addr.get("zip") or "").strip() or None,
+            "phone": (addr.get("phone") or phone or "").strip() or None,
+            "country": (addr.get("country") or "").strip() or "IN",
+        }
+        # MailingAddressInput rejects empty strings on required fields; strip nulls.
+        mailing = {k: v for k, v in mailing.items() if v is not None and str(v).strip()}
+
+        GQL = """
+        mutation CartBuyerIdentityUpdate(
+          $cartId: ID!
+          $buyerIdentity: CartBuyerIdentityInput!
+        ) {
+          cartBuyerIdentityUpdate(cartId: $cartId, buyerIdentity: $buyerIdentity) {
+            cart {
+              id checkoutUrl
+              buyerIdentity {
+                email phone
+                deliveryAddressPreferences {
+                  ... on MailingAddress { address1 city province zip country }
+                }
+              }
+              cost { totalAmount { amount currencyCode } }
+            }
+            userErrors { field message }
+          }
+        }
+        """
+        variables: Dict[str, Any] = {
+            "cartId": cart_id,
+            "buyerIdentity": {
+                "email": email or mailing.get("email"),
+                "phone": phone or mailing.get("phone"),
+                "deliveryAddressPreferences": [{"deliveryAddress": mailing}],
+            },
+        }
+        # Drop empty buyerIdentity fields Shopify rejects (null email/phone are fine,
+        # but an empty dict for deliveryAddressPreferences is not).
+        _bi = variables["buyerIdentity"]
+        _bi = {k: v for k, v in _bi.items() if v is not None}
+        if not _bi.get("deliveryAddressPreferences"):
+            _bi.pop("deliveryAddressPreferences", None)
+        variables["buyerIdentity"] = _bi
+
+        try:
+            data = await self._storefront(GQL, variables)
+            op = data.get("cartBuyerIdentityUpdate", {})
+            errors = op.get("userErrors", [])
+            if errors:
+                logger.warning("Shopify cartBuyerIdentityUpdate errors: %s", errors)
+            cart_node = op.get("cart")
+            if not cart_node:
+                return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+            normalized = self._normalize_cart(cart_node)
+            normalized["success"] = True
+            return normalized
+        except Exception as exc:
+            logger.warning("Shopify cartBuyerIdentityUpdate failed: %s", exc)
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
 
     async def update_cart_quantity(
         self,
@@ -1693,7 +1796,7 @@ class ShopifyClient(BaseStoreClient):
         except Exception as exc:
             logger.warning("Shopify get_store_info storefront query failed: %s", exc)
 
-        await self._cache_set(cache_key, info, ttl=86400)
+        await self._cache_set(cache_key, info, ttl=1800)
         return {k: v for k, v in info.items() if v not in ("", None)}
 
     async def get_store_policies(self) -> Dict[str, Any]:

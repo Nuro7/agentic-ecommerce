@@ -2849,11 +2849,9 @@ try {
         if (isCheckoutPage()) {
           applyStoredCheckoutAddress();
         } else if (IS_SHOPIFY) {
-          // Shopify: cannot script the hosted checkout page, and checkout[...]
-          // URL params are ignored by it. The address was already collected by
-          // the Brain at the point this action is emitted, so just land on the
-          // raw /checkout and let applyStoredCheckoutAddress fill it on load
-          // when the store ships a same-origin/theme checkout form.
+          // Shopify: bind the address to the Storefront cart and navigate to the
+          // API-generated checkoutUrl so Shopify's own hosted checkout opens
+          // pre-filled (URL params are ignored; the DOM is cross-origin).
           const addr = act.payload.billing || act.payload.shipping || act.payload || {};
           try {
             if (addr && Object.keys(addr).length) persistCheckoutAddress({ billing: addr, shipping: addr });
@@ -2863,7 +2861,8 @@ try {
               localStorage.setItem('_wa_reopen', '1');
             }
           } catch (e) {}
-          setTimeout(() => { window.location.href = '/checkout'; }, 1000);
+          // Wait for the brain's redirect timing, then bind + navigate.
+          setTimeout(() => { prepareShopifyCheckout(addr); }, 200);
         } else {
           try {
             if (S.mode === 'voice_nav') {
@@ -4207,6 +4206,36 @@ try {
   // the widget re-opens and fills the stored address on the page when a custom
   // (same-origin) checkout form exists. Dropping the _addrUsable shortcut also
   // removes the "pushed to checkout but address never collected" behaviour.
+  // Approach C: bind the collected buyer identity + address to the session's
+  // Storefront cart via /api/v1/cart/checkout, then navigate to the API-generated
+  // checkoutUrl. Shopify's hosted checkout ignores `checkout[...]` URL params and
+  // its DOM is cross-origin, so this Storefront-cart binding is the ONLY way the
+  // hosted checkout opens with the address already filled by Shopify itself.
+  async function prepareShopifyCheckout(addr) {
+    const a = (addr && typeof addr === 'object') ? addr : {};
+    const payload = {
+      session_id: S.sessionId,
+      lines: ((S.cartSnapshot && Array.isArray(S.cartSnapshot.items)) ? S.cartSnapshot.items : [])
+        .map(i => ({
+          product_id: i.product_id,
+          variant_id: i.variation_id || i.variant_id || 0,
+          quantity: i.quantity || 1,
+        })),
+      email: a.email || '',
+      phone: a.phone || '',
+      address: a,
+    };
+    const res = await api('/cart/checkout', payload);
+    const checkoutUrl = (res && res.checkout_url) ? String(res.checkout_url) : '';
+    setTimeout(() => {
+      if (checkoutUrl) {
+        window.location.href = checkoutUrl;
+      } else {
+        // Fallback: keep the pre-fill contention working on theme/custom checkout.
+        window.location.href = '/checkout';
+      }
+    }, 800);
+  }
   function checkoutAfterAdd() {
     addBubble('user', 'I want to checkout');
     sendToAgent('I want to checkout now');
@@ -4232,11 +4261,10 @@ try {
         sendToAgent('I want to checkout now');
         return;
       }
-      // Collect/confirm happened: go to the raw Shopify checkout. No
-      // checkout[...] URL params (hosted checkout ignores them); the stored
-      // address is applied on load (see applyStoredCheckoutAddress) when the
-      // store ships a same-origin/theme checkout form.
-      window.location.href = '/checkout';
+      // Collect/confirm happened: bind the address to the Storefront cart and
+      // navigate to the API-generated checkoutUrl (Shopify pre-fills it itself).
+      const addr = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
+      prepareShopifyCheckout(addr);
       return;
     }
     addBubble('user', 'I want to checkout');

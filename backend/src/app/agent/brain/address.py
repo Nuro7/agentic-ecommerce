@@ -273,8 +273,13 @@ async def handle_address_collection(
         pincode = "".join(numbers)[:6]
         if len(pincode) == 6:
             addr.postcode = pincode
-            next_state = AddressCollectionState.COLLECTING_PHONE
-            response = lang_prompts["phone"]
+            if addr.phone:
+                # Phone-first flow: phone already collected, so skip to email.
+                next_state = AddressCollectionState.COLLECTING_EMAIL
+                response = lang_prompts["email"]
+            else:
+                next_state = AddressCollectionState.COLLECTING_PHONE
+                response = lang_prompts["phone"]
         else:
             response = "I need a 6-digit PIN code. Could you repeat it?"
 
@@ -284,13 +289,15 @@ async def handle_address_collection(
         if len(phone) >= 10:
             addr.phone = phone[-10:]
             
-            # On checkout page: try to look up saved address by phone
-            if is_checkout and tenant_id:
+            # Look up the saved address by phone whenever the checkout flow is
+            # running (buy-now intent OR checkout page). Phone-first: if we find a
+            # saved address we offer to reuse it (with an update path); otherwise
+            # the customer types their full address for the first time.
+            if tenant_id:
                 try:
                     from ...modules.users.address_service import get_address_by_phone
                     saved = await get_address_by_phone(addr.phone, tenant_id)
                     if saved:
-                        # Pre-fill address data from saved address
                         addr.first_name = saved.get("first_name") or addr.first_name
                         addr.last_name = saved.get("last_name") or addr.last_name
                         addr.address_line1 = saved.get("address_1") or addr.address_line1
@@ -300,34 +307,22 @@ async def handle_address_collection(
                         addr.email = saved.get("email") or addr.email
                         addr._using_saved = "1"
 
-                        # Go directly to confirming with saved address
-                        next_state = AddressCollectionState.CONFIRMING
+                        addr._pending_field = ""
+                        next_state = AddressCollectionState.COLLECTING_UPDATE_FIELD
                         response = (
-                            f"I found a saved address: {addr.address_line1}, {addr.city} {addr.postcode}. "
-                            f"Shall I use this? (yes/no)"
+                            f"I found your saved address: {addr.address_line1}, {addr.city} {addr.postcode}, {addr.state} - {addr.phone}. "
+                            f"Is this correct, or would you like to update anything?"
                         )
-                        ui_actions.append({"type": "prefill_address", "payload": addr.to_woocommerce_format()})
                         return response, next_state, addr.__dict__, ui_actions
                 except Exception as e:
-                    # If lookup fails, continue with normal flow
                     pass
             
-            # Normal flow: continue to email or skip if checkout
-            if is_checkout:
-                # On checkout, skip email and go to confirm
-                next_state = AddressCollectionState.CONFIRMING
-                response = lang_prompts["confirm"].format(
-                    name=f"{addr.first_name} {addr.last_name}".strip(),
-                    address=addr.address_line1,
-                    city=addr.city,
-                    pincode=addr.postcode,
-                    phone=addr.phone,
-                    email=addr.email or "not provided",
-                )
-                ui_actions.append({"type": "prefill_address", "payload": addr.to_woocommerce_format()})
-            else:
-                next_state = AddressCollectionState.COLLECTING_EMAIL
-                response = lang_prompts["email"]
+            # Normal flow (phone-first): collect the rest of the delivery details —
+            # name → address → city → state → pincode → email → confirm. We never
+            # skip straight to email on the buy-now path because the collected
+            # address is what gets bound to the Storefront cart / saved to DB.
+            next_state = AddressCollectionState.COLLECTING_NAME
+            response = lang_prompts["name"]
         else:
             response = "I need a 10-digit phone number. Could you say it again?"
 
@@ -416,6 +411,41 @@ async def handle_address_collection(
             addr._pending_field = field
             next_state = AddressCollectionState.COLLECTING_UPDATE_VALUE
             response = _update_value_prompt(lang_prompts, field)
+        elif any(
+            re.search(rf"\b{re.escape(t)}\b", lowered)
+            for t in [
+                "yes", "yeah", "yep", "correct", "right", "ok", "okay", "sure",
+                "proceed", "go ahead", "place order", "pay now", "confirmed", "done",
+                "use it", "use this", "same", "haan", "ha", "seri", "sari", "aamam",
+                "ente pora", "porady",
+            ]
+        ) or "no " in lowered and any(
+            t in lowered for t in ["update", "change", "nothing", "no update"]
+        ):
+            # "Yes / correct / proceed" with a saved address (or "no updates
+            # needed") → finish checkout. If the customer said "no" to the saved
+            # address but wants updates, the field-detection above handled it.
+            next_state = AddressCollectionState.COMPLETE
+            response = lang_prompts["done"]
+            ui_actions.append({
+                "type": "redirect_checkout_with_address",
+                "payload": {
+                    "url": "/checkout",
+                    "billing": addr.to_woocommerce_format(),
+                    "shipping": addr.to_woocommerce_format(),
+                },
+            })
+            if tenant_id:
+                try:
+                    from ...modules.users.address_service import save_address
+                    await save_address(
+                        session_id=session_id,
+                        tenant_id=tenant_id,
+                        phone=addr.phone,
+                        address_data=addr.to_woocommerce_format(),
+                    )
+                except Exception:
+                    pass
         else:
             response = lang_prompts["update_field"]
 

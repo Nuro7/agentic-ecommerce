@@ -459,3 +459,96 @@ async def get_cart(
     except Exception as exc:
         logger.warning("Cart fetch failed for session %s: %s", session_id, exc)
         return {"is_empty": True, "item_count": 0, "total": "0", "items": []}
+
+
+class CheckoutCartLine(BaseModel):
+    product_id: int
+    variant_id: int = 0
+    quantity: int = Field(default=1, ge=1, le=999)
+
+
+class PrepareCheckoutRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    lines: List[CheckoutCartLine] = []
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[Dict[str, Any]] = None
+
+
+@router.post("/cart/checkout")
+async def prepare_checkout(
+    payload: PrepareCheckoutRequest,
+    store_client: Any = Depends(get_tenant_store_client),
+    _rl=Depends(rate_limit(limit=30, window=60, scope="cart_checkout")),
+):
+    """Bind the collected buyer identity + address to the session's Storefront
+    cart and return the real API-generated checkoutUrl.
+
+    Shopify hosted checkout ignores `checkout[...]` URL params and its DOM is
+    cross-origin, so the ONLY way to open it pre-filled is cartBuyerIdentityUpdate
+    on the Storefront cart that the customer is then taken to. The widget calls
+    this right before navigating to the returned checkoutUrl.
+
+    Supported lines are rebuilt on the server from the same product/variant ids the
+    widget already added via the browser cart; the server Storefront cart is the
+    one that carries the bound identity and whose checkoutUrl we return.
+    """
+    if not store_client:
+        return {"ok": False, "error": "no_store_client", "checkout_url": "", "cart": {}}
+
+    # Ensure the session's Storefront cart holds the current lines before binding
+    # the address, so checkoutUrl belongs to a cart that matches what the customer
+    # is buying.
+    cart: Dict[str, Any] = {}
+    try:
+        for line in payload.lines or []:
+            added = await store_client.add_to_cart(
+                session_id=payload.session_id,
+                product_id=line.product_id,
+                variation_id=line.variant_id or 0,
+                quantity=line.quantity,
+            )
+            cart = added
+        if not payload.lines:
+            cart = await store_client.get_cart(session_id=payload.session_id)
+    except Exception as exc:
+        logger.warning("cart/checkout: failed to build Storefront cart: %s", exc)
+        return {"ok": False, "error": "cart_build_failed", "checkout_url": "", "cart": cart}
+
+    bound: Dict[str, Any] = {}
+    bind_method = getattr(store_client, "attach_buyer_identity", None)
+    if bind_method:
+        try:
+            bound = await bind_method(
+                session_id=payload.session_id,
+                email=payload.email,
+                phone=payload.phone,
+                address=payload.address or {},
+            )
+        except Exception as exc:
+            logger.warning("cart/checkout: buyer identity bind failed: %s", exc)
+    else:
+        # WooCommerce / other platforms: no Storefront cart to bind; the widget
+        # keeps using its client-side DOM prefill path instead.
+        return {
+            "ok": True,
+            "checkout_url": (cart or {}).get("checkout_url", ""),
+            "cart": cart,
+            "bound": False,
+        }
+
+    checkout_url = bound.get("checkout_url") or (cart or {}).get("checkout_url", "")
+    if not checkout_url:
+        # Fallback: session cart's native checkout URL if binding couldn't refresh it.
+        try:
+            latest = await store_client.get_cart(session_id=payload.session_id)
+            checkout_url = latest.get("checkout_url", "")
+        except Exception:
+            pass
+
+    return {
+        "ok": bool(checkout_url),
+        "checkout_url": checkout_url,
+        "cart": bound if bound else cart,
+        "bound": True,
+    }
