@@ -2849,16 +2849,21 @@ try {
         if (isCheckoutPage()) {
           applyStoredCheckoutAddress();
         } else if (IS_SHOPIFY) {
-          // Shopify: can't script the checkout page — prefill via URL params.
+          // Shopify: cannot script the hosted checkout page, and checkout[...]
+          // URL params are ignored by it. The address was already collected by
+          // the Brain at the point this action is emitted, so just land on the
+          // raw /checkout and let applyStoredCheckoutAddress fill it on load
+          // when the store ships a same-origin/theme checkout form.
           const addr = act.payload.billing || act.payload.shipping || act.payload || {};
           try {
+            if (addr && Object.keys(addr).length) persistCheckoutAddress({ billing: addr, shipping: addr });
             if (S.mode === 'voice_nav') {
               localStorage.setItem('_wa_voice_nav_resume', '1');
             } else {
               localStorage.setItem('_wa_reopen', '1');
             }
           } catch (e) {}
-          setTimeout(() => { window.location.href = _shopifyCheckoutUrl(addr); }, 1000);
+          setTimeout(() => { window.location.href = '/checkout'; }, 1000);
         } else {
           try {
             if (S.mode === 'voice_nav') {
@@ -4183,39 +4188,11 @@ try {
     return addToCartViaWoo(payload);
   }
 
-  // Build a Shopify checkout URL with prefilled shipping fields. Shopify can't be
-  // scripted on its hosted checkout (non-Plus), but it DOES accept checkout[...]
-  // query params to pre-populate the form — that's how we honour details the
-  // customer already gave Aria.
-  function _shopifyCheckoutUrl(addr) {
-    addr = addr || {};
-    const get = (...keys) => {
-      for (const k of keys) { if (addr[k]) return String(addr[k]).trim(); }
-      return '';
-    };
-    const p = new URLSearchParams();
-    const email = get('email');
-    if (email) p.set('checkout[email]', email);
-    const map = {
-      'checkout[shipping_address][first_name]': get('first_name'),
-      'checkout[shipping_address][last_name]':  get('last_name'),
-      'checkout[shipping_address][address1]':   get('address_1', 'address_line1'),
-      'checkout[shipping_address][city]':       get('city'),
-      'checkout[shipping_address][province]':   get('state', 'province'),
-      'checkout[shipping_address][zip]':        get('postcode', 'zip', 'pincode'),
-      'checkout[shipping_address][phone]':      get('phone'),
-      'checkout[shipping_address][country]':    get('country'),
-    };
-    Object.keys(map).forEach(k => { if (map[k]) p.set(k, map[k]); });
-    const qs = p.toString();
-    return '/checkout' + (qs ? ('?' + qs) : '');
-  }
-
   // Take the customer to the REAL checkout. On Shopify this is the native
-  // checkout for the current cart (prefilled when we know the address); on
-  // WooCommerce we still let the agent drive (its address flow differs).
+  // checkout for the current cart; on WooCommerce we let the agent drive (its
+  // address flow differs).
   // True only when the widget already holds a usable address draft, so we know
-  // whether buy-now/checkout can jump straight to /checkout with prefill or
+  // whether an on-page checkout form can be filled client-side or the agent
   // must first run the guided address-collection flow through the backend.
   function _addrUsable() {
     const a = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
@@ -4223,22 +4200,21 @@ try {
   }
 
   // "Buy it now" → the item is already added locally; then we must check out.
-  // If we already know the shipping address we redirect + prefill immediately.
-  // Otherwise we hand control back to the agent (backend address FSM), which
-  // collects the phone/address and then emits redirect_checkout_with_address so
-  // #checkout is prefilled — never a silent jump to an un-fillable /checkout.
+  // We ALWAYS hand control back to the agent (backend address FSM) so the
+  // customer is asked for phone/address/details first, and never do a silent
+  // jump to /checkout. Shopify hosted checkout ignores URL prefill params, so
+  // the only reliable path is: collect via Brain → land on plain /checkout →
+  // the widget re-opens and fills the stored address on the page when a custom
+  // (same-origin) checkout form exists. Dropping the _addrUsable shortcut also
+  // removes the "pushed to checkout but address never collected" behaviour.
   function checkoutAfterAdd() {
-    if (IS_SHOPIFY && !_addrUsable()) {
-      addBubble('user', 'I want to checkout');
-      sendToAgent('I want to checkout now');
-      return;
-    }
-    goToCheckout();
+    addBubble('user', 'I want to checkout');
+    sendToAgent('I want to checkout now');
   }
   function goToCheckout() {
     // Persist voice-nav / reopen intent so the widget re-opens and re-attaches
-    // the A2A socket after the checkout page load (without this, checkout
-    // navigated but the voice assistant went silent on the new page).
+    // the A2S after the checkout page load (needed, otherwise voice goes silent
+    // on the new page).
     try {
       if (S.mode === 'voice_nav') {
         localStorage.setItem('_wa_voice_nav_resume', '1');
@@ -4250,8 +4226,17 @@ try {
     // Never let the /cart auto-reload fire after we've committed to checkout.
     if (_cartReloadTimer) { clearTimeout(_cartReloadTimer); _cartReloadTimer = null; }
     if (IS_SHOPIFY) {
-      const addr = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
-      window.location.href = _shopifyCheckoutUrl(addr);
+      if (!_addrUsable()) {
+        // Details not collected yet → run the address FSM before navigating.
+        addBubble('user', 'I want to checkout');
+        sendToAgent('I want to checkout now');
+        return;
+      }
+      // Collect/confirm happened: go to the raw Shopify checkout. No
+      // checkout[...] URL params (hosted checkout ignores them); the stored
+      // address is applied on load (see applyStoredCheckoutAddress) when the
+      // store ships a same-origin/theme checkout form.
+      window.location.href = '/checkout';
       return;
     }
     addBubble('user', 'I want to checkout');
