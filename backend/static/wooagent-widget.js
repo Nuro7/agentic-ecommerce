@@ -4203,28 +4203,38 @@ try {
   // hosted checkout opens with the address already filled by Shopify itself.
   async function prepareShopifyCheckout(addr) {
     const a = (addr && typeof addr === 'object') ? addr : {};
+    // Refresh the cart from Shopify's live /cart.js BEFORE building the binding
+    // payload. The S.cartSnapshot seeded at widget init comes from
+    // localStorage._wa_cart_snap, which can be stale/empty (e.g. items added via
+    // the native "Add to cart" button). If lines is empty the backend has no
+    // server cart to bind the address to and /cart/checkout returns no
+    // checkout_url → we'd fall back to a plain /checkout with no prefill.
+    let items = (S.cartSnapshot && Array.isArray(S.cartSnapshot.items)) ? S.cartSnapshot.items : [];
+    try {
+      const live = await fetchCartShopify(true);
+      items = (live && Array.isArray(live.items)) ? live.items : items;
+    } catch (_e) {}
     const payload = {
       session_id: S.sessionId,
-      lines: ((S.cartSnapshot && Array.isArray(S.cartSnapshot.items)) ? S.cartSnapshot.items : [])
-        .map(i => ({
-          product_id: i.product_id,
-          variant_id: i.variation_id || i.variant_id || 0,
-          quantity: i.quantity || 1,
-        })),
+      lines: items.map(i => ({
+        product_id: i.product_id,
+        variant_id: i.variation_id || i.variant_id || 0,
+        quantity: i.quantity || 1,
+      })),
       email: a.email || '',
       phone: a.phone || '',
       address: a,
     };
     const res = await api('/cart/checkout', payload);
     const checkoutUrl = (res && res.checkout_url) ? String(res.checkout_url) : '';
-    setTimeout(() => {
-      if (checkoutUrl) {
-        window.location.href = checkoutUrl;
-      } else {
-        // Fallback: keep the pre-fill contention working on theme/custom checkout.
-        window.location.href = '/checkout';
-      }
-    }, 800);
+    // Only navigate once the address has been bound to the server Storefront
+    // cart. If the bind failed, keep the pre-fill contention running on the
+    // same-origin checkout (applyStoredCheckoutAddress re-fills on load).
+    if (checkoutUrl) {
+      setTimeout(() => { window.location.href = checkoutUrl; }, 800);
+      return;
+    }
+    setTimeout(() => { window.location.href = '/checkout'; }, 800);
   }
   function checkoutAfterAdd() {
     addBubble('user', 'I want to checkout');

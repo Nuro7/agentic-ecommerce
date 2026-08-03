@@ -1467,9 +1467,10 @@ class ShopifyClient(BaseStoreClient):
             },
         }
         # Drop empty buyerIdentity fields Shopify rejects (null email/phone are fine,
-        # but an empty dict for deliveryAddressPreferences is not).
+        # but an empty dict for deliveryAddressPreferences is not, and an empty
+        # STRING email/phone can also be rejected — strip those to null).
         _bi = variables["buyerIdentity"]
-        _bi = {k: v for k, v in _bi.items() if v is not None}
+        _bi = {k: (None if v == "" else v) for k, v in _bi.items() if v is not None}
         if not _bi.get("deliveryAddressPreferences"):
             _bi.pop("deliveryAddressPreferences", None)
         variables["buyerIdentity"] = _bi
