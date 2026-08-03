@@ -1084,48 +1084,26 @@ async def ask_brain(
             _pending["filters"] = _search_redirect["payload"]["filters"]
         # Embed pending payload into redirect
         _search_redirect["payload"]["pending_search"] = _pending
-        # Describe the best matches NOW (grounded names + prices from the pending
-        # list), then redirect so the widget glows them in the same order on the
-        # search page. Aria speaks these before the redirect fires — this is the
-        # only place the search-page descriptions are voiced (the widget's local
-        # speechSynthesis describe loop only runs in non-A2A modes).
+        # Describe the best match NOW (grounded name + price from the pending
+        # list), then redirect so the widget glows the cards in the same order on
+        # the search page. Aria speaks a CONCISE single summary BEFORE the
+        # redirect fires — one brief line for the top pick, never a full-catalog
+        # dump (that caused repetitive multi-product narration on top of the glow
+        # walk). Deeper per-card narration is driven by follow-up turns.
         _sq = _search_redirect["payload"].get("query") or _search_query or ""
         if _pending_products:
             _top = _pending_products[:5]
-            _descs: List[str] = []
-            _top_blurb = ""
-            for _pp in _top:
-                _n = str(_pp.get("name") or "").strip()
-                _pr = str(_pp.get("price") or "").strip()
-                if not _n:
-                    continue
-                _line = f"{_n}{', ' + _pr if _pr else ''}"
-                if not _top_blurb:
-                    _raw = str(_pp.get("description") or "").strip()
-                    if _raw:
-                        _raw = re.sub(r"<[^>]+>", " ", _raw)
-                        _raw = re.sub(r"\s+", " ", _raw).strip()
-                        _words = _raw.split()
-                        if len(_words) > 16:
-                            _raw = " ".join(_words[:16]).rstrip(",.;-") + "..."
-                        if _raw:
-                            _top_blurb = f" {_n} — {_raw}"
-                _descs.append(_line)
-            if _descs:
-                _total = len(_pending_products)
-                _q = str(_sq or "matching").strip()
-                if len(_descs) == 1:
-                    response_text = f"I found your best match: {_descs[0]}."
-                    if _top_blurb:
-                        response_text += f"{_top_blurb}."
-                    response_text += " Want me to add it to your cart?"
+            _top_pick = _top[0]
+            _n = str(_top_pick.get("name") or "").strip()
+            _pr = str(_top_pick.get("price") or "").strip()
+            _total = len(_pending_products)
+            _q = str(_sq or "matching").strip()
+            if _n:
+                _item = f"{_n}{', ' + _pr if _pr else ''}"
+                if _total > 1:
+                    response_text = f"I found {_total} {_q} products. Here's the top pick: {_item}. Want to take a closer look?"
                 else:
-                    _head = "; ".join(_descs[:3])
-                    _tail = f" and {_total - len(_descs)} more" if _total > len(_descs) else ""
-                    response_text = f"I found {_total} {_q} products: {_head}{_tail}."
-                    if _top_blurb:
-                        response_text += f" The top pick is{_top_blurb}."
-                    response_text += " Which one would you like to add to your cart?"
+                    response_text = f"Here is {_item}. Want to take a closer look?"
         if not response_text:
             _sq = _search_redirect["payload"].get("query") or _search_query or ""
             response_text = f"Searching for {_sq}..." if _sq else "Searching..."

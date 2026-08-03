@@ -3037,29 +3037,34 @@ try {
       case 'highlight_card': {
         const hc = act.payload || {};
         const idx = parseInt(hc.target_index !== undefined ? hc.target_index : hc.index, 10);
-        const cards = document.querySelectorAll(
-          '.grid__item, .product-card, .product-grid-item, [data-product-id], .card-wrapper, .type-product, .product, li.product, .wc-block-grid__product'
-        );
-        if (Number.isInteger(idx) && idx >= 0 && idx < cards.length) {
-          const target = cards[idx];
-          cards.forEach(c => {
-            c.style.outline = '';
-            c.style.border = '';
-            c.style.boxShadow = '';
-            c.style.transition = '';
-          });
-          target.style.outline = 'none';
-          target.style.border = '2px solid #6366f1';
-          target.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
-          target.style.transition = 'all 0.3s ease-in-out';
-          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          window.scrollBy({ top: -90, behavior: 'instant' });
-          setTimeout(() => {
-            target.style.border = '';
-            target.style.boxShadow = '';
-            target.style.transition = '';
-          }, 4500);
-        }
+        if (!Number.isInteger(idx) || idx < 0) break;
+        // Apply the glow ASYNCHRONOUSLY so DOM work never blocks the WS message
+        // loop or delays Gemini audio frames that arrive on the same socket.
+        setTimeout(() => {
+          try {
+            const cards = document.querySelectorAll(
+              '.grid__item, .product-card, .product-grid-item, [data-product-id], .card-wrapper, .type-product, .product, li.product, .wc-block-grid__product'
+            );
+            if (idx >= cards.length) return;
+            const target = cards[idx];
+            cards.forEach(c => {
+              c.style.outline = '';
+              c.style.border = '';
+              c.style.boxShadow = '';
+              c.style.transition = '';
+            });
+            target.style.outline = 'none';
+            target.style.border = '2px solid #6366f1';
+            target.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
+            target.style.transition = 'all 0.3s ease-in-out';
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => {
+              target.style.border = '';
+              target.style.boxShadow = '';
+              target.style.transition = '';
+            }, 4500);
+          } catch (_e) {}
+        }, 0);
         break;
       }
 
@@ -3378,68 +3383,23 @@ try {
     }
   }
 
-  function speakLocal(text) {
-    if (S.muted || !window.speechSynthesis) return;
-    // In A2A live mode the backend streams Gemini's spoken reply for the same
-    // turn — speaking locally too double-voices every ack ("Scrolling down"
-    // comes out as two voices). Backend owns speech there. Gate on the SESSION
-    // (A2A-enabled voice session), not just the live socket, so ack speech never
-    // leaks out with the browser's default voice while A2A reconnects after a
-    // navigation redirect.
-    if (_a2aOwnsSpeech()) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = S.language || 'en';
-    u.rate = 1.0;
-    speechSynthesis.speak(u);
+  function speakLocal(_text) {
+    // BROWSER TTS IS COMPLETELY DISABLED. The male default voice used to read
+    // acks/descriptions on top of Aria's stream, producing double-voiced output
+    // and the "male voice" complaint. ALL spoken audio now comes strictly from
+    // the Gemini Live WebSocket audio stream (A2A), so any local ack that is not
+    // spoken by the backend is intentionally silent. Never call speechSynthesis.
+    return;
   }
 
-  // True when the A2A/Gemini voice stream owns ALL spoken output for this
-  // session (browser speechSynthesis must stay silent so the customer never
-  // hears a second, different-voiced ack/description). This is true even
-  // between the redirect and the socket reconnecting on the landing page.
-  function _a2aOwnsSpeech() {
-    if (!A2A_ENABLED) return false;
-    try {
-      if (isLiveMode || S.mode === 'voice_nav') return true;
-      if (sessionStorage.getItem('_wa_voice_active') === '1') return true;
-      if (localStorage.getItem('_wa_voice_nav_resume') === '1') return true;
-    } catch (_e) {}
-    return false;
-  }
-
-  // Stop the search-page card-glow describe loop (timers + speech) instantly.
-  // Called on barge-in and when Gemini audio starts so the browser TTS never
-  // overlaps the main A2A voice.
+  // Stop the search-page card-glow walk (timers only) instantly.
+  // Called on barge-in so the visual outline is torn down when the user
+  // interrupts. Browser TTS is disabled globally, so there is no speech to stop.
   function _stopSearchGlow() {
     for (let i = 0; i < _searchGlowTimers.length; i++) {
       if (_searchGlowTimers[i]) { try { clearTimeout(_searchGlowTimers[i]); } catch (_e) {} }
     }
     _searchGlowTimers = [];
-    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_e) {}
-  }
-
-  // Pick a pleasant FEMALE voice for the search-page card-glow descriptions.
-  // The browser's default is the male "David" voice the customer rejected;
-  // prefer a literal "Aria" voice, else any known-female / natural English
-  // voice, else a local (offline) voice, else fall back to the default.
-  function _pickAriaVoice() {
-    try {
-      const voices = window.speechSynthesis.getVoices();
-      if (!voices || !voices.length) return null;
-      const wants = String(S.language || 'en').slice(0, 2).toLowerCase();
-      const pool = voices.filter(v => (v.lang || '').toLowerCase().startsWith(wants));
-      const src = pool.length ? pool : voices;
-      const nameOf = v => (v.name || '').toLowerCase();
-      const isMale = v => /(david|mark|george|matthew|daniel|alex|fred|james|guy|sebastian|ryan|oliver|eddy|christopher|eric|arthur|ethan|jack|kevin|thomas|william|felix|gordon|greg|brian|charles|joshua|kyle|liam|luke|mason|michael|noah|owen|robert|steven|timothy|todd|zachary|male)/i.test(nameOf(v));
-      const aria = src.find(v => /aria/i.test(nameOf(v)) && /natural|online/i.test(nameOf(v)));
-      if (aria) return aria;
-      const female = src.find(v => /(female|woman|aria|zira|samantha|jenny|michelle|susan|karen|joanna|ivy|hazel|heather|ellie|sonia|tessa|emma|natalie|google us english|google uk english)/i.test(nameOf(v)) && !isMale(v));
-      if (female) return female;
-      const local = src.find(v => !isMale(v) && v.localService);
-      if (local) return local;
-      return null;
-    } catch (_e) { return null; }
   }
 
   // ── Data-driven local voice command engine ───────────────────────────────
@@ -3996,7 +3956,17 @@ try {
   }
 
   // Single entry point: returns true when handled locally, false → backend.
-  function handleLocalVoiceCommand(text) {
+  // opts.live === true when the transcript came from the LIVE A2A voice path
+  // (user_transcript over the WebSocket). There the Gemini model has ALREADY
+  // received the same utterance and is running it through the Brain via
+  // ask_brain — intercepting backend-bound commands (add_to_cart / checkout /
+  // search / remove) here would fire a SECOND HTTP /chat turn on the same
+  // session. Two concurrent brain turns produce two different voices that
+  // overlap (e.g. one says "taking you to checkout" while the other asks for
+  // the phone number) and can corrupt the shared address-FSM state. So on the
+  // live path we let Gemini own the whole turn and only keep pure-frontend
+  // commands (scroll / navigate / click / select / speak) local.
+  function handleLocalVoiceCommand(text, opts) {
     // Normalise the STT transcript so trailing punctuation / filler words don't
     // make the strict ^...$ command regexes miss ("scroll down." or "scroll down
     // please" previously fell through to the backend, which spoke the ack but did
@@ -4034,6 +4004,17 @@ try {
       // same processAction pipeline the backend uses. Spoken ack fires after the
       // async handler settles and only when it succeeded (S._localActionOk).
       // "Buy it now" (checkoutAfter) chains goToCheckout after a successful add.
+      // On the LIVE A2A voice path these are skipped: the model is already
+      // running the same utterance through the Brain (ask_brain) and will speak
+      // the reply itself — running them here too doubles the voice and double-
+      // runs the address FSM on the shared session. Fall through to the backend.
+      // The build*Spec builders above may have set S._localAddHandled as a side
+      // effect; clear it so the backend's add_to_cart echo is NOT deduped — the
+      // add must happen exactly once, via the Brain path.
+      if (opts && opts.live) {
+        S._localAddHandled = null;
+        return false;
+      }
       try {
         S._localActionOk = null;
         const pr = processAction({ type: spec.t, payload: spec.payload || spec });
@@ -5481,7 +5462,7 @@ try {
             // User is speaking — silence the search-glow TTS first so it never
             // talks over them or the transcript (and is picked up by the mic).
             _stopSearchGlow();
-            if (handleLocalVoiceCommand(msg.text)) return;
+            if (handleLocalVoiceCommand(msg.text, { live: true })) return;
           }
 
           // ── Gemini 3.1: transcript — chunks arrive word-by-word ──────────
