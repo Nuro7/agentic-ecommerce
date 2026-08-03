@@ -3036,8 +3036,13 @@ try {
 
       case 'highlight_card': {
         const hc = act.payload || {};
+        const wantId = hc.product_id ? Number(hc.product_id) : 0;
         const idx = parseInt(hc.target_index !== undefined ? hc.target_index : hc.index, 10);
-        if (!Number.isInteger(idx) || idx < 0) break;
+        // Bind the glow to the ACTIVE product id from the voice turn context so
+        // the highlight is event-driven (never a self-advancing timer). Store it
+        // so resolveTarget()/ordinal clicks reuse the exact glowing product.
+        if (S.pageState) S.pageState.activeProductId = (wantId > 0) ? wantId : (S.pageState.activeProductId || 0);
+        if (!(wantId > 0) && !Number.isInteger(idx)) break;
         // Apply the glow ASYNCHRONOUSLY so DOM work never blocks the WS message
         // loop or delays Gemini audio frames that arrive on the same socket.
         setTimeout(() => {
@@ -3045,24 +3050,28 @@ try {
             const cards = document.querySelectorAll(
               '.grid__item, .product-card, .product-grid-item, [data-product-id], .card-wrapper, .type-product, .product, li.product, .wc-block-grid__product'
             );
-            if (idx >= cards.length) return;
-            const target = cards[idx];
+            let target = null;
+            if (wantId > 0) {
+              for (const c of cards) {
+                let pidEl = (c.getAttribute && c.getAttribute('data-product-id')) ? c : (c.closest ? c.closest('[data-product-id]') : null);
+                if (pidEl && pidEl.getAttribute && Number(pidEl.getAttribute('data-product-id')) === wantId) { target = c; break; }
+              }
+            }
+            if (!target && Number.isInteger(idx) && idx >= 0 && idx < cards.length) target = cards[idx];
+            if (!target) return;
             cards.forEach(c => {
               c.style.outline = '';
               c.style.border = '';
               c.style.boxShadow = '';
               c.style.transition = '';
+              try { c.removeAttribute('data-wa-glowed'); } catch (_e) {}
             });
             target.style.outline = 'none';
             target.style.border = '2px solid #6366f1';
             target.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
             target.style.transition = 'all 0.3s ease-in-out';
+            try { target.setAttribute('data-wa-glowed', '1'); } catch (_e) {}
             target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            setTimeout(() => {
-              target.style.border = '';
-              target.style.boxShadow = '';
-              target.style.transition = '';
-            }, 4500);
           } catch (_e) {}
         }, 0);
         break;
@@ -7268,15 +7277,12 @@ try {
             }));
           }
         } catch (_e) {}
-        // Walk through the recommended cards ONE AT A TIME and highlight only the
-        // current card, then move to the next — never glow all of them at once,
-        // so the outline pinpoints the card Speasko/Aria is describing.
-        // Describing is OWNED ENTIRELY by the AI voice tunnel (Gemini A2A) — we
-        // removed the browser speechSynthesis describe loop (the robotic "first
-        // voice" that recited the 3-4 product titles line-by-line on top of the
-        // real speaker). The glow stays and is kept alive while Gemini speaks
-        // (_a2aPlayNext no longer calls _stopSearchGlow), so the visual matches
-        // the description instead of cutting off the outline.
+        // EVENT-DRIVEN glow: the highlight is bound to the ACTIVE product id
+        // resolved from the backend voice turn context (S.pageState.activeProductId
+        // / the pending highlight payload). We apply ONE static glow to the target
+        // card and stop — there is NO setTimeout walk, so the outline never cycles
+        // through cards on its own. The glow only moves when the backend emits a
+        // fresh highlight_card ui_action for the next active product.
         const _glowStyle = (card, on) => {
           if (!card) return;
           card.style.outline = on ? 'none' : '';
@@ -7286,30 +7292,31 @@ try {
           if (on) card.setAttribute('data-wa-glowed', '1');
           else card.removeAttribute('data-wa-glowed');
         };
-cards.forEach(c => _glowStyle(c, false));
-        const _nextGlow = (fn, ms) => {
-          const t = setTimeout(fn, ms);
-          _searchGlowTimers.push(t);
-          return t;
-        };
-        const _describeCard = (idx) => {
-          if (idx >= matched.length) {
-            // Done: leave the first recommendation highlighted as "the best match".
-            cards.forEach(c => _glowStyle(c, false));
-            _glowStyle(matched[0], true);
-            try { matched[0].scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
-            return;
+        cards.forEach(c => _glowStyle(c, false));
+        // Determine the target card: prefer the backend highlight payload's
+        // product id (or index); fall back to the first recommendation.
+        let targetCard = null;
+        try {
+          const hl = (pending && pending.highlight) || {};
+          const hlId = hl.product_id ? Number(hl.product_id) : 0;
+          const hlIdx = parseInt(hl.target_index !== undefined ? hl.target_index : hl.index, 10);
+          if (hlId > 0) {
+            for (const c of matched) {
+              const pidEl = (c.getAttribute && c.getAttribute('data-product-id')) ? c : (c.closest ? c.closest('[data-product-id]') : null);
+              if (pidEl && pidEl.getAttribute && Number(pidEl.getAttribute('data-product-id')) === hlId) { targetCard = c; break; }
+            }
           }
-          const card = matched[idx];
-          cards.forEach(c => _glowStyle(c, false));
-          _glowStyle(card, true);
-          try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
-          // NO browser speechSynthesis here — describing is owned by the AI
-          // voice tunnel (Aria/Gemini via A2A). The glow simply tracks which
-          // card the AI is explaining at any moment.
-          _nextGlow(() => _describeCard(idx + 1), 3200);
-        };
-        _nextGlow(() => _describeCard(0), 500);
+          if (!targetCard && Number.isInteger(hlIdx) && hlIdx >= 0 && hlIdx < matched.length) targetCard = matched[hlIdx];
+        } catch (_e) {}
+        if (!targetCard && matched.length) targetCard = matched[0];
+        if (targetCard) {
+          if (S.pageState) {
+            const pidEl = (targetCard.getAttribute && targetCard.getAttribute('data-product-id')) ? targetCard : (targetCard.closest ? targetCard.closest('[data-product-id]') : null);
+            if (pidEl && pidEl.getAttribute) S.pageState.activeProductId = Number(pidEl.getAttribute('data-product-id'));
+          }
+          _glowStyle(targetCard, true);
+          try { targetCard.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
+        }
       }
 
       // 4) Feedback + cleanup.

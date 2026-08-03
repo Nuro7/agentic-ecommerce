@@ -560,6 +560,19 @@ def speech_digits_to_ascii(text: str) -> str:
     return value
 
 
+def normalize_phone_digits(raw: str) -> str:
+    """Return a pure digits-only phone string from any raw transcription.
+
+    Handles spoken digit words ("nine eight seven..."), formatted numbers
+    ("+91 987-654-3210"), stray separators/spaces, and Devanagari digits.
+    Validation must run on the returned string (e.g. /^\\d{10,15}$/), never on
+    the raw user input — a valid spoken number otherwise gets mis-flagged as
+    "not 10 digits".
+    """
+    ascii_text = speech_digits_to_ascii(raw)
+    return "".join(ch for ch in ascii_text if ch.isdigit())
+
+
 def normalize_india_state(text: str) -> str:
     raw = str(text or "").strip()
     if not raw:
@@ -1133,15 +1146,22 @@ def bind_highlight_target(response_text: str, ui_actions: List[Dict[str, Any]]) 
         (a for a in ui_actions if isinstance(a, dict) and a.get("type") == "highlight_card"),
         None,
     )
+    _target_product = shown[target_index] if 0 <= target_index < len(shown) else None
+    _target_pid = _target_product.get("id") if isinstance(_target_product, dict) else None
     if highlight_action is not None:
         payload = highlight_action.get("payload")
         if isinstance(payload, dict):
             payload["target_index"] = target_index
+            if _target_pid is not None:
+                payload["product_id"] = _target_pid
     else:
         for a in ui_actions:
             if isinstance(a, dict) and a.get("type") == "show_products":
+                hl_payload: Dict[str, Any] = {"target_index": target_index, "products": a.get("payload", {}).get("products", [])}
+                if _target_pid is not None:
+                    hl_payload["product_id"] = _target_pid
                 ui_actions.append({
                     "type": "highlight_card",
-                    "payload": {"target_index": target_index, "products": a.get("payload", {}).get("products", [])},
+                    "payload": hl_payload,
                 })
                 break

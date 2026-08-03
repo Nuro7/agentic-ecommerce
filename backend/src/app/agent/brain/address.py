@@ -7,7 +7,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...core.security import sanitize_text
-from .text_utils import speech_digits_to_ascii, normalize_india_state, extract_email
+from .text_utils import (
+    speech_digits_to_ascii,
+    normalize_phone_digits,
+    normalize_india_state,
+    extract_email,
+)
 
 
 class AddressCollectionState:
@@ -122,13 +127,13 @@ def _apply_update_value(addr: AddressData, field: str, cleaned: str) -> Tuple[bo
             return True, "Got it."
         return False, "I couldn't read that state. Please tell me again."
     if field == "postcode":
-        digits = "".join(re.findall(r"\d+", speech_digits_to_ascii(cleaned).replace(" ", "")))
+        digits = normalize_phone_digits(cleaned)
         if len(digits) >= 6:
             addr.postcode = digits[:6]
             return True, "Got it."
         return False, "I need a 6-digit PIN code. Please repeat it."
     if field == "phone":
-        digits = "".join(re.findall(r"\d+", speech_digits_to_ascii(cleaned).replace(" ", "")))
+        digits = normalize_phone_digits(cleaned)
         if len(digits) >= 10:
             addr.phone = digits[-10:]
             return True, "Got it."
@@ -269,8 +274,8 @@ async def handle_address_collection(
         response = lang_prompts["pincode"]
 
     elif current_state == AddressCollectionState.COLLECTING_PINCODE:
-        numbers = re.findall(r"\d+", speech_digits_to_ascii(cleaned).replace(" ", ""))
-        pincode = "".join(numbers)[:6]
+        numbers = normalize_phone_digits(cleaned)
+        pincode = numbers[:6]
         if len(pincode) == 6:
             addr.postcode = pincode
             if addr.phone:
@@ -284,39 +289,57 @@ async def handle_address_collection(
             response = "I need a 6-digit PIN code. Could you repeat it?"
 
     elif current_state == AddressCollectionState.COLLECTING_PHONE:
-        numbers = re.findall(r"\d+", speech_digits_to_ascii(cleaned).replace(" ", ""))
-        phone = "".join(numbers)
+        # Normalize FIRST: strip every non-digit, convert spoken digit words
+        # ("nine eight seven...") and formatted numbers ("+91 987-654-3210")
+        # into a pure digit string BEFORE any 10-digit constraint is evaluated.
+        phone = normalize_phone_digits(cleaned)
         if len(phone) >= 10:
             addr.phone = phone[-10:]
-            
+
             # Look up the saved address by phone whenever the checkout flow is
-            # running (buy-now intent OR checkout page). Phone-first: if we find a
-            # saved address we offer to reuse it (with an update path); otherwise
-            # the customer types their full address for the first time.
+            # running (buy-now intent OR checkout page). If a DB match exists we
+            # BYPASS the rest of the address collection: confirm the saved
+            # address and immediately issue the Storefront checkout redirect.
             if tenant_id:
                 try:
                     from ...modules.users.address_service import get_address_by_phone
                     saved = await get_address_by_phone(addr.phone, tenant_id)
-                    if saved:
-                        addr.first_name = saved.get("first_name") or addr.first_name
-                        addr.last_name = saved.get("last_name") or addr.last_name
-                        addr.address_line1 = saved.get("address_1") or addr.address_line1
-                        addr.city = saved.get("city") or addr.city
-                        addr.state = saved.get("state") or addr.state
-                        addr.postcode = saved.get("postcode") or addr.postcode
-                        addr.email = saved.get("email") or addr.email
-                        addr._using_saved = "1"
+                except Exception:
+                    saved = None
+                if saved:
+                    addr.first_name = saved.get("first_name") or addr.first_name
+                    addr.last_name = saved.get("last_name") or addr.last_name
+                    addr.address_line1 = saved.get("address_1") or addr.address_line1
+                    addr.city = saved.get("city") or addr.city
+                    addr.state = saved.get("state") or addr.state
+                    addr.postcode = saved.get("postcode") or addr.postcode
+                    addr.email = saved.get("email") or addr.email
+                    addr._using_saved = "1"
+                    addr._pending_field = ""
 
-                        addr._pending_field = ""
-                        next_state = AddressCollectionState.COLLECTING_UPDATE_FIELD
-                        response = (
-                            f"I found your saved address: {addr.address_line1}, {addr.city} {addr.postcode}, {addr.state} - {addr.phone}. "
-                            f"Is this correct, or would you like to update anything?"
-                        )
+                    # Saved address is complete enough to ship → confirm and
+                    # redirect to checkout immediately (no address prompts).
+                    if addr.address_line1 and addr.city and addr.postcode:
+                        _saved_line = ", ".join(x for x in [
+                            addr.address_line1, addr.city,
+                            (addr.postcode if addr.postcode else ""),
+                        ] if x)
+                        next_state = AddressCollectionState.COMPLETE
+                        response = f"Found your saved address at {_saved_line}! Taking you to checkout now."
+                        ui_actions.append({
+                            "type": "redirect_checkout_with_address",
+                            "payload": {
+                                "url": "/checkout",
+                                "billing": addr.to_woocommerce_format(),
+                                "shipping": addr.to_woocommerce_format(),
+                            },
+                        })
                         return response, next_state, addr.__dict__, ui_actions
-                except Exception as e:
-                    pass
-            
+
+                    # Partial saved record (no address/city) → fall through and
+                    # collect the missing full address for the first time.
+                    addr._using_saved = ""
+
             # Normal flow (phone-first): collect the rest of the delivery details —
             # name → address → city → state → pincode → email → confirm. We never
             # skip straight to email on the buy-now path because the collected

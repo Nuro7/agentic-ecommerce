@@ -148,11 +148,15 @@ async def execute_tool_call(
             for p in products
         ]
 
-        # Highlight the first in-stock product
+        # Highlight the first in-stock product (bound by product id so the widget
+        # glows the exact card for this product, not a raw array index).
         first_in_stock = next((p for p in products if p.get("in_stock")), products[0] if products else None)
         if first_in_stock:
             idx = products.index(first_in_stock)
-            actions.append({"type": "highlight_card", "payload": {"target_index": idx}})
+            actions.append({
+                "type": "highlight_card",
+                "payload": {"target_index": idx, "product_id": first_in_stock.get("id")},
+            })
         result: Dict[str, Any] = {"products": compact, "count": len(products)}
         if brand:
             result["brand_searched"] = brand

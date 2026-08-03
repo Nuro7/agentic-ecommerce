@@ -36,11 +36,42 @@ def test_existing_customer_fetched_by_phone_and_prefilled(monkeypatch):
     resp, next_state, addr, actions = call(
         "9876543210", S.COLLECTING_PHONE, {}, {"page_type": "checkout", "url": "https://store/checkout"},
     )
-    assert next_state == S.CONFIRMING
+    # Known DB match → BYPASS address prompts: confirm saved address and
+    # immediately issue the checkout redirect.
+    assert next_state == S.COMPLETE
     assert addr["first_name"] == "Asha"
     assert addr["_using_saved"] == "1"
     assert addr["postcode"] == "682015"
-    assert any(a.get("type") == "prefill_address" for a in actions)
+    assert any(a.get("type") == "redirect_checkout_with_address" for a in actions)
+    assert not any(a.get("type") == "prefill_address" for a in actions)
+
+
+def test_spoken_digit_phone_normalized_before_validation(monkeypatch):
+    monkeypatch.setattr(
+        "src.app.modules.users.address_service.get_address_by_phone",
+        lambda phone, tenant: None,
+    )
+    # Spoken "nine eight seven six five four three two one zero" must be
+    # normalized to 9876543210 (>= 10 digits) and NOT rejected as invalid.
+    resp, next_state, addr, actions = call(
+        "nine eight seven six five four three two one zero", S.COLLECTING_PHONE, {},
+        {"page_type": "checkout", "url": "https://store/checkout"},
+    )
+    assert addr["phone"] == "9876543210"
+    assert next_state == S.COLLECTING_NAME
+
+
+def test_formatted_phone_normalized_before_validation(monkeypatch):
+    monkeypatch.setattr(
+        "src.app.modules.users.address_service.get_address_by_phone",
+        lambda phone, tenant: None,
+    )
+    resp, next_state, addr, actions = call(
+        "+91 987-654-3210", S.COLLECTING_PHONE, {},
+        {"page_type": "checkout", "url": "https://store/checkout"},
+    )
+    assert addr["phone"] == "9876543210"
+    assert next_state == S.COLLECTING_NAME
 
 
 def test_new_customer_saves_address_on_confirm(monkeypatch):
@@ -72,6 +103,7 @@ def test_unknown_phone_keeps_manual_confirm_on_checkout(monkeypatch):
         "9876543211", S.COLLECTING_PHONE, {},
         {"page_type": "checkout", "url": "https://store/checkout"},
     )
-    assert next_state == S.CONFIRMING
+    # No DB match → collect the full address (name first), no redirect yet.
+    assert next_state == S.COLLECTING_NAME
     assert addr.get("_using_saved", "") != "1"
-    assert any(a.get("type") == "prefill_address" for a in actions)
+    assert not any(a.get("type") == "redirect_checkout_with_address" for a in actions)
