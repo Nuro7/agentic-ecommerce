@@ -22,6 +22,8 @@ class AddressCollectionState:
     COLLECTING_EMAIL = "collecting_email"
     CONFIRMING = "confirming"
     COMPLETE = "complete"
+    COLLECTING_UPDATE_FIELD = "collecting_update_field"
+    COLLECTING_UPDATE_VALUE = "collecting_update_value"
 
 
 @dataclass
@@ -34,6 +36,9 @@ class AddressData:
     postcode: str = ""
     phone: str = ""
     email: str = ""
+    # Non-persisted-to-checkout working flags for the returning-customer flow.
+    _using_saved: str = ""
+    _pending_field: str = ""
 
     def is_complete(self) -> bool:
         return all([self.first_name, self.last_name, self.address_line1, self.city, self.postcode, self.phone])
@@ -52,6 +57,94 @@ class AddressData:
         }
 
 
+# ── Returning-customer partial-update helpers ────────────────────────────────
+
+# Map a user-spoken detail onto an AddressData field + the prompt key that asks
+# for its value. `tokens` is matched as a substring of the lowercased utterance.
+_FIELD_SPECS = [
+    ("last_name", "last name, surname, family name, sure name", "last_name"),
+    ("first_name", "first name, name, first, naam, peru", "name"),
+    ("address_line1", "address, home, house, street, line 1, address line", "address"),
+    ("city", "city, town, district, nagar", "city"),
+    ("state", "state, province, region", "state"),
+    ("postcode", "pincode, pin, zip, postal, postcode", "pincode"),
+    ("phone", "phone, mobile, number, contact", "phone"),
+    ("email", "email, mail", "email"),
+]
+
+
+def _detect_address_field(lower: str) -> str:
+    """Return the canonical AddressData field the customer wants to update, or ''."""
+    for field, tokens, _prompt_key in _FIELD_SPECS:
+        if any(token in lower for token in tokens.split(", ")):
+            return field
+    return ""
+
+
+def _update_value_prompt(lang_prompts: dict, field: str) -> str:
+    """Prompt to collect the new value for `field`, reusing existing per-feature text."""
+    key = {
+        "first_name": "name", "last_name": "last_name", "address_line1": "address",
+        "city": "city", "state": "state", "postcode": "pincode",
+        "phone": "phone", "email": "email",
+    }.get(field, "address")
+    return "OK. " + lang_prompts.get(key, "Please tell me the new value.")
+
+
+def _apply_update_value(addr: AddressData, field: str, cleaned: str) -> Tuple[bool, str]:
+    """Set only the requested field. Returns (ok, response_or_error_msg)."""
+    low = cleaned.lower()
+    if field == "first_name":
+        if cleaned.strip():
+            addr.first_name = cleaned.strip().split()[0]
+            return True, "Got it."
+        return False, "Please tell me the first name."
+    if field == "last_name":
+        parts = cleaned.strip().split()
+        if len(parts) >= 1:
+            addr.last_name = " ".join(parts[:2])
+            return True, "Got it."
+        return False, "Please tell me the last name."
+    if field == "address_line1":
+        if cleaned.strip():
+            addr.address_line1 = cleaned.strip()
+            return True, "Got it."
+        return False, "Please tell me the address."
+    if field == "city":
+        if cleaned.strip():
+            addr.city = cleaned.strip()
+            return True, "Got it."
+        return False, "Please tell me the city."
+    if field == "state":
+        st = normalize_india_state(cleaned)
+        if st:
+            addr.state = st
+            return True, "Got it."
+        return False, "I couldn't read that state. Please tell me again."
+    if field == "postcode":
+        digits = "".join(re.findall(r"\d+", speech_digits_to_ascii(cleaned).replace(" ", "")))
+        if len(digits) >= 6:
+            addr.postcode = digits[:6]
+            return True, "Got it."
+        return False, "I need a 6-digit PIN code. Please repeat it."
+    if field == "phone":
+        digits = "".join(re.findall(r"\d+", speech_digits_to_ascii(cleaned).replace(" ", "")))
+        if len(digits) >= 10:
+            addr.phone = digits[-10:]
+            return True, "Got it."
+        return False, "I need a 10-digit phone number. Please say it again."
+    if field == "email":
+        if "skip" in low or "no email" in low:
+            addr.email = ""
+            return True, "Got it."
+        email = extract_email(low)
+        if email:
+            addr.email = email
+            return True, "Got it."
+        return False, "Please tell a valid email address, or say skip."
+    return False, "Please tell me the value."
+
+
 _PROMPTS: Dict[str, Dict[str, str]] = {
     "en": {
         "name": "What's your full name?",
@@ -64,6 +157,7 @@ _PROMPTS: Dict[str, Dict[str, str]] = {
         "email": "What email should we use for order updates?",
         "confirm": "Got it! Delivering to {name}, {address}, {city} {pincode}. Phone: {phone}. Email: {email}. Shall I proceed to payment?",
         "done": "Perfect! Taking you to payment now. Just complete the payment and you're done!",
+        "update_field": "Which detail would you like to change - name, address, city, state, pincode, phone, or email?",
     },
     "hi": {
         "name": "Aapka poora naam kya hai?",
@@ -76,6 +170,7 @@ _PROMPTS: Dict[str, Dict[str, str]] = {
         "email": "Order updates ke liye email kya hai?",
         "confirm": "Theek hai! {name} ko {address}, {city} {pincode} pe deliver karenge. Phone: {phone}. Email: {email}. Kya payment pe jaayein?",
         "done": "Perfect! Ab payment ke liye ja rahe hain. Sirf payment complete karein!",
+        "update_field": "Kaun si detail badalni hai - naam, address, city, state, pincode, phone ya email?",
     },
     "ml": {
         "name": "Ningalude muthuperu enthanu?",
@@ -88,6 +183,7 @@ _PROMPTS: Dict[str, Dict[str, str]] = {
         "email": "Order updatesinu email enthaanu?",
         "confirm": "{name}, {address}, {city} {pincode} enthu sheriyano? Phone: {phone}. Email: {email}?",
         "done": "Sheriyanu! Payment cheyyan pokuva. Payment matram cheyyal mathi!",
+        "update_field": "Etu detail maata vaanao - name, address, city, state, zip, phone, email?",
     },
 }
 
@@ -186,7 +282,8 @@ async def handle_address_collection(
                         addr.state = saved.get("state") or addr.state
                         addr.postcode = saved.get("postcode") or addr.postcode
                         addr.email = saved.get("email") or addr.email
-                        
+                        addr._using_saved = "1"
+
                         # Go directly to confirming with saved address
                         next_state = AddressCollectionState.CONFIRMING
                         response = (
@@ -262,7 +359,7 @@ async def handle_address_collection(
             "avunu", "sare", "cheyyi",
         }
         lowered = cleaned.lower()
-        if any(token in lowered for token in affirmative):
+        if any(re.search(rf"\b{re.escape(t)}\b", lowered) for t in affirmative):
             next_state = AddressCollectionState.COMPLETE
             response = lang_prompts["done"]
             ui_actions.append({
@@ -286,7 +383,51 @@ async def handle_address_collection(
                 except Exception:
                     pass
         else:
-            next_state = AddressCollectionState.COLLECTING_NAME
-            response = "No problem, let's start over. " + lang_prompts["name"]
+            # Returning customer who already prefilled from a saved address →
+            # offer a targeted update that KEEPS the rest of the saved details.
+            if getattr(addr, "_using_saved", "") == "1":
+                addr._pending_field = ""
+                next_state = AddressCollectionState.COLLECTING_UPDATE_FIELD
+                response = lang_prompts["update_field"]
+            else:
+                next_state = AddressCollectionState.COLLECTING_NAME
+                response = "No problem, let's start over. " + lang_prompts["name"]
+
+    elif current_state == AddressCollectionState.COLLECTING_UPDATE_FIELD:
+        lowered = cleaned.lower()
+        field = _detect_address_field(lowered)
+        if field:
+            addr._pending_field = field
+            next_state = AddressCollectionState.COLLECTING_UPDATE_VALUE
+            response = _update_value_prompt(lang_prompts, field)
+        else:
+            response = lang_prompts["update_field"]
+
+    elif current_state == AddressCollectionState.COLLECTING_UPDATE_VALUE:
+        field = getattr(addr, "_pending_field", "") or ""
+        if not field:
+            addr._pending_field = ""
+            next_state = AddressCollectionState.COLLECTING_UPDATE_FIELD
+            response = lang_prompts["update_field"]
+        else:
+            ok, msg = _apply_update_value(addr, field, cleaned)
+            if not ok:
+                response = msg
+            else:
+                # Keep other saved fields untouched; just re-confirm & prefilled.
+                addr._pending_field = ""
+                next_state = AddressCollectionState.CONFIRMING
+                response = lang_prompts["confirm"].format(
+                    name=f"{addr.first_name} {addr.last_name}".strip(),
+                    address=addr.address_line1,
+                    city=addr.city,
+                    pincode=addr.postcode,
+                    phone=addr.phone,
+                    email=addr.email or "not provided",
+                )
+                ui_actions.append({
+                    "type": "prefill_address",
+                    "payload": addr.to_woocommerce_format(),
+                })
 
     return response, next_state, addr.__dict__, ui_actions
