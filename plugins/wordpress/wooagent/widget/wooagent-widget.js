@@ -2849,16 +2849,20 @@ try {
         if (isCheckoutPage()) {
           applyStoredCheckoutAddress();
         } else if (IS_SHOPIFY) {
-          // Shopify: can't script the checkout page — prefill via URL params.
+          // Shopify: bind the address to the Storefront cart and navigate to the
+          // API-generated checkoutUrl so Shopify's own hosted checkout opens
+          // pre-filled (URL params are ignored; the DOM is cross-origin).
           const addr = act.payload.billing || act.payload.shipping || act.payload || {};
           try {
+            if (addr && Object.keys(addr).length) persistCheckoutAddress({ billing: addr, shipping: addr });
             if (S.mode === 'voice_nav') {
               localStorage.setItem('_wa_voice_nav_resume', '1');
             } else {
               localStorage.setItem('_wa_reopen', '1');
             }
           } catch (e) {}
-          setTimeout(() => { window.location.href = _shopifyCheckoutUrl(addr); }, 1000);
+          // Wait for the brain's redirect timing, then bind + navigate.
+          setTimeout(() => { prepareShopifyCheckout(addr); }, 200);
         } else {
           try {
             if (S.mode === 'voice_nav') {
@@ -4183,39 +4187,11 @@ try {
     return addToCartViaWoo(payload);
   }
 
-  // Build a Shopify checkout URL with prefilled shipping fields. Shopify can't be
-  // scripted on its hosted checkout (non-Plus), but it DOES accept checkout[...]
-  // query params to pre-populate the form — that's how we honour details the
-  // customer already gave Aria.
-  function _shopifyCheckoutUrl(addr) {
-    addr = addr || {};
-    const get = (...keys) => {
-      for (const k of keys) { if (addr[k]) return String(addr[k]).trim(); }
-      return '';
-    };
-    const p = new URLSearchParams();
-    const email = get('email');
-    if (email) p.set('checkout[email]', email);
-    const map = {
-      'checkout[shipping_address][first_name]': get('first_name'),
-      'checkout[shipping_address][last_name]':  get('last_name'),
-      'checkout[shipping_address][address1]':   get('address_1', 'address_line1'),
-      'checkout[shipping_address][city]':       get('city'),
-      'checkout[shipping_address][province]':   get('state', 'province'),
-      'checkout[shipping_address][zip]':        get('postcode', 'zip', 'pincode'),
-      'checkout[shipping_address][phone]':      get('phone'),
-      'checkout[shipping_address][country]':    get('country'),
-    };
-    Object.keys(map).forEach(k => { if (map[k]) p.set(k, map[k]); });
-    const qs = p.toString();
-    return '/checkout' + (qs ? ('?' + qs) : '');
-  }
-
   // Take the customer to the REAL checkout. On Shopify this is the native
-  // checkout for the current cart (prefilled when we know the address); on
-  // WooCommerce we still let the agent drive (its address flow differs).
+  // checkout for the current cart; on WooCommerce we let the agent drive (its
+  // address flow differs).
   // True only when the widget already holds a usable address draft, so we know
-  // whether buy-now/checkout can jump straight to /checkout with prefill or
+  // whether an on-page checkout form can be filled client-side or the agent
   // must first run the guided address-collection flow through the backend.
   function _addrUsable() {
     const a = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
@@ -4223,22 +4199,51 @@ try {
   }
 
   // "Buy it now" → the item is already added locally; then we must check out.
-  // If we already know the shipping address we redirect + prefill immediately.
-  // Otherwise we hand control back to the agent (backend address FSM), which
-  // collects the phone/address and then emits redirect_checkout_with_address so
-  // #checkout is prefilled — never a silent jump to an un-fillable /checkout.
+  // We ALWAYS hand control back to the agent (backend address FSM) so the
+  // customer is asked for phone/address/details first, and never do a silent
+  // jump to /checkout. Shopify hosted checkout ignores URL prefill params, so
+  // the only reliable path is: collect via Brain → land on plain /checkout →
+  // the widget re-opens and fills the stored address on the page when a custom
+  // (same-origin) checkout form exists. Dropping the _addrUsable shortcut also
+  // removes the "pushed to checkout but address never collected" behaviour.
+  // Approach C: bind the collected buyer identity + address to the session's
+  // Storefront cart via /api/v1/cart/checkout, then navigate to the API-generated
+  // checkoutUrl. Shopify's hosted checkout ignores `checkout[...]` URL params and
+  // its DOM is cross-origin, so this Storefront-cart binding is the ONLY way the
+  // hosted checkout opens with the address already filled by Shopify itself.
+  async function prepareShopifyCheckout(addr) {
+    const a = (addr && typeof addr === 'object') ? addr : {};
+    const payload = {
+      session_id: S.sessionId,
+      lines: ((S.cartSnapshot && Array.isArray(S.cartSnapshot.items)) ? S.cartSnapshot.items : [])
+        .map(i => ({
+          product_id: i.product_id,
+          variant_id: i.variation_id || i.variant_id || 0,
+          quantity: i.quantity || 1,
+        })),
+      email: a.email || '',
+      phone: a.phone || '',
+      address: a,
+    };
+    const res = await api('/cart/checkout', payload);
+    const checkoutUrl = (res && res.checkout_url) ? String(res.checkout_url) : '';
+    setTimeout(() => {
+      if (checkoutUrl) {
+        window.location.href = checkoutUrl;
+      } else {
+        // Fallback: keep the pre-fill contention working on theme/custom checkout.
+        window.location.href = '/checkout';
+      }
+    }, 800);
+  }
   function checkoutAfterAdd() {
-    if (IS_SHOPIFY && !_addrUsable()) {
-      addBubble('user', 'I want to checkout');
-      sendToAgent('I want to checkout now');
-      return;
-    }
-    goToCheckout();
+    addBubble('user', 'I want to checkout');
+    sendToAgent('I want to checkout now');
   }
   function goToCheckout() {
     // Persist voice-nav / reopen intent so the widget re-opens and re-attaches
-    // the A2A socket after the checkout page load (without this, checkout
-    // navigated but the voice assistant went silent on the new page).
+    // the A2S after the checkout page load (needed, otherwise voice goes silent
+    // on the new page).
     try {
       if (S.mode === 'voice_nav') {
         localStorage.setItem('_wa_voice_nav_resume', '1');
@@ -4250,8 +4255,16 @@ try {
     // Never let the /cart auto-reload fire after we've committed to checkout.
     if (_cartReloadTimer) { clearTimeout(_cartReloadTimer); _cartReloadTimer = null; }
     if (IS_SHOPIFY) {
+      if (!_addrUsable()) {
+        // Details not collected yet → run the address FSM before navigating.
+        addBubble('user', 'I want to checkout');
+        sendToAgent('I want to checkout now');
+        return;
+      }
+      // Collect/confirm happened: bind the address to the Storefront cart and
+      // navigate to the API-generated checkoutUrl (Shopify pre-fills it itself).
       const addr = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
-      window.location.href = _shopifyCheckoutUrl(addr);
+      prepareShopifyCheckout(addr);
       return;
     }
     addBubble('user', 'I want to checkout');
@@ -7298,18 +7311,6 @@ cards.forEach(c => _glowStyle(c, false));
           _searchGlowTimers.push(t);
           return t;
         };
-        // A short, single-voice describe spoken IN SYNC with the glow so the
-        // search page is never silent. Guards: only speak when nothing else is
-        // already voicing (a2aIsPlaying / S.speaking) so it never overlaps the
-        // main AI voice; stops on barge-in via _searchGlowTimers/flush.
-        const _anyVoiceOn = () => {
-          try {
-            if (typeof a2aIsPlaying !== 'undefined' && a2aIsPlaying) return true;
-            if (S.speaking) return true;
-            if (window.speechSynthesis && window.speechSynthesis.speaking) return true;
-          } catch (_e) {}
-          return false;
-        };
         const _describeCard = (idx) => {
           if (idx >= matched.length) {
             // Done: leave the first recommendation highlighted as "the best match".
@@ -7322,22 +7323,9 @@ cards.forEach(c => _glowStyle(c, false));
           cards.forEach(c => _glowStyle(c, false));
           _glowStyle(card, true);
           try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
-          const p = prods[idx];
-          if (p && p.name && window.speechSynthesis && !_anyVoiceOn()) {
-            const _blurb = (p.description && String(p.description).trim())
-              ? '. ' + String(p.description).trim().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 160)
-              : '';
-            const label = 'First, ' + p.name + (p.price ? ', ' + p.price : '') + _blurb + '.';
-            try {
-              window.speechSynthesis.cancel();
-              const u = new SpeechSynthesisUtterance(label);
-              u.lang = S.language || 'en';
-              u.rate = 1.0;
-              const v = _pickAriaVoice();
-              if (v) u.voice = v;
-              window.speechSynthesis.speak(u);
-            } catch (_e) {}
-          }
+          // NO browser speechSynthesis here — describing is owned by the AI
+          // voice tunnel (Aria/Gemini via A2A). The glow simply tracks which
+          // card the AI is explaining at any moment.
           _nextGlow(() => _describeCard(idx + 1), 3200);
         };
         _nextGlow(() => _describeCard(0), 500);

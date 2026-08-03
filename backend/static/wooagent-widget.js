@@ -7311,18 +7311,6 @@ cards.forEach(c => _glowStyle(c, false));
           _searchGlowTimers.push(t);
           return t;
         };
-        // A short, single-voice describe spoken IN SYNC with the glow so the
-        // search page is never silent. Guards: only speak when nothing else is
-        // already voicing (a2aIsPlaying / S.speaking) so it never overlaps the
-        // main AI voice; stops on barge-in via _searchGlowTimers/flush.
-        const _anyVoiceOn = () => {
-          try {
-            if (typeof a2aIsPlaying !== 'undefined' && a2aIsPlaying) return true;
-            if (S.speaking) return true;
-            if (window.speechSynthesis && window.speechSynthesis.speaking) return true;
-          } catch (_e) {}
-          return false;
-        };
         const _describeCard = (idx) => {
           if (idx >= matched.length) {
             // Done: leave the first recommendation highlighted as "the best match".
@@ -7335,22 +7323,9 @@ cards.forEach(c => _glowStyle(c, false));
           cards.forEach(c => _glowStyle(c, false));
           _glowStyle(card, true);
           try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
-          const p = prods[idx];
-          if (p && p.name && window.speechSynthesis && !_anyVoiceOn()) {
-            const _blurb = (p.description && String(p.description).trim())
-              ? '. ' + String(p.description).trim().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 160)
-              : '';
-            const label = 'First, ' + p.name + (p.price ? ', ' + p.price : '') + _blurb + '.';
-            try {
-              window.speechSynthesis.cancel();
-              const u = new SpeechSynthesisUtterance(label);
-              u.lang = S.language || 'en';
-              u.rate = 1.0;
-              const v = _pickAriaVoice();
-              if (v) u.voice = v;
-              window.speechSynthesis.speak(u);
-            } catch (_e) {}
-          }
+          // NO browser speechSynthesis here — describing is owned by the AI
+          // voice tunnel (Aria/Gemini via A2A). The glow simply tracks which
+          // card the AI is explaining at any moment.
           _nextGlow(() => _describeCard(idx + 1), 3200);
         };
         _nextGlow(() => _describeCard(0), 500);
