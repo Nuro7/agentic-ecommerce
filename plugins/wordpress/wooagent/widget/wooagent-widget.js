@@ -5684,8 +5684,10 @@ try {
     // A spoken reply is starting — hand the pending redirect over to
     // onSpeakingEnd() so navigation waits for the full response to finish.
     if (_navTimer) { clearTimeout(_navTimer); _navTimer = null; }
-    // Gemini is now talking — stop the search-glow browser TTS (no double voice).
-    _stopSearchGlow();
+    // Gemini/Aria now owns the spoken reply. There is NO browser-TTS describe
+    // loop anymore (removed), so we must NOT stop the search-glow — the visual
+    // outline should stay lit in sync with the on-going A2A description. The
+    // glow is only torn down on a real barge-in (flush_audio).
 
     // Lazy-init AudioContext (must be after user gesture)
     if (!a2aAudioCtx || a2aAudioCtx.state === 'closed') {
@@ -7236,15 +7238,15 @@ try {
             }));
           }
         } catch (_e) {}
-        // Walk through the recommended cards ONE AT A TIME: highlight only the
-        // current card and describe it, then move to the next — never glow all
-        // of them at once. The first recommendation is always the first one
-        // described. We speak through the browser's speechSynthesis with a
-        // preferred FEMALE/Aria voice (never the default male voice) because on
-        // this page the backend does not re-describe the products — Gemini only
-        // spoke them on the page BEFORE the redirect. The glow TTS is stopped
-        // the moment the user speaks or Gemini audio starts (see _stopSearchGlow)
-        // so it never overlaps the A2A voice.
+        // Walk through the recommended cards ONE AT A TIME and highlight only the
+        // current card, then move to the next — never glow all of them at once,
+        // so the outline pinpoints the card Speasko/Aria is describing.
+        // Describing is OWNED ENTIRELY by the AI voice tunnel (Gemini A2A) — we
+        // removed the browser speechSynthesis describe loop (the robotic "first
+        // voice" that recited the 3-4 product titles line-by-line on top of the
+        // real speaker). The glow stays and is kept alive while Gemini speaks
+        // (_a2aPlayNext no longer calls _stopSearchGlow), so the visual matches
+        // the description instead of cutting off the outline.
         const _glowStyle = (card, on) => {
           if (!card) return;
           card.style.outline = on ? 'none' : '';
@@ -7255,9 +7257,6 @@ try {
           else card.removeAttribute('data-wa-glowed');
         };
         cards.forEach(c => _glowStyle(c, false));
-        // Warm the voice list (Chrome loads it asynchronously).
-        try { if (window.speechSynthesis && window.speechSynthesis.getVoices) window.speechSynthesis.getVoices(); } catch (_e) {}
-        let _glowVoice = null;
         const _nextGlow = (fn, ms) => {
           const t = setTimeout(fn, ms);
           _searchGlowTimers.push(t);
@@ -7265,7 +7264,7 @@ try {
         };
         const _describeCard = (idx) => {
           if (idx >= matched.length) {
-            // Done: leave the first recommendation highlighted as "the best match".
+            // Done: leave the first recommendation (best match) highlighted.
             cards.forEach(c => _glowStyle(c, false));
             _glowStyle(matched[0], true);
             try { matched[0].scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
@@ -7275,20 +7274,6 @@ try {
           cards.forEach(c => _glowStyle(c, false));
           _glowStyle(card, true);
           try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
-          const p = prods[idx];
-          if (p && p.name && window.speechSynthesis) {
-            const prefix = idx === 0 ? 'First, ' : (idx === 1 ? 'Next, ' : 'And this one, ');
-            const _blurb = (p.description && String(p.description).trim()) ? '. ' + String(p.description).trim() : '';
-            const label = prefix + p.name + (p.price ? ', ' + p.price : '') + _blurb + '.';
-            try {
-              window.speechSynthesis.cancel();
-              const u = new SpeechSynthesisUtterance(label);
-              u.lang = S.language || 'en';
-              u.rate = 1.0;
-              if (_glowVoice || (_glowVoice = _pickAriaVoice())) u.voice = _glowVoice;
-              window.speechSynthesis.speak(u);
-            } catch (_e) {}
-          }
           _nextGlow(() => _describeCard(idx + 1), 3200);
         };
         _nextGlow(() => _describeCard(0), 500);
