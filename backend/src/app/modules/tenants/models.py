@@ -60,5 +60,9 @@ class Tenant(Base):
     greeting_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     logo_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
 
+    # External helpdesk webhook (Gorgias / Zendesk / custom) — receives
+    # ticket.created payloads whenever the assistant auto-creates a ticket.
+    tickets_webhook_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

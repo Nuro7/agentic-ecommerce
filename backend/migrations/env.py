@@ -32,6 +32,7 @@ import src.app.modules.orders.models  # noqa: F401
 import src.app.modules.webhooks.models  # noqa: F401
 import src.app.modules.analytics.models  # noqa: F401
 import src.app.modules.offers.models  # noqa: F401
+import src.app.modules.tickets.models  # noqa: F401
 
 target_metadata = Base.metadata
 

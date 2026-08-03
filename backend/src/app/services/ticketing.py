@@ -1,7 +1,20 @@
-import os
-import uuid
+"""
+Support-ticket orchestration for the agent.
+
+Called by the LLM tools `create_support_ticket` / `request_human_support` when a
+customer needs human help (refunds, damaged orders, unresolvable catalog queries,
+or an explicit request to talk to a human).
+
+What it does:
+  1. Persists the ticket to the `voice_tickets` table (merchant-scoped, RLS-protected)
+  2. Emits a `ticket.created` webhook to the merchant's external helpdesk (async)
+  3. Best-effort syncs a "speako" ticket tag + metafields onto the Shopify customer
+"""
 import json
 import logging
+import os
+import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -12,11 +25,216 @@ TICKET_NAMESPACE = "speako"
 TICKET_STATUS_KEY = "ticket_status"
 TICKET_ID_KEY = "last_ticket_id"
 
+# The exact spoken line the LLM must use when a ticket is created.
+TICKET_CREATED_MESSAGE = (
+    "I've created a support ticket for your request. "
+    "Our team will review your chat history and contact you shortly."
+)
 
-async def _resolve_shopify_customer_id(
-    store_client: Any,
+# ── Priority heuristics (keyword-based, deterministic — no extra LLM latency) ─
+
+_HIGH_PRIORITY_TOKENS = {
+    "refund", "refunds", "damaged", "damage", "broken", "defective", "wrong item",
+    "wrong item received", "missing item", "never received", "not received",
+    "furious", "angry", "very upset", "manager", "complain", "complaint", "legal",
+    "sue", "lawsuit", "urgent", "scam", "fraud", "not delivered", "didn't receive",
+    "exchanged", "return", "returning", "returned", "cracked", "torn", "stolen",
+}
+_LOW_PRIORITY_TOKENS = {
+    "talk to human", "talk to a human", "human agent", "representative", "customer care",
+    "talk to someone", "speak to someone", "real person", "agent please", "helpdesk",
+    "contact support", "talk to support", "speak to support",
+}
+
+
+def _detect_priority(text: str) -> str:
+    low = " ".join(str(text or "").lower().split())
+    if any(tok in low for tok in _HIGH_PRIORITY_TOKENS):
+        return "high"
+    if any(tok in low for tok in _LOW_PRIORITY_TOKENS):
+        return "low"
+    return "medium"
+
+
+def _build_transcript_turns(conversation_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Conversation history → [{role, content}] turns (sanitized + bounded)."""
+    turns: List[Dict[str, str]] = []
+    for turn in (conversation_history or [])[-40:]:
+        if not isinstance(turn, dict):
+            continue
+        role = str(turn.get("role", "")).strip().lower()
+        content = str(turn.get("content", "")).strip()
+        if role in {"user", "assistant"} and content:
+            turns.append({"role": role, "content": content[:1000]})
+    return turns
+
+
+def _build_transcript_text(conversation_history: List[Dict[str, Any]]) -> str:
+    """Human-readable transcript for the legacy helpdesk payloads."""
+    lines: List[str] = []
+    for turn in _build_transcript_turns(conversation_history):
+        label = "Shopper" if turn["role"] == "user" else "Assistant (Speako)"
+        lines.append(f"{label}: {turn['content']}")
+    return "\n".join(lines)
+
+
+def _generate_issue_summary(
+    conversation_history: List[Dict[str, Any]],
+    trigger_message: str,
+) -> str:
+    """Deterministic AI-style summary: the customer's recent turns + trigger tag."""
+    user_turns = [
+        str(t.get("content", "")).strip()
+        for t in (conversation_history or [])
+        if isinstance(t, dict) and str(t.get("role", "")).lower() == "user"
+    ]
+    if trigger_message and trigger_message.strip():
+        user_turns.append(str(trigger_message).strip())
+    recent = " ".join(user_turns[-3:])
+    recent = re.sub(r"\s+", " ", recent)[:500]
+    if "refund" in (recent or "").lower():
+        summary = "Customer is requesting a refund."
+    elif any(w in (recent or "").lower() for w in ("damaged", "broken", "defective", "cracked", "torn")):
+        summary = "Customer reports receiving a damaged/defective order."
+    else:
+        summary = "Customer requested human assistance / could not be resolved by the assistant."
+    if recent:
+        summary += f" Context: {recent}"
+    return summary[:600]
+
+
+def _resolve_shop_domain(store_client: Any, shop_domain: Optional[str]) -> str:
+    if shop_domain and str(shop_domain).strip():
+        return str(shop_domain).strip().rstrip("/")
+    if store_client is None:
+        return ""
+    domain = (
+        getattr(store_client, "store_domain", "")
+        or getattr(store_client, "base_url", "")
+        or ""
+    )
+    return str(domain).strip().rstrip("/")
+
+
+# ── Customer context from the active session / address FSM ────────────────────
+
+async def _collect_customer_context(
+    session_service: Any,
+    tenant_id: str,
+    session_id: str,
     customer_email: str,
-) -> Optional[str]:
+) -> Dict[str, str]:
+    """Pull name/phone/email from session meta (address_data FSM + customer_email)."""
+    context: Dict[str, str] = {
+        "email": str(customer_email or "").strip().lower(),
+        "phone": "",
+        "name": "",
+    }
+    if session_service is None:
+        return context
+    try:
+        meta = await session_service.get_meta(tenant_id, session_id)
+        if not isinstance(meta, dict):
+            meta = {}
+        if not context["email"]:
+            context["email"] = str(meta.get("customer_email") or "").strip().lower()
+        name = str(meta.get("customer_name") or "").strip()
+        if not name:
+            state = await session_service.get_session(tenant_id, session_id)
+            state = state if isinstance(state, dict) else {}
+            name = str((state.get("meta") or {}).get("customer_name") or "").strip()
+        context["name"] = name
+        addr = meta.get("address_data")
+        if isinstance(addr, dict):
+            context["phone"] = str(addr.get("phone") or "").strip()
+            if not context["email"]:
+                context["email"] = str(addr.get("email") or "").strip().lower()
+    except Exception as exc:
+        logger.debug("Customer context collection failed: %s", exc)
+    return context
+
+
+# ── Primary entry point ────────────────────────────────────────────────────────
+
+async def create_support_ticket(
+    *,
+    tenant_id: str,
+    session_id: str,
+    conversation_history: List[Dict[str, Any]],
+    store_client: Any,
+    session_service: Any = None,
+    customer_email: str = "",
+    customer_phone: str = "",
+    customer_name: str = "",
+    shop_domain: Optional[str] = None,
+    trigger_message: str = "",
+) -> Dict[str, Any]:
+    """Create a voice ticket, persist it, emit the helpdesk webhook, and sync
+    Shopify customer metafields. Returns the ticket id + the message to speak."""
+    customer = await _collect_customer_context(
+        session_service, tenant_id, session_id, customer_email
+    )
+    phone = str(customer_phone or customer["phone"] or "").strip()
+    name = str(customer_name or customer["name"] or "").strip()
+    email = str(customer_email or customer["email"] or "").strip().lower()
+
+    transcript_turns = _build_transcript_turns(conversation_history)
+    context_text = " ".join(
+        t["content"] for t in transcript_turns if t["role"] == "user"
+    )
+    priority = _detect_priority(trigger_message or context_text)
+    issue_summary = _generate_issue_summary(conversation_history, trigger_message)
+
+    ticket_id: Optional[str] = None
+    try:
+        from ..core.database import AsyncSessionLocal
+        from ..modules.tickets.service import TicketService
+
+        async with AsyncSessionLocal() as db:
+            ticket = await TicketService(db).create_ticket(
+                tenant_id,
+                {
+                    "shop_domain": _resolve_shop_domain(store_client, shop_domain) or None,
+                    "session_id": session_id,
+                    "customer_name": name or None,
+                    "customer_phone": phone or None,
+                    "customer_email": email or None,
+                    "issue_summary": issue_summary,
+                    "transcript_json": {"turns": transcript_turns},
+                    "priority": priority,
+                    "status": "open",
+                },
+            )
+            ticket_id = ticket.id
+    except Exception as exc:
+        # Persistence must never take down the voice turn — degrade to an
+        # in-memory ticket id so the customer still gets the confirmation.
+        logger.error("Ticket persistence failed session=%s: %s", session_id, exc, exc_info=True)
+        ticket_id = f"SPEC-{uuid.uuid4().hex[:6].upper()}"
+
+    transcript_text = _build_transcript_text(conversation_history)
+
+    # Best-effort: tag + metafield the Shopify customer so the merchant sees the
+    # escalation in Shopify Admin. Never blocks or fails the turn.
+    try:
+        await _sync_shopify_customer(store_client, email, ticket_id)
+    except Exception as exc:
+        logger.warning("Shopify ticket metafield sync skipped: %s", exc)
+
+    return {
+        "status": "success",
+        "ticket_id": ticket_id,
+        "priority": priority,
+        "issue_summary": issue_summary,
+        "transcript": transcript_text,
+        "message": TICKET_CREATED_MESSAGE,
+        "spoken_message": TICKET_CREATED_MESSAGE,
+    }
+
+
+# ── Shopify customer sync (legacy, best-effort) ────────────────────────────────
+
+async def _resolve_shopify_customer_id(store_client: Any, customer_email: str) -> Optional[str]:
     """Look up Shopify Customer GID by email via Admin API."""
     if not store_client or not customer_email:
         return None
@@ -37,113 +255,63 @@ async def _resolve_shopify_customer_id(
     return None
 
 
-def _build_transcript(conversation_history: List[Dict[str, Any]]) -> str:
-    """Format conversation_history into a human-readable chat transcript."""
-    lines: List[str] = []
-    for turn in conversation_history:
-        role = turn.get("role", "unknown")
-        content = turn.get("content", "")
-        label = "Shopper" if role == "user" else "Assistant (Speako)"
-        lines.append(f"{label}: {content}")
-    return "\n".join(lines)
-
-
-async def escalate_and_sync_shopify_ticket(
-    customer_email: str,
-    conversation_history: List[Dict[str, Any]],
+async def _sync_shopify_customer(
     store_client: Any,
+    customer_email: str,
+    ticket_id: str,
     shopify_customer_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Create a helpdesk ticket (Gorgias-compatible), return ticket ID,
-    and write status metafields to the Shopify customer profile.
-    """
-    ticket_id = f"SPEC-{uuid.uuid4().hex[:6].upper()}"
-    transcript = _build_transcript(conversation_history)
-
-    gorgias_webhook = os.getenv("GORGIAS_WEBHOOK_URL", "").strip()
-    if gorgias_webhook:
-        gorgias_payload = {
-            "customer": {"email": customer_email},
-            "messages": [
-                {
-                    "text": transcript,
-                    "channel": "chat",
-                    "source": "api",
-                }
-            ],
-            "channel": "chat",
-            "status": "open",
-            "subject": "Speako Voice Assistant Support Escalation",
-            "via": "api",
-            "external_id": ticket_id,
-        }
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    gorgias_webhook,
-                    json=gorgias_payload,
-                    headers={"Content-Type": "application/json"},
-                )
-                if resp.is_success:
-                    logger.info("Gorgias ticket %s created successfully", ticket_id)
-                else:
-                    logger.warning(
-                        "Gorgias webhook returned %s for ticket %s",
-                        resp.status_code, ticket_id,
-                    )
-        except Exception as exc:
-            logger.warning("Gorgias webhook post failed for ticket %s: %s", ticket_id, exc)
-
+) -> None:
+    """Write a voice-support tag + ticket metafields onto the Shopify customer."""
+    if not store_client:
+        return
     resolved_id: Optional[str] = shopify_customer_id
     if not resolved_id and customer_email:
         resolved_id = await _resolve_shopify_customer_id(store_client, customer_email)
+    if not resolved_id:
+        return
+    try:
+        existing_tags = await _get_customer_tags(store_client, resolved_id)
+        all_tags = list(set(existing_tags + ["voice-support-open", "escalated-from-speako"]))
 
-    if resolved_id and store_client:
-        try:
-            existing_tags = await _get_customer_tags(store_client, resolved_id)
-            all_tags = list(set(existing_tags + ["voice-support-open", "escalated-from-speako"]))
-
-            gql = """
-            mutation updateCustomerMetafields($input: CustomerInput!) {
-              customerUpdate(input: $input) {
-                customer { id tags }
-                userErrors { field message }
-              }
+        gql = """
+        mutation updateCustomerMetafields($input: CustomerInput!) {
+          customerUpdate(input: $input) {
+            customer { id tags }
+            userErrors { field message }
+          }
+        }
+        """
+        variables = {
+            "input": {
+                "id": resolved_id,
+                "tags": all_tags,
+                "metafields": [
+                    {
+                        "namespace": TICKET_NAMESPACE,
+                        "key": TICKET_ID_KEY,
+                        "value": ticket_id,
+                        "type": "single_line_text_field",
+                    },
+                    {
+                        "namespace": TICKET_NAMESPACE,
+                        "key": TICKET_STATUS_KEY,
+                        "value": "open",
+                        "type": "single_line_text_field",
+                    },
+                ],
             }
-            """
-            variables = {
-                "input": {
-                    "id": resolved_id,
-                    "tags": all_tags,
-                    "metafields": [
-                        {
-                            "namespace": TICKET_NAMESPACE,
-                            "key": TICKET_ID_KEY,
-                            "value": ticket_id,
-                            "type": "single_line_text_field",
-                        },
-                        {
-                            "namespace": TICKET_NAMESPACE,
-                            "key": TICKET_STATUS_KEY,
-                            "value": "open",
-                            "type": "single_line_text_field",
-                        },
-                    ],
-                }
-            }
-            data = await store_client._admin_graphql(gql, variables)
-            errors = data.get("customerUpdate", {}).get("userErrors", [])
-            if errors:
-                logger.warning("Shopify customer metafield update errors: %s", errors)
-            else:
-                logger.info(
-                    "Wrote ticket %s metafields to Shopify customer %s",
-                    ticket_id, resolved_id,
-                )
-        except Exception as exc:
-            logger.warning("Shopify metafield write failed for ticket %s: %s", ticket_id, exc)
-
-    return {"status": "success", "ticket_id": ticket_id, "transcript": transcript}
+        }
+        data = await store_client._admin_graphql(gql, variables)
+        errors = data.get("customerUpdate", {}).get("userErrors", [])
+        if errors:
+            logger.warning("Shopify customer metafield update errors: %s", errors)
+        else:
+            logger.info(
+                "Wrote ticket %s metafields to Shopify customer %s",
+                ticket_id, resolved_id,
+            )
+    except Exception as exc:
+        logger.warning("Shopify metafield write failed for ticket %s: %s", ticket_id, exc)
 
 
 async def _get_customer_tags(store_client: Any, customer_gid: str) -> List[str]:
@@ -165,3 +333,31 @@ async def _get_customer_tags(store_client: Any, customer_gid: str) -> List[str]:
     except Exception:
         pass
     return []
+
+
+# ── Backwards-compatible alias ─────────────────────────────────────────────────
+
+async def escalate_and_sync_shopify_ticket(
+    customer_email: str,
+    conversation_history: List[Dict[str, Any]],
+    store_client: Any,
+    shopify_customer_id: Optional[str] = None,
+    *,
+    tenant_id: str = "_dev",
+    session_id: str = "",
+    session_service: Any = None,
+    shop_domain: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Legacy entry point — now persists a real voice_tickets row too.
+
+    Kept for callers in agent/tools/base.py and anything else still invoking it.
+    """
+    return await create_support_ticket(
+        tenant_id=tenant_id,
+        session_id=session_id or "legacy",
+        conversation_history=conversation_history,
+        store_client=store_client,
+        session_service=session_service,
+        customer_email=customer_email,
+        shop_domain=shop_domain,
+    )

@@ -406,6 +406,20 @@ async def execute_tool_call(
             customer_email=customer_email,
             conversation_history=conversation_history,
             actions=actions,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            session_service=session_service,
+        )
+
+    if tool_name == "create_support_ticket":
+        return await _create_support_ticket(
+            store_client=store_client,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            session_service=session_service,
+            conversation_history=conversation_history,
+            tool_args=tool_args,
+            actions=actions,
         )
 
     if tool_name == "get_store_info":
@@ -530,19 +544,65 @@ async def _request_human_support(
     customer_email: str,
     conversation_history: Optional[List[Dict[str, Any]]],
     actions: List[Dict[str, Any]],
+    tenant_id: str,
+    session_id: str,
+    session_service: Any,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
-    from ...services.ticketing import escalate_and_sync_shopify_ticket
-    ticket_result = await escalate_and_sync_shopify_ticket(
-        customer_email=customer_email,
+    from ...services.ticketing import create_support_ticket
+    ticket_result = await create_support_ticket(
+        tenant_id=tenant_id,
+        session_id=session_id,
         conversation_history=conversation_history or [],
         store_client=store_client,
+        session_service=session_service,
+        customer_email=customer_email,
     )
     if ticket_result.get("status") == "success":
         actions.append({
             "type": "show_ticket",
             "payload": {
                 "ticket_id": ticket_result["ticket_id"],
-                "message": f"Support ticket {ticket_result['ticket_id']} created. A human agent will follow up shortly.",
+                "message": ticket_result.get("message", ""),
+            },
+        })
+    return ticket_result, actions, [], customer_email or None
+
+
+async def _create_support_ticket(
+    *,
+    store_client: Any,
+    tenant_id: str,
+    session_id: str,
+    session_service: Any,
+    conversation_history: Optional[List[Dict[str, Any]]],
+    tool_args: Dict[str, Any],
+    actions: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
+    from ...services.ticketing import create_support_ticket
+
+    customer_email = str(tool_args.get("customer_email", "") or "").strip().lower()
+    customer_phone = str(tool_args.get("customer_phone", "") or "").strip()
+    customer_name = str(tool_args.get("customer_name", "") or "").strip()
+    trigger_message = str(tool_args.get("issue_description", "") or "").strip()
+
+    ticket_result = await create_support_ticket(
+        tenant_id=tenant_id,
+        session_id=session_id,
+        conversation_history=conversation_history or [],
+        store_client=store_client,
+        session_service=session_service,
+        customer_email=customer_email,
+        customer_phone=customer_phone,
+        customer_name=customer_name,
+        trigger_message=trigger_message,
+    )
+    if ticket_result.get("status") == "success":
+        actions.append({
+            "type": "show_ticket",
+            "payload": {
+                "ticket_id": ticket_result["ticket_id"],
+                "priority": ticket_result.get("priority", "medium"),
+                "message": ticket_result.get("message", ""),
             },
         })
     return ticket_result, actions, [], customer_email or None
@@ -783,8 +843,45 @@ def tool_schema() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "create_support_ticket",
+                "description": (
+                    "Create a support ticket for a human agent to review. Call this when: "
+                    "(1) the customer explicitly asks to talk to a human / agent / manager, "
+                    "(2) the customer reports a problem you cannot solve — refund or exchange "
+                    "requests, damaged, broken, defective, wrong, or missing items, order or "
+                    "delivery complaints, billing errors, or (3) a product/catalog query you "
+                    "could not resolve. Persists the full chat transcript, auto-detects "
+                    "priority, and notifies the store team. After calling, reassure the "
+                    "customer using the message in the result."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "customer_email": {
+                            "type": "string",
+                            "description": "Customer's email if known from the session or conversation.",
+                        },
+                        "customer_phone": {
+                            "type": "string",
+                            "description": "Customer's phone number if known from the session or conversation.",
+                        },
+                        "customer_name": {
+                            "type": "string",
+                            "description": "Customer's name if known.",
+                        },
+                        "issue_description": {
+                            "type": "string",
+                            "description": "Short summary of the problem the customer reported, in the customer's own words where possible.",
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "request_human_support",
-                "description": "Escalate to a human support agent. Call this only when the customer explicitly demands to speak to a human, is highly frustrated, or asks for a manager. Creates a support ticket and notifies the team.",
+                "description": "Escalate to a human support agent. Call this only when the customer explicitly demands to speak to a human, is highly frustrated, or asks for a manager. Creates a support ticket and notifies the team. (Newer callers should use create_support_ticket, which also handles refunds/damaged-order issues.)",
                 "parameters": {
                     "type": "object",
                     "properties": {

@@ -49,7 +49,7 @@ def get_tool_definitions() -> list:
         {"name": "find_variants"},
         {"name": "get_best_coupon"},
         {"name": "apply_conversational_discount"},
-        {"name": "request_human_support"},
+        {"name": "create_support_ticket"},
         {"name": "request_human_support"},
         {"name": "submit_review"},
     ]
