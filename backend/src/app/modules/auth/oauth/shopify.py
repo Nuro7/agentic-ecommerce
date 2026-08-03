@@ -89,7 +89,8 @@ async def _register_script_tag(shop_domain: str, access_token: str, loader_url: 
         if list_resp.status_code == 200:
             for tag in list_resp.json().get("script_tags", []):
                 src = str(tag.get("src", "")).lower()
-                if "wooagent" in src or "widget-loader" in src or "aria" in src:
+                if ("wooagent" in src or "widget-loader" in src or "aria" in src
+                        or "speako-loader" in src):
                     del_url = f"https://{shop_domain}/admin/api/{api_version}/script_tags/{tag['id']}.json"
                     await client.delete(del_url, headers=headers)
                     logger.info("Removed old script tag %s", tag["id"])

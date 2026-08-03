@@ -2701,7 +2701,7 @@ try {
         } else if (c.message) {
           showToast(c.message);
         }
-        if (window.jQuery) {
+        if (!IS_SHOPIFY && window.jQuery) {
           window.jQuery(document.body).trigger('wc_fragment_refresh');
           window.jQuery(document.body).trigger('update_checkout');
         }
