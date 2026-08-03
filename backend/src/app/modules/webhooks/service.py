@@ -396,6 +396,23 @@ class WebhookService:
             from ...core.cache import get_redis
             from ...agent.retrieval.cache import invalidate_tenant
             await invalidate_tenant(get_redis(), tenant_id)
+
+            # Also purge the Shopify client's OWN catalog caches (search/product/
+            # categories/store_info). These live under shopify:<hash>:*, which
+            # invalidate_tenant (retrieval:*) does not touch — without this, an
+            # updated/deleted product can keep serving from a stale `catalog:*`
+            # key. WooCommerce keeps its own CachedWooCommerceClient path.
+            try:
+                from ...integrations.shopify.client import invalidate_shopify_cache
+                from sqlalchemy import select as sa_select
+                from ..tenants.models import Tenant
+                _tenant = await self.db.get(Tenant, tenant_id)
+                if _tenant is not None and str(getattr(_tenant, "platform", "shopify")).lower() == "shopify":
+                    _domain = getattr(_tenant, "shopify_domain", None)
+                    if _domain:
+                        await invalidate_shopify_cache(get_redis(), str(_domain))
+            except Exception as exc:
+                logger.warning("Shopify client cache invalidation failed tenant=%s: %s", tenant_id, exc)
         except Exception as exc:
             logger.warning("Search cache invalidation failed tenant=%s: %s", tenant_id, exc)
 

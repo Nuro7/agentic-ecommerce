@@ -34,6 +34,29 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_VERSION = "2024-01"
 
 
+async def invalidate_shopify_cache(redis, store_domain: str) -> None:
+    """Purge a store's Shopify client cache keys from Redis by key prefix.
+
+    The Shopify client stores every read under ``shopify:<md5(domain)[:16]>:*``.
+    Webhooks/ingest purge the retrieval L1/L2 cache (agent/retrieval/cache.py)
+    after product writes, but NOT these storefront caches — so an updated/
+    deleted product could keep appearing from the stale `catalog:*` keys. This
+    helper mirrors the client's prefix derivation so invalidation lands on the
+    exact same keys. Best-effort: never raises.
+    """
+    if redis is None or not store_domain:
+        return
+    try:
+        _url_bytes = store_domain.encode("utf-8")
+        prefix = "shopify:" + hashlib.md5(_url_bytes).hexdigest()[:16] + ":"
+        keys = [k async for k in redis.scan_iter(match=prefix + "*", count=200)]
+        if keys:
+            await asyncio.wait_for(redis.delete(*keys), timeout=2.0)
+            logger.info("Shopify client cache purge domain=%s keys=%d", store_domain, len(keys))
+    except Exception as exc:
+        logger.warning("Shopify util cache purge failed domain=%s: %s", store_domain, exc)
+
+
 # â”€â”€ Tiny GraphQL helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _gid_to_int(gid: str) -> int:
