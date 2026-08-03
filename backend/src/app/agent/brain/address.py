@@ -209,16 +209,26 @@ async def handle_address_collection(
     ui_actions: List[Dict[str, Any]] = []
     cleaned = sanitize_text(user_message or "", max_len=250)
 
-    # Checkout phone-first mode: when on checkout page and state is IDLE,
-    # skip directly to phone collection. Detect the checkout page from the
-    # explicit page_type OR the URL (/checkout) because the widget's Shopify
-    # analytics pageType is unreliable on the checkout route.
+    # Checkout phone-first mode: when the customer is on a checkout page, or has
+    # just asked to buy now / go to checkout / place an order, and the state is
+    # IDLE, start collecting the shipping details (phone first). Detect checkout
+    # from the explicit page_type OR the URL (/checkout) because the widget's
+    # Shopify analytics pageType is unreliable on the checkout route; buy-now is
+    # recognised by the same checkout-intent phrases the brain uses so a "buy it
+    # now" from a product page begins the guided address flow instead of jumping.
+    _CL = str(user_message or "").strip().lower()
     _pg = page_context or {}
     is_checkout = (
         _pg.get("page_type") == "checkout"
         or "/checkout" in str(_pg.get("url") or "").lower()
     )
-    if is_checkout and current_state == AddressCollectionState.IDLE:
+    _had_checkout_intent = bool(re.search(
+        r"\b(buy it now|buy-now|buy now|bought|checkout|check\s*out|place\s+(?:the\s+)?order|"
+        r"order\s+now|proceed\s+to\s+checkout|go\s+to\s+checkout|complete\s+(?:my\s+)?(?:order|purchase)|"
+        r"pay(?:ment)?\s+now|finish\s+(?:my\s+)?(?:order|purchase))\b",
+        _CL,
+    ))
+    if (is_checkout or _had_checkout_intent) and current_state == AddressCollectionState.IDLE:
         next_state = AddressCollectionState.COLLECTING_PHONE
         response = "What's your phone number for shipping updates?"
         return response, next_state, addr.__dict__, ui_actions

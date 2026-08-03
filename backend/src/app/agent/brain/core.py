@@ -609,11 +609,22 @@ async def ask_brain(
         AddressCollectionState.COLLECTING_UPDATE_VALUE,
     }
     _addr_flow_active = _addr_state in _ADDR_ACTIVE_STATES
+    # Start collecting shipping/billing details when the customer explicitly
+    # asks to buy now / go to checkout / place an order — EVEN when they're not
+    # on a checkout page yet. This makes buy-now a guided flow: the brain first
+    # collects the address (FSM), then emits redirect_checkout_with_address so
+    # the widget prefills checkout instead of silently jumping to /checkout.
+    _checkout_intent = bool(re.search(
+        r"\b(buy it now|buy-now|buy now|bought|checkout|check\s*out|place\s+(?:the\s+)?order|"
+        r"order\s+now|proceed\s+to\s+checkout|go\s+to\s+checkout|complete\s+(?:my\s+)?(?:order|purchase)|"
+        r"pay(?:ment)?\s+now|finish\s+(?:my\s+)?(?:order|purchase))\b",
+        lower_msg,
+    ))
     _checkout_start = (
-        _is_checkout_page
+        ( _is_checkout_page or _checkout_intent )
         and _addr_state in ("idle", "complete", "")
     )
-    if result is None and _is_checkout_page and (_addr_flow_active or _checkout_start):
+    if result is None and (_is_checkout_page or _checkout_intent) and (_addr_flow_active or _checkout_start):
         _raw_addr = session_meta.get("address_data", {}) if isinstance(session_meta, dict) else {}
         if not isinstance(_raw_addr, dict):
             _raw_addr = {}

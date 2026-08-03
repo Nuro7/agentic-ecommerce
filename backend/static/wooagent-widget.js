@@ -3571,6 +3571,21 @@ try {
       // rendered on this page in DOM order (heroes, promo rows and non-product
       // links are already filtered out above via isProduct). NEVER re-align to
       // historical recommendation lists or stale S.lastShownProduct IDs.
+      // ── The currently-GLOWING card is the authoritative target for "first" ──
+      // The customer sees exactly one card lit up (matched[0], the best match).
+      // If nothing matched the snapshot / id fallbacks above, pin the click to
+      // that still-glowing card instead of a fresh DOM-order guess (which could
+      // be a stale/other product after a theme re-render — the "running shoe
+      // taken instead of formal shoe" bug).
+      if (idx === 0) {
+        try {
+          const glowed = document.querySelector('[data-wa-glowed="1"]');
+          if (glowed) {
+            const rec = cards.find(c => c.el === glowed);
+            if (rec) return rec.el;
+          }
+        } catch (_e) {}
+      }
       return cards[idx].el;
     }
     if (target.by === 'text' && target.q) {
@@ -4021,11 +4036,11 @@ try {
         if (pr && typeof pr.then === 'function') {
           pr.then(() => {
             if (spec.ack && S._localActionOk !== false) speakLocal(spec.ack);
-            if (spec.checkoutAfter && S._localActionOk !== false) goToCheckout();
+            if (spec.checkoutAfter && S._localActionOk !== false) checkoutAfterAdd();
           }).catch(() => {});
         } else if (spec.ack) {
           speakLocal(spec.ack);
-          if (spec.checkoutAfter) goToCheckout();
+          if (spec.checkoutAfter) checkoutAfterAdd();
         }
         return true;
       } catch (_e) {
@@ -4199,6 +4214,27 @@ try {
   // Take the customer to the REAL checkout. On Shopify this is the native
   // checkout for the current cart (prefilled when we know the address); on
   // WooCommerce we still let the agent drive (its address flow differs).
+  // True only when the widget already holds a usable address draft, so we know
+  // whether buy-now/checkout can jump straight to /checkout with prefill or
+  // must first run the guided address-collection flow through the backend.
+  function _addrUsable() {
+    const a = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
+    return !!(a.first_name && a.address_line1 && a.city && a.phone);
+  }
+
+  // "Buy it now" → the item is already added locally; then we must check out.
+  // If we already know the shipping address we redirect + prefill immediately.
+  // Otherwise we hand control back to the agent (backend address FSM), which
+  // collects the phone/address and then emits redirect_checkout_with_address so
+  // #checkout is prefilled — never a silent jump to an un-fillable /checkout.
+  function checkoutAfterAdd() {
+    if (IS_SHOPIFY && !_addrUsable()) {
+      addBubble('user', 'I want to checkout');
+      sendToAgent('I want to checkout now');
+      return;
+    }
+    goToCheckout();
+  }
   function goToCheckout() {
     // Persist voice-nav / reopen intent so the widget re-opens and re-attaches
     // the A2A socket after the checkout page load (without this, checkout
@@ -7256,15 +7292,27 @@ try {
           if (on) card.setAttribute('data-wa-glowed', '1');
           else card.removeAttribute('data-wa-glowed');
         };
-        cards.forEach(c => _glowStyle(c, false));
+cards.forEach(c => _glowStyle(c, false));
         const _nextGlow = (fn, ms) => {
           const t = setTimeout(fn, ms);
           _searchGlowTimers.push(t);
           return t;
         };
+        // A short, single-voice describe spoken IN SYNC with the glow so the
+        // search page is never silent. Guards: only speak when nothing else is
+        // already voicing (a2aIsPlaying / S.speaking) so it never overlaps the
+        // main AI voice; stops on barge-in via _searchGlowTimers/flush.
+        const _anyVoiceOn = () => {
+          try {
+            if (typeof a2aIsPlaying !== 'undefined' && a2aIsPlaying) return true;
+            if (S.speaking) return true;
+            if (window.speechSynthesis && window.speechSynthesis.speaking) return true;
+          } catch (_e) {}
+          return false;
+        };
         const _describeCard = (idx) => {
           if (idx >= matched.length) {
-            // Done: leave the first recommendation (best match) highlighted.
+            // Done: leave the first recommendation highlighted as "the best match".
             cards.forEach(c => _glowStyle(c, false));
             _glowStyle(matched[0], true);
             try { matched[0].scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
@@ -7274,6 +7322,22 @@ try {
           cards.forEach(c => _glowStyle(c, false));
           _glowStyle(card, true);
           try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_e) {}
+          const p = prods[idx];
+          if (p && p.name && window.speechSynthesis && !_anyVoiceOn()) {
+            const _blurb = (p.description && String(p.description).trim())
+              ? '. ' + String(p.description).trim().replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 160)
+              : '';
+            const label = 'First, ' + p.name + (p.price ? ', ' + p.price : '') + _blurb + '.';
+            try {
+              window.speechSynthesis.cancel();
+              const u = new SpeechSynthesisUtterance(label);
+              u.lang = S.language || 'en';
+              u.rate = 1.0;
+              const v = _pickAriaVoice();
+              if (v) u.voice = v;
+              window.speechSynthesis.speak(u);
+            } catch (_e) {}
+          }
           _nextGlow(() => _describeCard(idx + 1), 3200);
         };
         _nextGlow(() => _describeCard(0), 500);
