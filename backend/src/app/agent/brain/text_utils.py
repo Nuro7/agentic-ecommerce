@@ -553,7 +553,10 @@ def speech_digits_to_ascii(text: str) -> str:
     }
     for word, digit in digit_words.items():
         value = re.sub(rf"\b{word}\b", digit, value)
-    value = value.translate(str.maketrans("à¥¦à¥§à¥¨à¥©à¥ªà¥«à¥¬à¥­à¥®à¥¯", "0123456789"))
+    value = value.translate(str.maketrans(
+        "\u0966\u0967\u0968\u0969\u096A\u096B\u096C\u096D\u096E\u096F",
+        "0123456789",
+    ))
     return value
 
 

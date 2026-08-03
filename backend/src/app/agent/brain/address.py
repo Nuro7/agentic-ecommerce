@@ -210,8 +210,14 @@ async def handle_address_collection(
     cleaned = sanitize_text(user_message or "", max_len=250)
 
     # Checkout phone-first mode: when on checkout page and state is IDLE,
-    # skip directly to phone collection
-    is_checkout = (page_context or {}).get("page_type") == "checkout"
+    # skip directly to phone collection. Detect the checkout page from the
+    # explicit page_type OR the URL (/checkout) because the widget's Shopify
+    # analytics pageType is unreliable on the checkout route.
+    _pg = page_context or {}
+    is_checkout = (
+        _pg.get("page_type") == "checkout"
+        or "/checkout" in str(_pg.get("url") or "").lower()
+    )
     if is_checkout and current_state == AddressCollectionState.IDLE:
         next_state = AddressCollectionState.COLLECTING_PHONE
         response = "What's your phone number for shipping updates?"

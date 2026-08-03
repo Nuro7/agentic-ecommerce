@@ -79,6 +79,7 @@ from .text_utils import (
     append_live_navigation, client_platform, bind_highlight_target,
     detect_ui_command_response,
 )
+from .address import AddressCollectionState, handle_address_collection
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +578,79 @@ async def ask_brain(
 
     result: Optional[Dict[str, Any]] = None
     lower_msg = cleaned_message.lower()
+
+    # ── Step 4b: Address-collection FSM (checkout prefill) ─────────────────
+    # Owns the turn whenever a saved-address / checkout flow is active, or the
+    # customer starts one from the checkout page. The FSM persists new addresses
+    # and fetches existing ones by phone number, emitting prefill_address /
+    # redirect_checkout_with_address ui_actions so the widget can prefill the
+    # checkout form without scripting the store. Every turn we persist the
+    # current address_state + address_data into session meta so the flow
+    # survives across turns / reconnects.
+    _addr_state = (
+        session_meta.get("address_state", "idle")
+        if isinstance(session_meta, dict) else "idle"
+    )
+    _is_checkout_page = (
+        (page_context or {}).get("page_type") == "checkout"
+        or "/checkout" in str((page_context or {}).get("url") or "").lower()
+    )
+    _ADDR_ACTIVE_STATES = {
+        AddressCollectionState.COLLECTING_NAME,
+        AddressCollectionState.COLLECTING_LAST_NAME,
+        AddressCollectionState.COLLECTING_ADDRESS_LINE1,
+        AddressCollectionState.COLLECTING_CITY,
+        AddressCollectionState.COLLECTING_STATE,
+        AddressCollectionState.COLLECTING_PINCODE,
+        AddressCollectionState.COLLECTING_PHONE,
+        AddressCollectionState.COLLECTING_EMAIL,
+        AddressCollectionState.CONFIRMING,
+        AddressCollectionState.COLLECTING_UPDATE_FIELD,
+        AddressCollectionState.COLLECTING_UPDATE_VALUE,
+    }
+    _addr_flow_active = _addr_state in _ADDR_ACTIVE_STATES
+    _checkout_start = (
+        _is_checkout_page
+        and _addr_state in ("idle", "complete", "")
+    )
+    if result is None and _is_checkout_page and (_addr_flow_active or _checkout_start):
+        _raw_addr = session_meta.get("address_data", {}) if isinstance(session_meta, dict) else {}
+        if not isinstance(_raw_addr, dict):
+            _raw_addr = {}
+        logger.info(
+            "[FLOW] brain address_fsm ENTER state=%s checkout_page=%s active=%s session=%s",
+            _addr_state, _is_checkout_page, _addr_flow_active, session_id,
+        )
+        try:
+            _addr_resp, _addr_next, _addr_dict, _addr_actions = await handle_address_collection(
+                session_id=session_id,
+                user_message=cleaned_message,
+                current_state=_addr_state,
+                address_data=_raw_addr,
+                language=lang,
+                page_context=page_context,
+                tenant_id=str(store_context.get("tenant_id") or DEV_TENANT_ID),
+            )
+            # Persist state + collected data so the flow resumes next turn.
+            _next_meta = dict(session_meta) if isinstance(session_meta, dict) else {}
+            _next_meta["address_state"] = _addr_next
+            _next_meta["address_data"] = _addr_dict
+            try:
+                await session_service.save_meta(tenant_id, session_id, _next_meta)
+            except Exception as _meta_exc:
+                logger.debug("Address meta save failed (non-critical): %s", _meta_exc)
+            result = {
+                "response_text": _addr_resp,
+                "ui_actions": _addr_actions,
+                "actions": _addr_actions,
+                "suggested_replies": [],
+            }
+            logger.info(
+                "[FLOW] brain address4-step EXIT next_state=%s actions=%d session=%s",
+                _addr_next, len(_addr_actions), session_id,
+            )
+        except Exception as _addr_exc:
+            logger.warning("[turn %s] Address FSM failed, falling through: %s", turn_id, _addr_exc)
 
     # ── Step 5a: Pure UI / navigation commands ─────────────────────────────
     # "scroll down", "go to the top", "go home" are page actions, not product
