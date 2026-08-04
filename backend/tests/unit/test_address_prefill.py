@@ -487,3 +487,153 @@ def test_active_phone_flow_routes_digits_to_fsm_not_search(monkeypatch):
     assert "name" in (result.get("response_text") or "").lower()
     assert nav_calls == [], "append_live_navigation must not run on an FSM-owned turn"
     assert "redirect" not in [a.get("type") for a in (result.get("ui_actions") or [])]
+
+
+# ── add_to_cart stale-variant self-heal ───────────────────────────────────────
+
+def _variant_gid(num):
+    return f"gid://shopify/ProductVariant/{num}"
+
+
+def test_add_to_cart_self_heals_stale_variant(monkeypatch):
+    """A stale variant id from a cached cart snapshot must not fail checkout:
+    on "does not exist", add_to_cart resolves the current purchasable variant
+    and retries (matches the production cart/checkout failure)."""
+    client = _new_client()
+    calls = []
+
+    async def fake_storefront(query, variables):
+        calls.append(variables)
+        if len(calls) == 1:
+            return {
+                "cartCreate": {
+                    "userErrors": [{
+                        "field": ["input", "lines", "0", "merchandiseId"],
+                        "message": f"The merchandise with id {_variant_gid(10107682521328)} does not exist.",
+                    }]
+                }
+            }
+        return {
+            "cartCreate": {
+                "cart": {
+                    "id": "gid://shopify/Cart/c1-abc",
+                    "checkoutUrl": "https://checkout.test",
+                    "cost": {"totalAmount": {"amount": "10.00", "currencyCode": "USD"}},
+                    "lines": {"edges": [{"node": {
+                        "id": "gid://shopify/CartLine/l1",
+                        "quantity": 1,
+                        "merchandise": {"id": _variant_gid(777), "title": "Tee", "product": {"id": "gid://shopify/Product/9", "title": "Tee"}, "image": {"url": ""}},
+                        "cost": {"amountPerQuantity": {"amount": "10.00"}, "subtotalAmount": {"amount": "10.00"}},
+                    }}]},
+                },
+                "userErrors": [],
+            }
+        }
+
+    async def fake_get_details(product_id):
+        return {
+            "variations": [
+                {"id": 10107682521328, "stock_status": "outofstock"},
+                {"id": 777, "stock_status": "instock", "attributes": {}},
+            ],
+            "variations_summary": [],
+        }
+
+    monkeypatch.setattr(client, "_storefront", fake_storefront)
+    monkeypatch.setattr(client, "get_product_details", fake_get_details)
+    monkeypatch.setattr(client, "_cache_delete", lambda k: _noop())
+    try:
+        result = asyncio.run(client.add_to_cart(
+            session_id="s1",
+            product_id=9,
+            variation_id=10107682521328,
+            quantity=1,
+        ))
+    finally:
+        asyncio.run(client._http.aclose())
+
+    assert len(calls) == 2
+    assert calls[1]["lines"][0]["merchandiseId"] == _variant_gid(777)
+    assert result["success"] is True
+    assert result["checkout_url"] == "https://checkout.test"
+
+
+# ── prepare_checkout per-line fault tolerance ─────────────────────────────────
+
+def test_prepare_checkout_skips_bad_line_and_still_binds(monkeypatch):
+    """A single stale line must not abort checkout: prepare_checkout skips it
+    and still binds the address to the remaining cart."""
+    from src.app.api.v1 import public as public_mod
+    from src.app.api.v1.public import PrepareCheckoutRequest
+
+    add_calls = []
+
+    class FakeStoreClient:
+        async def add_to_cart(self, **kwargs):
+            add_calls.append(kwargs)
+            if kwargs.get("variation_id") == 10107682521328:
+                raise RuntimeError("merchandise does not exist")
+            return {
+                "item_count": 1, "is_empty": False,
+                "total": "10.00", "checkout_url": "https://checkout.test",
+            }
+
+        async def attach_buyer_identity(self, **kwargs):
+            return {
+                "item_count": 1, "is_empty": False,
+                "total": "10.00", "checkout_url": "https://checkout.test",
+            }
+
+    fake_client = FakeStoreClient()
+    monkeypatch.setattr(public_mod.os, "getenv", lambda k, d="": {"STORE_COUNTRY": "US"}.get(k, d))
+
+    payload = PrepareCheckoutRequest(
+        session_id="s1",
+        lines=[
+            {"product_id": 9, "variant_id": 10107682521328, "quantity": 1},
+            {"product_id": 10, "variant_id": 777, "quantity": 1},
+        ],
+        email="a@b.co",
+        phone="9876543210",
+        address={"first_name": "Asha", "last_name": "Nair", "address_1": "MG Road", "city": "Kochi", "state": "Kerala", "postcode": "682015"},
+    )
+
+    result = asyncio.run(public_mod.prepare_checkout(payload, fake_client, _rl=lambda: None))
+
+    assert [c["variation_id"] for c in add_calls] == [10107682521328, 777]
+    assert result["ok"] is True
+    assert result["checkout_url"] == "https://checkout.test"
+    assert result["bound"] is True
+
+
+def test_prepare_checkout_fails_when_all_lines_bad(monkeypatch):
+    from src.app.api.v1 import public as public_mod
+    from src.app.api.v1.public import PrepareCheckoutRequest
+
+    class FakeStoreClient:
+        async def add_to_cart(self, **kwargs):
+            raise RuntimeError("merchandise does not exist")
+
+        async def attach_buyer_identity(self, **kwargs):
+            return {"item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+
+    fake_client = FakeStoreClient()
+    monkeypatch.setattr(public_mod.os, "getenv", lambda k, d="": {"STORE_COUNTRY": "US"}.get(k, d))
+
+    payload = PrepareCheckoutRequest(
+        session_id="s1",
+        lines=[{"product_id": 9, "variant_id": 10107682521328, "quantity": 1}],
+        email="a@b.co",
+        phone="9876543210",
+        address={"first_name": "Asha", "address_1": "MG Road", "city": "Kochi", "state": "Kerala", "postcode": "682015"},
+    )
+
+    result = asyncio.run(public_mod.prepare_checkout(payload, fake_client, _rl=lambda: None))
+
+    assert result["ok"] is False
+    assert result["error"] == "cart_build_failed"
+    assert result["checkout_url"] == ""
+
+
+async def _noop():
+    return None

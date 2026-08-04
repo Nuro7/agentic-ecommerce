@@ -372,6 +372,14 @@ class ShopifyClient(BaseStoreClient):
         except Exception:
             pass
 
+    async def _cache_delete(self, key: str) -> None:
+        if not self.redis:
+            return
+        try:
+            await asyncio.wait_for(self.redis.delete(self._cache_prefix + key), timeout=1.2)
+        except Exception:
+            pass
+
     async def _cache_clear(self) -> None:
         """Purge ALL cached keys for THIS store (search, product, categories,
         store info, collections, reviews). Called when the catalog changes so a
@@ -1270,6 +1278,29 @@ class ShopifyClient(BaseStoreClient):
         cart["total"] = str(cart.get("total") or "0")
         return cart
 
+    async def _resolve_valid_variant(self, product_id: int) -> int:
+        """Return the current purchasable variant id for a product — preferring
+        in-stock variants, else the first variant Shopify still has. Returns 0
+        when the product has no resolvable variant (deleted / no variants).
+
+        Bypasses the product cache so a stale cached variant is never returned
+        when the caller is recovering from a "merchandise does not exist" error.
+        """
+        try:
+            await self._cache_delete(f"product:{product_id}")
+            detail = await self.get_product_details(int(product_id))
+            variations = detail.get("variations") or []
+            for _v in variations:
+                if isinstance(_v, dict) and _v.get("id"):
+                    if str(_v.get("stock_status") or "").lower() != "outofstock":
+                        return _gid_to_int(str(_v["id"]))
+            for _v in variations:
+                if isinstance(_v, dict) and _v.get("id"):
+                    return _gid_to_int(str(_v["id"]))
+        except Exception as _exc:
+            logger.warning("Shopify add_to_cart: variant resolution failed for product %s: %s", product_id, _exc)
+        return 0
+
     async def add_to_cart(
         self,
         *,
@@ -1280,26 +1311,14 @@ class ShopifyClient(BaseStoreClient):
         variation: Optional[Dict[str, Any]] = None,
         product_name: Optional[str] = None,
         price: Optional[str] = None,
+        _resolve_stale: bool = True,
     ) -> Dict[str, Any]:
         # Shopify Storefront cart lines need a ProductVariant GID — a product ID
         # is NOT a valid variant ID ("Cannot find variant"). When no variant was
         # resolved, pick the first purchasable variant of the product.
         vid = variation_id or 0
         if not vid:
-            try:
-                _detail = await self.get_product_details(int(product_id))
-                for _v in (_detail.get("variations") or []):
-                    if isinstance(_v, dict) and _v.get("id"):
-                        if str(_v.get("stock_status") or "").lower() != "outofstock":
-                            vid = _gid_to_int(str(_v["id"]))
-                            break
-                if not vid:
-                    for _v in (_detail.get("variations") or []):
-                        if isinstance(_v, dict) and _v.get("id"):
-                            vid = _gid_to_int(str(_v["id"]))
-                            break
-            except Exception as _exc:
-                logger.warning("Shopify add_to_cart: failed to resolve variant for product %s: %s", product_id, _exc)
+            vid = await self._resolve_valid_variant(int(product_id))
         if not vid:
             raise RuntimeError("No purchasable variant found for this product")
         variant_gid = _int_to_variant_gid(int(vid))
@@ -1356,12 +1375,33 @@ class ShopifyClient(BaseStoreClient):
 
             errors = op.get("userErrors", [])
             if errors:
+                # Stale merchandise ID (variant deleted/re-created in Shopify):
+                # resolve the current purchasable variant and retry once.
+                if _resolve_stale and any(
+                    "does not exist" in str(e.get("message", ""))
+                    or "not found" in str(e.get("message", ""))
+                    or "is not available" in str(e.get("message", ""))
+                    for e in errors
+                ):
+                    resolved = await self._resolve_valid_variant(int(product_id))
+                    if resolved and int(resolved) != int(vid):
+                        logger.warning(
+                            "Shopify add_to_cart: stale variant %s for product %s — retrying with %s",
+                            vid, product_id, resolved,
+                        )
+                        await self._delete_cart_id(session_id)
+                        return await self.add_to_cart(
+                            session_id=session_id, product_id=product_id,
+                            variation_id=resolved, quantity=quantity,
+                            _resolve_stale=False,
+                        )
                 # If cart is stale/invalid, create a new one
                 if any("Cart" in str(e.get("field", "")) for e in errors):
                     await self._delete_cart_id(session_id)
                     return await self.add_to_cart(
                         session_id=session_id, product_id=product_id,
                         variation_id=variation_id, quantity=quantity,
+                        _resolve_stale=_resolve_stale,
                     )
                 raise RuntimeError(f"Cart mutation errors: {errors}")
 

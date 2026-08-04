@@ -496,22 +496,34 @@ async def prepare_checkout(
 
     # Ensure the session's Storefront cart holds the current lines before binding
     # the address, so checkoutUrl belongs to a cart that matches what the customer
-    # is buying.
+    # is buying. A single bad/stale line (e.g. a variant deleted in Shopify) must
+    # not abort the whole bind — skip it and keep the rest so checkout still works.
     cart: Dict[str, Any] = {}
-    try:
-        for line in payload.lines or []:
-            added = await store_client.add_to_cart(
+    failed_lines = 0
+    for line in payload.lines or []:
+        try:
+            cart = await store_client.add_to_cart(
                 session_id=payload.session_id,
                 product_id=line.product_id,
                 variation_id=line.variant_id or 0,
                 quantity=line.quantity,
             )
-            cart = added
-        if not payload.lines:
+        except Exception as exc:
+            failed_lines += 1
+            logger.warning(
+                "cart/checkout: skipped line product=%s variant=%s qty=%s: %s",
+                line.product_id, line.variant_id, line.quantity, exc,
+            )
+    if not payload.lines:
+        try:
             cart = await store_client.get_cart(session_id=payload.session_id)
-    except Exception as exc:
-        logger.warning("cart/checkout: failed to build Storefront cart: %s", exc)
+        except Exception as exc:
+            logger.warning("cart/checkout: failed to fetch session cart: %s", exc)
+    if failed_lines and not cart.get("item_count"):
+        # Every line failed — the session Storefront cart has nothing to bind.
         return {"ok": False, "error": "cart_build_failed", "checkout_url": "", "cart": cart}
+    if failed_lines:
+        logger.warning("cart/checkout: %d line(s) skipped, continuing with remaining cart", failed_lines)
 
     bound: Dict[str, Any] = {}
     bind_method = getattr(store_client, "attach_buyer_identity", None)

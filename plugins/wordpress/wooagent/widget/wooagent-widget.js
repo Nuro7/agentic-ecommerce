@@ -4225,7 +4225,25 @@ try {
       phone: a.phone || '',
       address: a,
     };
-    const res = await api('/cart/checkout', payload);
+    let res = await api('/cart/checkout', payload);
+    // If the server cart build failed (typically a stale variant id — the
+    // product/variant was re-created in Shopify so its numeric id changed),
+    // re-fetch the LIVE cart once and retry before giving up. The backend also
+    // self-heals by resolving the current purchasable variant, so this retry is
+    // a safety net for when the live fetch below was skipped/stale the first time.
+    if (res && (res.error === 'cart_build_failed' || !res.checkout_url)) {
+      try {
+        const live = await fetchCartShopify(true);
+        if (live && Array.isArray(live.items) && live.items.length) {
+          payload.lines = live.items.map(i => ({
+            product_id: i.product_id,
+            variant_id: i.variation_id || i.variant_id || 0,
+            quantity: i.quantity || 1,
+          }));
+          res = await api('/cart/checkout', payload);
+        }
+      } catch (_e) {}
+    }
     const checkoutUrl = (res && res.checkout_url) ? String(res.checkout_url) : '';
     // Only navigate once the address has been bound to the server Storefront
     // cart. If the bind failed, keep the pre-fill contention running on the
