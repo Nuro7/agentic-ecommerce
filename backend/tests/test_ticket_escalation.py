@@ -118,7 +118,7 @@ class TestSessionContact:
 
 @pytest.mark.unit
 class TestTicketIntake:
-    async def _run(self, monkeypatch, message, pending=None, language="en"):
+    async def _run(self, monkeypatch, message, pending=None, language="en", meta_extra=None):
         from src.app.agent.brain import ticket_intake as ti
 
         async def fake_create_support_ticket(**kwargs):
@@ -131,6 +131,8 @@ class TestTicketIntake:
 
         monkeypatch.setattr(ti, "create_support_ticket", fake_create_support_ticket)
         meta = {"ticket_intake_state": TicketIntakeState.AWAITING_CONTACT}
+        if meta_extra:
+            meta.update(meta_extra)
         if pending is not None:
             meta["ticket_intake_pending"] = pending
         return await handle_ticket_intake_turn(
@@ -178,6 +180,74 @@ class TestTicketIntake:
     async def test_stale_pending_resets(self, monkeypatch):
         text, state, pending, actions = await self._run(monkeypatch, "anything")
         assert state == TicketIntakeState.IDLE
+
+    async def test_creates_ticket_when_message_redacted_but_meta_has_email(self, monkeypatch):
+        # check_input redacts PII on the cleaned_message (email → [email]) but the
+        # real value is captured from the RAW message and stored in session meta.
+        # The intake FSM must fall back to session meta, not re-ask forever.
+        from src.app.agent.brain import ticket_intake as ti
+        captured = {}
+
+        async def spy_create_support_ticket(**kwargs):
+            captured.update(kwargs)
+            return {
+                "status": "success",
+                "ticket_id": "T-99",
+                "priority": "high",
+                "message": "created",
+            }
+
+        monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="my email is [email]",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_CONTACT,
+                "ticket_intake_pending": {"trigger_message": "order damaged"},
+                "customer_email": "john@example.com",
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
+        assert state == TicketIntakeState.IDLE
+        assert pending == {}
+        assert any(a["type"] == "show_ticket" for a in actions)
+        assert captured.get("customer_email") == "john@example.com"
+
+    async def test_creates_ticket_when_message_redacted_but_meta_has_phone(self, monkeypatch):
+        from src.app.agent.brain import ticket_intake as ti
+        captured = {}
+
+        async def spy_create_support_ticket(**kwargs):
+            captured.update(kwargs)
+            return {
+                "status": "success",
+                "ticket_id": "T-99",
+                "priority": "high",
+                "message": "created",
+            }
+
+        monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="call me at [phone]",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_CONTACT,
+                "ticket_intake_pending": {"trigger_message": "refund"},
+                "customer_phone": "9876543210",
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
+        assert state == TicketIntakeState.IDLE
+        assert pending == {}
+        assert captured.get("customer_phone") == "9876543210"
 
 
 @pytest.mark.integration

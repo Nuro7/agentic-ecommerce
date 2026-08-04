@@ -184,6 +184,17 @@ async def handle_ticket_intake_turn(
         if len(digits) >= 10:
             phone = digits[-10:]
 
+    # `cleaned_message` has already been PII-redacted by check_input (email →
+    # [email]), so the real values only live in session meta — captured from the
+    # RAW message in brain/core.py Step 1. Fall back to those or we'd re-ask
+    # forever and never create the ticket.
+    if not email or not phone:
+        known_email, known_phone = session_contact(session_meta)
+        if not email:
+            email = known_email
+        if not phone:
+            phone = known_phone
+
     if not email and not phone:
         return reask_contact_prompt(language), TicketIntakeState.AWAITING_CONTACT, pending, []
 
