@@ -658,6 +658,11 @@ async def ask_brain(
         ( _is_checkout_page or _checkout_intent )
         and _addr_state in ("idle", "complete", "")
     )
+    # The FSM is the ONLY owner of checkout navigation: it emits
+    # redirect_checkout_with_address itself, on confirmation. While it owns the
+    # turn, the generic append_live_navigation must NOT append a plain /checkout
+    # redirect (that used to jump the customer to checkout mid address-collection).
+    _addr_fsm_owned = False
     if result is None and (_is_checkout_page or _checkout_intent) and (_addr_flow_active or _checkout_start):
         _raw_addr = session_meta.get("address_data", {}) if isinstance(session_meta, dict) else {}
         if not isinstance(_raw_addr, dict):
@@ -690,6 +695,7 @@ async def ask_brain(
                 "actions": _addr_actions,
                 "suggested_replies": [],
             }
+            _addr_fsm_owned = True
             logger.info(
                 "[FLOW] brain address4-step EXIT next_state=%s actions=%d session=%s",
                 _addr_next, len(_addr_actions), session_id,
@@ -1210,18 +1216,21 @@ async def ask_brain(
     # Drive the real storefront to match the answer (search page / product page /
     # cart). Additive â€” inline cards still render; the widget's live_navigation
     # flag decides whether to actually navigate. Never breaks a turn.
-    try:
-        append_live_navigation(
-            ui_actions,
-            store_context=store_context,
-            query=result.get("clean_query") or cleaned_message or _search_query,
-            platform=client_platform(store_client),
-            current_url=str((page_context or {}).get("url") or ""),
-            active_recommendations=active_recommendations,
-            last_products=(page_context or {}).get("last_products"),
-        )
-    except Exception as _nav_exc:
-        logger.debug("[turn %s] live-nav skipped: %s", turn_id, _nav_exc)
+    # Skipped when the address FSM owned the turn — it decides checkout
+    # navigation on its own and must not get a competing plain /checkout redirect.
+    if not _addr_fsm_owned:
+        try:
+            append_live_navigation(
+                ui_actions,
+                store_context=store_context,
+                query=result.get("clean_query") or cleaned_message or _search_query,
+                platform=client_platform(store_client),
+                current_url=str((page_context or {}).get("url") or ""),
+                active_recommendations=active_recommendations,
+                last_products=(page_context or {}).get("last_products"),
+            )
+        except Exception as _nav_exc:
+            logger.debug("[turn %s] live-nav skipped: %s", turn_id, _nav_exc)
 
     # ── Defer voice + highlight for search redirects ────────────────
     # When a search redirect is present, strip all spoken/highlight

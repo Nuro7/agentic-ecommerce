@@ -25,7 +25,13 @@ Two bugs were reported:
    `cartDeliveryAddressesReplace` only exists in Storefront API **2025-04+**.
    The modern mutation failed silently and checkout opened empty.
 
-Both are fixed. Details below.
+A **third bug** was reported from the cart page: typing *"proceed to checkout"*
+navigated to checkout **before the phone/address was even asked** (the console
+`/private_access_tokens ... 401` is a red herring — see §4.6). Cause: the generic
+`append_live_navigation` post-processor matched the word "checkout" and appended
+a plain `redirect /checkout` action alongside the FSM's phone prompt.
+
+All three are fixed. Details below.
 
 ---
 
@@ -136,9 +142,31 @@ In `CONFIRMING`:
 `_apply_update_value` (reuses `normalize_province_code` for state) and returns
 to `CONFIRMING` with a fresh `prefill_address` action.
 
----
+### 4.6 The `append_live_navigation` guard (THE FIX #3, `core.py:616-703`, `core.py:1215`)
 
-## 5. ISO-2 normalization (`text_utils.py`)
+`append_live_navigation` (`text_utils.py:106`) runs on every turn's
+post-processing and drives the real storefront (search/product/cart pages). Its
+"Checkout Page Navigation" block (`text_utils.py:303-309`) matches the word
+`checkout` and appends `{"type":"redirect","payload":{"url":"/checkout",
+"reason":"checkout","delay_ms":1500}}`. When the address FSM claimed the turn
+first (it asks for the phone), `ui_actions` is still empty, so that block fired
+and the widget received a phone prompt **plus** a `/checkout` redirect → the
+customer was navigated to checkout before any address was collected.
+
+Fix: when the address FSM owns the turn, `append_live_navigation` is skipped
+entirely — the FSM alone decides checkout navigation. `core.py` tracks
+`_addr_fsm_owned` (set `True` when the FSM produced the result, `core.py:695`)
+and the call is wrapped in `if not _addr_fsm_owned:` (`core.py:1223`). The FSM
+then emits `prefill_address` while collecting, and only
+`redirect_checkout_with_address` on confirmation.
+
+> **Red herring:** the console error
+> `https://<store>/private_access_tokens?id=...&checkout_type=c1 401 Unauthorized`
+> on the checkout page is Shopify **by design** — Apple's Private Access Token
+> bot/spam protection returns 401 per spec on every store, even clean ones. It is
+> unrelated to this bug and must not be "fixed".
+
+---
 
 All addresses are normalized to ISO codes **before** they reach Shopify, because
 `CartSelectableAddressInput` requires valid province/country codes.
@@ -279,7 +307,7 @@ with `buyerIdentity.deliveryAddressPreferences = [{"deliveryAddress": mailing}]`
 
 ---
 
-## 11. Tests (`test_address_prefill.py`, 17 tests)
+## 11. Tests (`test_address_prefill.py`, 18 tests)
 
 Coverage highlights:
 - FSM flow: phone-first entry, spoken/formatted phone normalization,
@@ -293,9 +321,13 @@ Coverage highlights:
 - Client: `_ensure_cart_gid`, modern `cartDeliveryAddressesReplace` payload,
   **legacy fallback** (`deliveryAddressPreferences` sent when the modern
   mutation raises), empty-cart dict when both paths fail.
+- **Brain guard (regression):** `test_checkout_intent_does_not_emit_redirect_while_collecting`
+  runs `ask_brain` with mocked deps for "proceed to checkout" from a cart page
+  and asserts NO `redirect`/`redirect_checkout*` action is emitted and
+  `append_live_navigation` is not invoked on an FSM-owned turn.
 
 Run: `cd backend && python -m pytest tests/unit/test_address_prefill.py -q`
-→ `17 passed`. Full unit suite: 36 passed / 3 failed (pre-existing, unrelated:
+→ `18 passed`. Full unit suite: 37 passed / 3 failed (pre-existing, unrelated:
 `test_live_navigation` × 2, `test_voice_architecture`).
 
 ---
@@ -303,11 +335,12 @@ Run: `cd backend && python -m pytest tests/unit/test_address_prefill.py -q`
 ## 12. Deploy checklist
 
 1. Commit the working-tree changes:
+   - `backend/src/app/agent/brain/core.py` (live-nav guard on FSM turns)
    - `backend/src/app/agent/brain/address.py` (confirm-first fix)
    - `backend/src/app/integrations/shopify/client.py` (legacy fallback)
    - `backend/tests/unit/test_address_prefill.py`
    - `CHECKOUT_PREFILL.md` (this file)
-   - optionally `speako-checkout/` (currently untracked)
+   - `speako-checkout/` (committed)
 2. Backend deploy: restart the app on the production host and set production
    `.env` `SHOPIFY_API_VERSION=2025-07`, then recreate the app container.
 3. Extension deploy: `cd speako-checkout && shopify app deploy`.

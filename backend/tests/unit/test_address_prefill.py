@@ -319,3 +319,87 @@ def test_replace_cart_delivery_address_empty_when_both_paths_fail(monkeypatch):
     assert result.get("success") is not True
     assert result.get("checkout_url") == ""
     assert result.get("is_empty") is True
+
+
+def test_checkout_intent_does_not_emit_redirect_while_collecting(monkeypatch):
+    """Regression: 'proceed to checkout' from a cart page must start phone
+    collection WITHOUT a /checkout redirect.
+
+    The generic append_live_navigation post-processor used to match the word
+    "checkout" and append a plain redirect next to the FSM's phone prompt,
+    navigating the customer to checkout before any address was collected.
+    When the address FSM owns the turn, live-navigation must be skipped and the
+    FSM alone decides checkout navigation (prefill_address then, on confirm,
+    redirect_checkout_with_address).
+    """
+    from src.app.agent.brain import core as brain_core
+    from src.app.agent.classifier import IntentResult
+
+    nav_calls = []
+
+    async def fake_append_live_navigation(*args, **kwargs):
+        nav_calls.append((args, kwargs))
+
+    class FakeClassifier:
+        async def classify(self, message, lang):
+            return IntentResult(intent="checkout", confidence=0.9, via="test")
+
+    class FakeSession:
+        def __init__(self):
+            self.meta = {"language": "en"}
+            self.session = {}
+
+        async def get_meta(self, tenant_id, session_id):
+            return dict(self.meta)
+
+        async def save_meta(self, tenant_id, session_id, meta):
+            self.meta = dict(meta)
+            return None
+
+        async def get_session(self, tenant_id, session_id):
+            return dict(self.session)
+
+        async def get_cart(self, tenant_id, session_id):
+            return None
+
+        async def save_cart(self, tenant_id, session_id, cart):
+            return None
+
+        async def update_session(self, tenant_id, session_id, **kwargs):
+            return None
+
+    class FakeFacts:
+        async def get(self, tenant_id, session_id):
+            return {}
+
+        async def update(self, tenant_id, session_id, message, facts_payload):
+            return None
+
+    class FakeBeta:
+        async def record_turn(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(brain_core, "append_live_navigation", fake_append_live_navigation)
+    monkeypatch.setattr(brain_core, "get_classifier", lambda: FakeClassifier())
+    monkeypatch.setattr(brain_core, "get_session_facts_service", lambda *a, **k: FakeFacts())
+    monkeypatch.setattr(brain_core, "get_beta_logger", lambda: FakeBeta())
+
+    result = asyncio.run(brain_core.ask_brain(
+        session_id="sess_nav_test",
+        user_message="proceed to checkout",
+        store_context={"url": "https://speako-demo.com"},
+        page_context={"url": "https://speako-demo.com/cart"},
+        language="en",
+        store_client=object(),
+        session_service=FakeSession(),
+        redis=None,
+        db_session_factory=None,
+    ))
+
+    types = [a.get("type") for a in (result.get("ui_actions") or [])]
+    assert "redirect" not in types
+    assert "redirect_checkout" not in types
+    assert "redirect_checkout_with_address" not in types
+    assert "checkout" not in types
+    assert nav_calls == [], "append_live_navigation must not run on an FSM-owned turn"
+    assert "phone number" in (result.get("response_text") or "").lower()
