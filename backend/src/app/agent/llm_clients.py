@@ -59,12 +59,13 @@ else:
 # two are unavailable.
 # BRAIN_MODEL controls which Gemini model powers that fallback reasoning path.
 # Change via .env — no code changes needed.
-#   gemini-2.5-flash   → fast, large context, best for agentic tasks (default)
-#   gemini-2.0-flash   → previous generation, slightly lighter
-#   gemini-2.5-pro     → highest quality, higher latency / cost
+#   gemini-3.6-flash  → latest frontier-fast, best for agentic tasks (default)
+#   gemini-2.5-flash  → fast, large context
+#   gemini-2.0-flash  → previous generation, slightly lighter
+#   gemini-2.5-pro    → highest quality, higher latency / cost
 _gemini_key = os.environ.get("GEMINI_API_KEY", "")
 gemini_client = None
-BRAIN_MODEL   = os.environ.get("BRAIN_MODEL", "gemini-2.5-flash")
+BRAIN_MODEL   = os.environ.get("BRAIN_MODEL", "gemini-3.6-flash")
 GEMINI_MODEL  = BRAIN_MODEL  # kept for backwards-compat references
 
 if _gemini_key:
