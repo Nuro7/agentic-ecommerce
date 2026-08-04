@@ -1,0 +1,19 @@
+api_version = "2025-07"
+
+[[extensions]]
+name = "Speako Checkout Assistant"
+handle = "ask-aria-checkout"
+type = "ui_extension"
+uid = "53f50c79-8eea-ca53-bf36-447027ef23df188530b3"
+
+[[extensions.targeting]]
+module = "./src/Checkout.jsx"
+target = "purchase.checkout.block.render"
+
+[extensions.capabilities]
+api_access = true
+network_access = true
+
+[[extensions.metafields]]
+namespace = "$app"
+key = "requestedFreeGift"
