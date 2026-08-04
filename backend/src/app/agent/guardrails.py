@@ -10,7 +10,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,40 @@ _PII_PATTERNS: List[tuple[re.Pattern, str]] = [
     (re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"), "[pan]"),                  # PAN card
     (re.compile(r"\b\d{12}\b"), "[aadhaar]"),                              # Aadhaar
 ]
+
+# Redaction placeholders emitted by _redact_pii — the agent should treat any
+# value equal to one of these as "unknown" rather than passing it to a store API
+# or persisting it to a ticket (the real value was never redacted on input).
+_PII_PLACEHOLDERS = frozenset({"[email]", "[phone]", "[card]", "[pan]", "[aadhaar]"})
+
+
+def is_pii_placeholder(value: Any) -> bool:
+    """True when `value` is a redaction placeholder like `[email]` / `[phone]`."""
+    return str(value or "").strip().lower() in _PII_PLACEHOLDERS
+
+
+def extract_contact_info(text: str) -> Tuple[str, str]:
+    """Return (email, phone) found in RAW user text, before redaction.
+
+    Uses the exact `_PII_PATTERNS` that `check_input`/`check_output` redact with,
+    so the server can persist the real values (session meta / ticket row) while
+    the transcript and the LLM continue to see `[email]` / `[phone]`. The phone
+    fallback pattern (10–12 digits) is intentionally included because spoken /
+    typed numbers vary; callers that need spoken-digit words ("nine eight seven…")
+    should additionally run `normalize_phone_digits` on the raw text.
+    """
+    if not text:
+        return "", ""
+    email, phone = "", ""
+    for pattern, placeholder in _PII_PATTERNS:
+        m = pattern.search(text)
+        if not m:
+            continue
+        if placeholder == "[email]" and not email:
+            email = m.group(0).strip().lower()
+        elif placeholder == "[phone]" and not phone:
+            phone = m.group(0).strip()
+    return email, phone
 
 # ── Inline-price stripper ─────────────────────────────────────────────────────
 # Three sub-patterns. Each is best-effort, not complete:

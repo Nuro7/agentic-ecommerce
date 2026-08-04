@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -30,6 +31,22 @@ TICKET_CREATED_MESSAGE = (
     "I've created a support ticket for your request. "
     "Our team will review your chat history and contact you shortly."
 )
+
+# Localized variants for the deterministic escalation path (voice speaks these
+# directly without the LLM, so they must match the detected language).
+_TICKET_CREATED_LOCALIZED = {
+    "en": TICKET_CREATED_MESSAGE,
+    "hi": "Maine aapki request ke liye ek support ticket bana di hai. Hamari team aapki chat history dekh kar jald hi contact karegi.",
+    "ml": "Ningalude appeal-inaayi njaan oru support ticket undaakkiyittund. Njangalude team ningalude chat history parichayicchu thazhottu bandhappetum.",
+    "ta": "Ungal kavalai-kkaga support ticket uraakkiyirukkirrom. Engal team ungal chat-ai parthu sathanaikku ungalai thodarpaduven.",
+    "te": "Mee vinathi kosam support ticket tayaru chesanu. Maa team mee chat history chusi tvaralo kontact chestundi.",
+    "bn": "Apanr anurodher jonno ami ekta support ticket tairi korechi. Amaader team apnar chat history dekhbe ebong sate-sate yogo jog korbe.",
+    "kn": "Nimma vinathi-kkagi nanu support ticket madidde. Namma team nimma chat history nodi bega samparkisuttade.",
+}
+
+# Tickets are de-duplicated within this window: a repeated complaint in the SAME
+# session reuses the open ticket instead of inserting a duplicate row.
+DEDUP_WINDOW_MINUTES = 60
 
 # ── Priority heuristics (keyword-based, deterministic — no extra LLM latency) ─
 
@@ -54,6 +71,89 @@ def _detect_priority(text: str) -> str:
     if any(tok in low for tok in _LOW_PRIORITY_TOKENS):
         return "low"
     return "medium"
+
+
+def ticket_created_message(language: str = "en") -> str:
+    """Language-aware ticket-confirmation line for the deterministic path."""
+    return _TICKET_CREATED_LOCALIZED.get(language, _TICKET_CREATED_LOCALIZED["en"])
+
+
+def _classify_issue(text: str) -> str:
+    """Map free text onto a structured issue_type for dashboard filtering."""
+    low = str(text or "").lower()
+    if not low:
+        return "other"
+
+    def _has(*words: str) -> bool:
+        return any(w in low for w in words)
+
+    if _has("damaged", "damage", "broken", "defective", "cracked", "torn"):
+        return "damaged_order"
+    if _has("wrong item", "wrong product", "wrong items", "incorrect item", "received the wrong"):
+        return "wrong_item"
+    if _has(
+        "missing item", "missing items", "missing part", "items missing", "item missing",
+        "missing order", "lost order", "missing",
+        "didn't receive", "did not receive", "never received", "not received",
+        "not delivered", "never arrived", "didn't arrive",
+    ):
+        return "missing_item"
+    if _has("refund"):
+        return "refund"
+    if _has("exchange"):
+        return "exchange"
+    if _has("delay", "delayed", "late delivery", "delivery delay", "shipping delay", "stuck"):
+        return "delivery_issue"
+    if _has("charged", "charge", "billing", "double charge", "overcharged", "extra charge"):
+        return "billing"
+    if _has(
+        "talk to human", "talk to a human", "human agent", "representative", "customer care",
+        "talk to someone", "speak to someone", "real person", "manager", "helpdesk",
+        "contact support",
+    ):
+        return "talk_to_human"
+    return "other"
+
+
+def _extract_order_id(text: str) -> str:
+    """Best-effort order-number extraction ("order #1234", "#ABCD123", "order 1234")."""
+    low = str(text or "").strip()
+    if not low:
+        return ""
+    # Explicit marker: "order #1234", "order number: 1234", "tracking id 1234".
+    m = re.search(
+        r"\b(?:order|booking|tracking|shipment)\s*(?:id|number|no\.?|#)?\s*[#:]\s*"
+        r"([A-Za-z0-9][A-Za-z0-9-]{3,19})",
+        low,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip().upper()[:100]
+    # Bare "#1234" anywhere in the message.
+    m = re.search(r"\b#([A-Za-z0-9][A-Za-z0-9-]{3,19})\b", low)
+    if m:
+        return m.group(1).strip().upper()[:100]
+    # Bare digits after an order word: "order 99887766" / "order no 1234". Digits
+    # only — never a word ("order damage aayirunnu" must NOT match).
+    m = re.search(
+        r"\b(?:order|booking|tracking|shipment)\s+(?:(?:number|no\.?|id)\s+)?(\d{4,14})\b",
+        low, re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).strip().upper()[:100]
+    return ""
+
+
+def _priority_reason(text: str) -> str:
+    """Which keyword drove the priority, or 'llm' when none did."""
+    low = " ".join(str(text or "").lower().split())
+    for tok in _HIGH_PRIORITY_TOKENS:
+        if tok in low:
+            return f"keyword:{tok}"
+    for tok in _LOW_PRIORITY_TOKENS:
+        if tok in low:
+            return f"keyword:{tok}"
+    return "llm"
 
 
 def _build_transcript_turns(conversation_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
@@ -168,9 +268,56 @@ async def create_support_ticket(
     customer_name: str = "",
     shop_domain: Optional[str] = None,
     trigger_message: str = "",
+    product_id: Optional[str] = None,
+    source: str = "llm",
 ) -> Dict[str, Any]:
     """Create a voice ticket, persist it, emit the helpdesk webhook, and sync
-    Shopify customer metafields. Returns the ticket id + the message to speak."""
+    Shopify customer metafields. Returns the ticket id + the message to speak.
+
+    De-duplication: an OPEN ticket for the same tenant+session created within
+    the last `DEDUP_WINDOW_MINUTES` is reused (already_exists=true, no
+    insert/webhook/sync) so a customer repeating their complaint in one session
+    does not create duplicate rows. Only active when `session_id` is present.
+    """
+    # ── Dedup: reuse an OPEN ticket for this tenant+session within 60 min ─────
+    ticket_id: Optional[str] = None
+    already_exists = False
+    priority = "medium"
+    issue_summary = ""
+    if session_id and str(session_id).strip() and str(session_id).strip() != "legacy":
+        try:
+            from ..core.database import AsyncSessionLocal
+            from ..modules.tickets.repository import TicketRepository
+
+            since = datetime.now(timezone.utc) - timedelta(minutes=DEDUP_WINDOW_MINUTES)
+            async with AsyncSessionLocal() as db:
+                existing = await TicketRepository(db).find_open_by_session(
+                    tenant_id, str(session_id).strip(), since
+                )
+                if existing:
+                    ticket_id = existing.id
+                    already_exists = True
+                    priority = existing.priority
+                    issue_summary = existing.issue_summary
+                    logger.info(
+                        "Ticket dedup: reusing open ticket %s (session %s, <%dmin)",
+                        ticket_id, session_id, DEDUP_WINDOW_MINUTES,
+                    )
+        except Exception as exc:
+            logger.debug("Ticket dedup lookup failed session=%s: %s", session_id, exc)
+
+    if already_exists:
+        return {
+            "status": "success",
+            "ticket_id": ticket_id,
+            "already_exists": True,
+            "priority": priority,
+            "issue_summary": issue_summary,
+            "transcript": _build_transcript_text(conversation_history),
+            "message": TICKET_CREATED_MESSAGE,
+            "spoken_message": TICKET_CREATED_MESSAGE,
+        }
+
     customer = await _collect_customer_context(
         session_service, tenant_id, session_id, customer_email
     )
@@ -184,8 +331,10 @@ async def create_support_ticket(
     )
     priority = _detect_priority(trigger_message or context_text)
     issue_summary = _generate_issue_summary(conversation_history, trigger_message)
+    issue_type = _classify_issue(trigger_message or context_text)
+    order_id = _extract_order_id(trigger_message or context_text)
+    priority_reason = _priority_reason(trigger_message or context_text)
 
-    ticket_id: Optional[str] = None
     try:
         from ..core.database import AsyncSessionLocal
         from ..modules.tickets.service import TicketService
@@ -203,6 +352,11 @@ async def create_support_ticket(
                     "transcript_json": {"turns": transcript_turns},
                     "priority": priority,
                     "status": "open",
+                    "issue_type": issue_type,
+                    "order_id": order_id or None,
+                    "product_id": product_id or None,
+                    "priority_reason": priority_reason,
+                    "source": source or "llm",
                 },
             )
             ticket_id = ticket.id

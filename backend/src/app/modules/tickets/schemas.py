@@ -16,6 +16,11 @@ class TicketCreate(BaseModel):
     issue_summary: str = Field(..., max_length=4000)
     transcript_json: Optional[Dict[str, Any]] = None
     priority: str = Field(default="medium", pattern="|".join(TICKET_PRIORITIES))
+    issue_type: Optional[str] = Field(None, max_length=50)
+    order_id: Optional[str] = Field(None, max_length=100)
+    product_id: Optional[str] = Field(None, max_length=50)
+    priority_reason: Optional[str] = Field(None, max_length=255)
+    source: str = Field(default="llm", max_length=20)
 
 
 class TicketUpdate(BaseModel):
@@ -36,6 +41,11 @@ class TicketOut(BaseModel):
     priority: str
     status: str
     webhook_sent: bool
+    issue_type: Optional[str]
+    order_id: Optional[str]
+    product_id: Optional[str]
+    priority_reason: Optional[str]
+    source: str
     created_at: datetime
     updated_at: datetime
 

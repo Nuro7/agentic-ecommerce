@@ -40,6 +40,16 @@ class VoiceTicket(Base):
     priority: Mapped[str] = mapped_column(String(20), nullable=False, server_default="medium")
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="open")
 
+    # Structured classification (added 0022) so the merchant dashboard can group /
+    # filter tickets without parsing free-text summaries.
+    issue_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    order_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    product_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    # Why the priority was assigned: "keyword:<token>" (deterministic) or "llm".
+    priority_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Where the ticket came from: "llm" | "deterministic" (incl. intake flow).
+    source: Mapped[str] = mapped_column(String(20), nullable=False, server_default="llm")
+
     # True when the ticket was also pushed to the merchant's external helpdesk
     # (Gorgias/Zendesk webhook) — for observability in the dashboard.
     webhook_sent: Mapped[bool] = mapped_column(server_default="false", default=False)

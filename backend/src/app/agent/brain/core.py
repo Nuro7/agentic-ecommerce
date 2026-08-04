@@ -45,6 +45,7 @@ from ..memory.facts import get_session_facts_service
 from ..guardrails import (
     check_input, check_output,
     InputBlocked, OutputValidationError, build_retrieved_context,
+    extract_contact_info,
 )
 from ..schemas import AgentResponse
 from ..retrieval.search import hybrid_search
@@ -55,6 +56,14 @@ from ..classifier import (
     SEARCH, PRODUCT_DETAIL, INVENTORY,
 )
 from ...services.promotions import rerank_and_annotate_promotions
+from ...services.ticketing import create_support_ticket, ticket_created_message
+from .ticket_intake import (
+    TicketIntakeState,
+    ask_contact_prompt,
+    detect_escalation,
+    handle_ticket_intake_turn,
+    session_contact,
+)
 from .canned import normalize_language, chitchat_response, off_topic_response, _OFF_TOPIC_RESPONSES
 from .fast_intent import (
     run_fast_intent,
@@ -419,6 +428,10 @@ async def ask_brain(
 
     # â”€â”€ Step 1: Input sanitisation + guardrail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     cleaned_message = sanitize_text(user_message or "", max_len=500)
+    # Capture REAL contact info from the RAW message BEFORE check_input redacts it
+    # (extract_contact_info uses the exact _PII_PATTERNS). Stored server-side only —
+    # the conversation transcript and the LLM continue to see [email]/[phone].
+    pii_email, pii_phone = extract_contact_info(user_message or "")
     try:
         cleaned_message = check_input(cleaned_message)
     except InputBlocked as blocked:
@@ -431,6 +444,21 @@ async def ask_brain(
         text = "Hi! I'm your shopping assistant. How can I help you today?"
         lang = normalize_language(language)
         return _empty_response(session_id, text, lang)
+
+    # Persist the captured contact info to session meta (ticket intake / escalation
+    # fall back to it). Never includes a placeholder value.
+    _pii_updates: Dict[str, Any] = {}
+    if pii_email:
+        _pii_updates["customer_email"] = pii_email
+    if pii_phone:
+        _pii_updates["customer_phone"] = pii_phone
+    if _pii_updates:
+        try:
+            await session_service.save_meta(tenant_id, session_id, _pii_updates)
+            logger.info("[TRACE] Step1 captured contact email=%s phone=%s session=%s",
+                bool(pii_email), bool(pii_phone), session_id)
+        except Exception as _pii_exc:
+            logger.debug("Contact capture save failed (non-critical): %s", _pii_exc)
 
     logger.info("[TRACE] Step1 input_guardrail: sanitized=%s", bool(cleaned_message))
 
@@ -452,6 +480,15 @@ async def ask_brain(
     )
     state: Any = gather_results[1] if not isinstance(gather_results[1], BaseException) else {}
     session_meta: Any = gather_results[2] if not isinstance(gather_results[2], BaseException) else {}
+
+    # Merge this turn's captured contact info into the local meta so escalation
+    # in THIS turn sees it (Step 1 persisted it to Redis, but the parallel fetch
+    # may have raced the save).
+    if isinstance(session_meta, dict):
+        if pii_email and not session_meta.get("customer_email"):
+            session_meta["customer_email"] = pii_email
+        if pii_phone and not session_meta.get("customer_phone"):
+            session_meta["customer_phone"] = pii_phone
 
     # ── Inject customer_name from session_meta into store_context ────────
     if isinstance(session_meta, dict):
@@ -663,6 +700,50 @@ async def ask_brain(
         except Exception as _addr_exc:
             logger.warning("[turn %s] Address FSM failed, falling through: %s", turn_id, _addr_exc)
 
+    # ── Step 4c: Ticket-intake FSM (missing contact info before escalation) ─
+    # When a deterministic escalation started but the customer hasn't shared
+    # contact info yet, own the turn until we have an email/phone, then create
+    # the ticket. Mirrors the address FSM's persistence pattern.
+    _ticket_intake_state = (
+        session_meta.get("ticket_intake_state", TicketIntakeState.IDLE)
+        if isinstance(session_meta, dict) else TicketIntakeState.IDLE
+    )
+    if result is None and _ticket_intake_state != TicketIntakeState.IDLE:
+        logger.info(
+            "[FLOW] brain ticket_intake FSM ENTER state=%s session=%s",
+            _ticket_intake_state, session_id,
+        )
+        try:
+            _intake_text, _intake_next, _intake_pending, _intake_actions = await handle_ticket_intake_turn(
+                cleaned_message=cleaned_message,
+                session_meta=session_meta,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                conversation_history=history,
+                store_client=store_client,
+                session_service=session_service,
+                language=lang,
+            )
+            _next_meta = dict(session_meta) if isinstance(session_meta, dict) else {}
+            _next_meta["ticket_intake_state"] = _intake_next
+            _next_meta["ticket_intake_pending"] = _intake_pending
+            try:
+                await session_service.save_meta(tenant_id, session_id, _next_meta)
+            except Exception as _meta_exc:
+                logger.debug("Ticket-intake meta save failed (non-critical): %s", _meta_exc)
+            result = {
+                "response_text": _intake_text,
+                "ui_actions": _intake_actions,
+                "actions": _intake_actions,
+                "suggested_replies": [],
+            }
+            logger.info(
+                "[FLOW] brain ticket_intake EXIT next_state=%s actions=%d session=%s",
+                _intake_next, len(_intake_actions), session_id,
+            )
+        except Exception as _intake_exc:
+            logger.warning("[turn %s] Ticket-intake FSM failed, falling through: %s", turn_id, _intake_exc)
+
     # ── Step 5a: Pure UI / navigation commands ─────────────────────────────
     # "scroll down", "go to the top", "go home" are page actions, not product
     # queries. Answer instantly (no retrieval, no LLM) so the voice path never
@@ -675,6 +756,53 @@ async def ask_brain(
 
     # ── Step 5: Intent routing ─────────────────────────────────────────────
     logger.info("[FLOW] brain step5 intent_routing ENTER intent=%s session=%s", intent_result.intent, session_id)
+
+    # ── Step 5b: Deterministic escalation (no LLM) ────────────────────────
+    # Catches refund / damaged-order / talk-to-human requests by keyword BEFORE
+    # the LLM, so a mis-routed (e.g. Malayalam) complaint still escalates
+    # deterministically instead of getting a product-search answer. If the
+    # customer's contact info isn't known yet, start the ticket-intake FSM and
+    # ask for an email/phone instead of creating an incomplete ticket.
+    if result is None and detect_escalation(cleaned_message):
+        _contact_email, _contact_phone = session_contact(session_meta, state)
+        _pid = page_context.get("product_id") if isinstance(page_context, dict) else None
+        if _contact_email or _contact_phone:
+            logger.info(
+                "[FLOW] brain escalation: contact known, creating ticket session=%s email=%s phone=%s",
+                session_id, bool(_contact_email), bool(_contact_phone),
+            )
+            _ticket_res = await create_support_ticket(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                conversation_history=history,
+                store_client=store_client,
+                session_service=session_service,
+                customer_email=_contact_email,
+                customer_phone=_contact_phone,
+                trigger_message=cleaned_message,
+                product_id=_pid,
+                source="deterministic",
+            )
+            result = _escalation_result(_ticket_res, lang)
+        else:
+            logger.info("[FLOW] brain escalation: no contact, starting intake session=%s", session_id)
+            _next_meta = dict(session_meta) if isinstance(session_meta, dict) else {}
+            _next_meta["ticket_intake_state"] = TicketIntakeState.AWAITING_CONTACT
+            _next_meta["ticket_intake_pending"] = {
+                "trigger_message": cleaned_message,
+                "product_id": _pid,
+            }
+            try:
+                await session_service.save_meta(tenant_id, session_id, _next_meta)
+            except Exception as _meta_exc:
+                logger.debug("Ticket-intake start save failed (non-critical): %s", _meta_exc)
+            result = {
+                "response_text": ask_contact_prompt(lang),
+                "ui_actions": [],
+                "actions": [],
+                "suggested_replies": [],
+            }
+
     if result is None and intent_result.intent == OFF_TOPIC and intent_result.confidence >= 0.75:
         result = off_topic_response(lang)
 
@@ -1482,4 +1610,25 @@ def _empty_response(session_id: str, text: str, lang: str) -> Dict[str, Any]:
         "ui_actions": [],
         "actions": [],
         "suggested_replies": ["Show products", "Show my cart", "Help me find something"],
+    }
+
+
+def _escalation_result(ticket_result: Dict[str, Any], lang: str) -> Dict[str, Any]:
+    """Build the deterministic escalation reply (ticket confirmation + show_ticket)."""
+    actions: List[Dict[str, Any]] = []
+    if ticket_result.get("status") == "success":
+        actions.append({
+            "type": "show_ticket",
+            "payload": {
+                "ticket_id": ticket_result["ticket_id"],
+                "priority": ticket_result.get("priority", "medium"),
+                "message": ticket_created_message(lang),
+            },
+        })
+    text = str(ticket_result.get("message") or "") or ticket_created_message(lang)
+    return {
+        "response_text": text,
+        "ui_actions": actions,
+        "actions": actions,
+        "suggested_replies": [],
     }

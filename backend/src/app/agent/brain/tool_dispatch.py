@@ -298,11 +298,27 @@ async def execute_tool_call(
         return {"remove_from_cart": "dispatched", "message": "Removing from cart…"}, actions, [], None
 
     if tool_name == "get_orders":
+        from ..guardrails import is_pii_placeholder
+        from ...services.ticketing import _collect_customer_context
+
         email = str(tool_args.get("customer_email") or "").strip().lower()
+        # A redaction placeholder ([email]) is NOT a usable email — fall back to
+        # the session meta (server-side real values captured before redaction).
+        if not email or is_pii_placeholder(email):
+            ctx = await _collect_customer_context(session_service, tenant_id, session_id, "")
+            email = str(ctx.get("email") or "").strip().lower()
+        if not email:
+            return (
+                {
+                    "orders": [],
+                    "error": "No customer email available. Ask the customer for their email address so we can look up their orders.",
+                },
+                actions, [], None,
+            )
         orders = await store_client.get_orders(customer_email=email, limit=5)
         if orders:
             actions.append({"type": "show_orders", "payload": {"orders": orders}})
-        customer_email = email if email else None
+        customer_email = email
         return {"orders": orders}, actions, [], customer_email
 
     if tool_name == "apply_coupon":
@@ -549,6 +565,11 @@ async def _request_human_support(
     session_service: Any,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
     from ...services.ticketing import create_support_ticket
+    from ..guardrails import is_pii_placeholder
+
+    customer_email = str(tool_args.get("customer_email", "")).strip().lower()
+    if is_pii_placeholder(customer_email):
+        customer_email = ""
     ticket_result = await create_support_ticket(
         tenant_id=tenant_id,
         session_id=session_id,
@@ -556,6 +577,7 @@ async def _request_human_support(
         store_client=store_client,
         session_service=session_service,
         customer_email=customer_email,
+        source="llm",
     )
     if ticket_result.get("status") == "success":
         actions.append({
@@ -579,11 +601,18 @@ async def _create_support_ticket(
     actions: List[Dict[str, Any]],
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
     from ...services.ticketing import create_support_ticket
+    from ..guardrails import is_pii_placeholder
 
     customer_email = str(tool_args.get("customer_email", "") or "").strip().lower()
     customer_phone = str(tool_args.get("customer_phone", "") or "").strip()
     customer_name = str(tool_args.get("customer_name", "") or "").strip()
     trigger_message = str(tool_args.get("issue_description", "") or "").strip()
+    # Redaction placeholders ([email]/[phone]) are not real contact data — treat
+    # them as empty so create_support_ticket fills from session meta instead.
+    if is_pii_placeholder(customer_email):
+        customer_email = ""
+    if is_pii_placeholder(customer_phone):
+        customer_phone = ""
 
     ticket_result = await create_support_ticket(
         tenant_id=tenant_id,
@@ -595,6 +624,7 @@ async def _create_support_ticket(
         customer_phone=customer_phone,
         customer_name=customer_name,
         trigger_message=trigger_message,
+        source="llm",
     )
     if ticket_result.get("status") == "success":
         actions.append({

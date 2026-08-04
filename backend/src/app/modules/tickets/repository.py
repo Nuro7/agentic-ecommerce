@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import and_, select
@@ -20,6 +21,33 @@ class TicketRepository:
     async def get_by_id(self, ticket_id: str, tenant_id: str) -> Optional[VoiceTicket]:
         stmt = select(VoiceTicket).where(
             and_(VoiceTicket.id == ticket_id, VoiceTicket.tenant_id == tenant_id)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def find_open_by_session(
+        self,
+        tenant_id: str,
+        session_id: str,
+        since: datetime,
+    ) -> Optional[VoiceTicket]:
+        """Most recent OPEN ticket for this tenant+session created at/after `since`.
+
+        Used to de-duplicate escalations: the same customer complaining twice in
+        the same session (within a short window) must not create two tickets.
+        """
+        stmt = (
+            select(VoiceTicket)
+            .where(
+                and_(
+                    VoiceTicket.tenant_id == tenant_id,
+                    VoiceTicket.session_id == session_id,
+                    VoiceTicket.status == "open",
+                    VoiceTicket.created_at >= since,
+                )
+            )
+            .order_by(VoiceTicket.created_at.desc())
+            .limit(1)
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
