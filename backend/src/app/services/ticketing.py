@@ -9,7 +9,13 @@ What it does:
   1. Persists the ticket to the `voice_tickets` table (merchant-scoped, RLS-protected)
   2. Emits a `ticket.created` webhook to the merchant's external helpdesk (async)
   3. Best-effort syncs a "speako" ticket tag + metafields onto the Shopify customer
+
+Latency contract: the ticket insert + spoken confirmation return IMMEDIATELY —
+no blocking LLM call (issue summaries are deterministic, keyword-based) and no
+blocking network calls on the critical path. The Shopify customer sync runs in
+a background task AFTER the confirmation has been handed back to the user.
 """
+import asyncio
 import json
 import logging
 import os
@@ -21,6 +27,10 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Strong reference to in-flight background sync tasks so they aren't GC'd
+# before they complete (fire-and-forget, but never dropped mid-flight).
+_BG_TASKS: set[asyncio.Task] = set()
 
 # Redaction placeholders that must never be persisted to a transcript.
 _PII_PLACEHOLDERS = frozenset({"[email]", "[phone]", "[card]", "[pan]", "[aadhaar]"})
@@ -46,6 +56,87 @@ def _looks_like_artifact(content: str) -> bool:
     if any(marker in low for marker in _ARTIFACT_MARKERS):
         return True
     return False
+
+
+# ── Name sanitization (DOM layout noise must never reach the DB) ──────────────
+
+# Structural labels the widget can leak into the captured name. Strictly
+# blacklisted — "Footer", "Header", "Navigation", "Main", … are never names.
+_NAME_DOM_NOISE = {
+    "footer", "header", "navigation", "nav", "main", "sidebar", "banner",
+    "menu", "cart", "checkout", "search", "login", "signup", "register",
+    "home", "product", "products", "shop", "store", "page", "content",
+    "wrapper", "container", "hero", "featured", "section", "div", "span",
+    "button", "link", "modal", "popup", "topnav", "grid", "card",
+    "skip-link", "footer-nav", "main-nav", "hero", "carousel",
+}
+
+# A plausible personal name: letters, spaces, apostrophes, hyphens, dots only.
+_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z' .-]{1,39}$")
+
+# "no name" / skip replies → treat as absent, never persist the raw phrase.
+_SKIP_NAME_RE = re.compile(
+    r"\b(no name|skip|guest|not needed|no thanks|don'?t ask|naam nahi|"
+    r"venda|nillu|sare|nahi chahiye)\b",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_customer_name(value: str) -> str:
+    """Return a clean personal name or '' — never DOM layout noise."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    candidate = re.sub(r"\s+", " ", raw).strip(" \t\n\r.,;:!?'\"<>[]()")
+    candidate = re.sub(r"<[^>]+>", "", candidate).strip()
+    if not candidate:
+        return ""
+    lower = candidate.lower()
+    if lower in _NAME_DOM_NOISE or any(
+        w == lower for w in _NAME_DOM_NOISE
+    ):
+        return ""
+    if _SKIP_NAME_RE.search(candidate):
+        return ""
+    if not _NAME_RE.match(candidate):
+        return ""
+    tokens = [t.strip("' .-") for t in candidate.split()]
+    if any(t.lower() in _NAME_DOM_NOISE for t in tokens if t):
+        return ""
+    return candidate[:100]
+
+
+def _clean_issue_summary(value: str) -> str:
+    """1-sentence, <=100 char merchant-view summary — no prompt artifacts.
+
+    Strips generated boilerplate ("Customer requested to speak to a human
+    support agent. Context: …"), PII placeholders and internal markers so only
+    the customer's real issue shows in dashboard table views.
+    """
+    text = str(value or "").strip()
+    if not text or _looks_like_artifact(text):
+        return ""
+    for ph in _PII_PLACEHOLDERS:
+        text = text.replace(ph, "")
+    # Deterministic boilerplate prefix: "Customer requested to speak to a human
+    # support agent. Context: <words>" → keep only the customer's own <words>.
+    # A bare classification sentence ("Customer is requesting a refund.") with
+    # no Context tail is kept as-is — it reads fine in a merchant table.
+    if "context" in text.lower():
+        tail = re.split(r"\s+context\s*:\s*", text, maxsplit=1, flags=re.IGNORECASE)
+        if len(tail) == 2:
+            text = tail[1]
+        else:
+            text = re.sub(
+                r"^\s*customer\s+(?:requested|is|was|has)\s+.*?\s+context\b",
+                "", text, flags=re.IGNORECASE,
+            )
+    # Collapse whitespace, drop leading conjunction/greeting noise.
+    text = re.sub(r"\s+", " ", text).strip(" \t\n\r.,;:!?")
+    text = re.sub(r"^(ok|okay|hi|hello|hey|so|and)\s+", "", text, flags=re.IGNORECASE)
+    if len(text) > 100:
+        text = text[:100].rsplit(" ", 1)[0]
+    return text[:100]
 
 TICKET_NAMESPACE = "speako"
 TICKET_STATUS_KEY = "ticket_status"
@@ -295,11 +386,13 @@ def _generate_issue_summary(
     else:
         summary = "Customer requested human assistance."
 
-    # Append a short, single-line context only when it adds signal.
-    context = " ".join(recent.split()[:18])
+    # A short, single-line context snippet ONLY when it adds real signal — the
+    # old "Context: <blob>" suffix is exactly the artifact we're removing. Cap
+    # tightly so merchant table views stay clean.
+    context = " ".join(recent.split()[:10])
     if context:
-        summary += f" Context: {context}."
-    return summary[:600]
+        summary += f" {context}."
+    return summary[:200]
 
 
 def _resolve_shop_domain(store_client: Any, shop_domain: Optional[str]) -> str:
@@ -436,7 +529,7 @@ async def create_support_ticket(
     phone = re.sub(r"\D", "", str(customer_phone or customer["phone"] or ""))
     if len(phone) < 10:
         phone = ""
-    name = str(customer_name or customer["name"] or "").strip()
+    name = _sanitize_customer_name(customer_name or customer["name"] or "")
     email = str(customer_email or customer["email"] or "").strip().lower()
 
     # The conversation history captured at brain Step 2 predates THIS turn, so
@@ -454,9 +547,9 @@ async def create_support_ticket(
     # explicitly — the stored summary and the priority/heat come from that.
     scoring_text = str(issue_summary or "").strip()
     if scoring_text:
-        # Clean the persisted summary from raw user speech (collapse, cap length).
-        cleaned = re.sub(r"\s+", " ", scoring_text).strip(" \t\n\r.,;:!?")
-        summary = cleaned[:200] if cleaned else ""
+        # Clean the persisted summary from raw user speech — one sentence, max
+        # 100 chars, no prompt boilerplate (deterministic, no LLM blocking).
+        summary = _clean_issue_summary(scoring_text)
         priority = _detect_priority(scoring_text)
         issue_type = _classify_issue(scoring_text)
         order_id = _extract_order_id(scoring_text)
@@ -464,7 +557,9 @@ async def create_support_ticket(
         heat = _detect_heat(scoring_text, priority)
     else:
         priority = _detect_priority(trigger_message or context_text)
-        summary = _generate_issue_summary(conversation_history, trigger_message)
+        summary = _clean_issue_summary(
+            _generate_issue_summary(conversation_history, trigger_message)
+        )
         issue_type = _classify_issue(trigger_message or context_text)
         order_id = _extract_order_id(trigger_message or context_text)
         priority_reason = _priority_reason(trigger_message or context_text)
@@ -506,12 +601,22 @@ async def create_support_ticket(
 
     transcript_text = _build_transcript_text(conversation_history)
 
-    # Best-effort: tag + metafield the Shopify customer so the merchant sees the
-    # escalation in Shopify Admin. Never blocks or fails the turn.
+    # Best-effort: tag + metafield the Shopify customer. Runs as a BACKGROUND
+    # task — the shopify Admin GraphQL round-trips must never delay the <1s
+    # ticket confirmation spoken back to the user.
+    def _spawn_shopify_sync() -> None:
+        task = asyncio.create_task(_sync_shopify_customer(store_client, email, ticket_id))
+        _BG_TASKS.add(task)
+        task.add_done_callback(_BG_TASKS.discard)
+
     try:
-        await _sync_shopify_customer(store_client, email, ticket_id)
-    except Exception as exc:
-        logger.warning("Shopify ticket metafield sync skipped: %s", exc)
+        _spawn_shopify_sync()
+    except RuntimeError:
+        # No running event loop (e.g. unit tests) — run inline, never block on error.
+        try:
+            await _sync_shopify_customer(store_client, email, ticket_id)
+        except Exception as exc:
+            logger.warning("Shopify ticket metafield sync skipped: %s", exc)
 
     confirm_msg = ticket_created_message("en", ticket_number or "")
     return {

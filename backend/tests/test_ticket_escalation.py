@@ -6,7 +6,9 @@ import pytest
 from src.app.agent.brain.ticket_intake import (
     TicketIntakeState,
     detect_escalation,
+    extract_customer_name,
     handle_ticket_intake_turn,
+    sanitize_customer_name,
     session_contact,
     ticket_created_with_issue_message,
 )
@@ -139,6 +141,53 @@ class TestTicketingHelpers:
 
 
 @pytest.mark.unit
+class TestNameSanitization:
+    def test_valid_name_passes(self):
+        assert sanitize_customer_name("John") == "John"
+        assert sanitize_customer_name("John Smith") == "John Smith"
+        assert sanitize_customer_name("  Mary-Anne  ") == "Mary-Anne"
+
+    def test_dom_layout_noise_never_persisted(self):
+        # The widget leaks DOM structure labels — they must never be a name.
+        for noise in ("Footer", "Header", "Navigation", "Main", "Sidebar", "Menu"):
+            assert sanitize_customer_name(noise) == "", f"{noise} leaked as name"
+        assert sanitize_customer_name("Main Footer") == ""
+
+    def test_intro_phrase_extracts_only_the_name(self):
+        assert extract_customer_name("my name is John") == "John"
+        assert extract_customer_name("call me Ravi Kumar") == "Ravi Kumar"
+        assert extract_customer_name("no name to give") == ""
+
+    def test_noise_inside_phrase_rejected(self):
+        assert extract_customer_name("my name is Footer") == ""
+
+
+@pytest.mark.unit
+class TestIssueSummaryCleaning:
+    def test_strips_context_boilerplate(self):
+        from src.app.services import ticketing as svc
+        assert svc._clean_issue_summary(
+            "Customer requested to speak to a human support agent. Context: "
+            "the box arrived damaged and I want a refund."
+        ) == "the box arrived damaged and I want a refund"
+
+    def test_bare_classification_kept(self):
+        from src.app.services import ticketing as svc
+        assert svc._clean_issue_summary("Customer is requesting a refund.") == "Customer is requesting a refund"
+
+    def test_caps_at_100_chars(self):
+        from src.app.services import ticketing as svc
+        long = "damaged " * 30
+        out = svc._clean_issue_summary(long)
+        assert len(out) <= 100
+
+    def test_empty_and_placeholders_stripped(self):
+        from src.app.services import ticketing as svc
+        assert svc._clean_issue_summary("") == ""
+        assert svc._clean_issue_summary("[email] refund please") == "refund please"
+
+
+@pytest.mark.unit
 class TestSessionContact:
     def test_from_meta(self):
         email, phone = session_contact({"customer_email": "a@b.co", "customer_phone": "9876543210"})
@@ -209,14 +258,14 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
-        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert state == TicketIntakeState.AWAITING_NAME
         assert pending["pending_email"] == "john@example.com"
         assert actions == []
 
         text, state, pending, actions = await handle_ticket_intake_turn(
-            cleaned_message="I received a damaged box and the shoe size is wrong.",
+            cleaned_message="my name is John",
             session_meta={
-                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_state": TicketIntakeState.AWAITING_NAME,
                 "ticket_intake_pending": {
                     "trigger_message": "order damaged",
                     "pending_email": "john@example.com",
@@ -229,9 +278,30 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending["pending_name"] == "John"
+
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="I received a damaged box and the shoe size is wrong.",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_pending": {
+                    "trigger_message": "order damaged",
+                    "pending_email": "john@example.com",
+                    "pending_name": "John",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
         assert state == TicketIntakeState.IDLE
         assert pending == {}
         assert captured.get("customer_email") == "john@example.com"
+        assert captured.get("customer_name") == "John"
         assert captured.get("issue_summary") == "I received a damaged box and the shoe size is wrong"
         assert any(a["type"] == "show_ticket" for a in actions)
 
@@ -276,15 +346,15 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
-        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert state == TicketIntakeState.AWAITING_NAME
         assert pending["pending_phone"] == "9876543210"
-        assert "issue" in text.lower()
+        assert "pleasure" in text.lower()
         assert actions == []
 
         text, state, pending, actions = await handle_ticket_intake_turn(
-            cleaned_message="I received a damaged box and the shoe size is wrong.",
+            cleaned_message="John Smith",
             session_meta={
-                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_state": TicketIntakeState.AWAITING_NAME,
                 "ticket_intake_pending": {
                     "trigger_message": "refund",
                     "pending_phone": "9876543210",
@@ -297,9 +367,30 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending["pending_name"] == "John Smith"
+
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="I received a damaged box and the shoe size is wrong.",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_phone": "9876543210",
+                    "pending_name": "John Smith",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
         assert state == TicketIntakeState.IDLE
         assert pending == {}
         assert captured.get("customer_phone") == "9876543210"
+        assert captured.get("customer_name") == "John Smith"
         assert captured.get("issue_summary") == "I received a damaged box and the shoe size is wrong"
         assert any(a["type"] == "show_ticket" for a in actions)
 
@@ -379,6 +470,67 @@ class TestTicketIntake:
         text, state, pending, actions = await self._run(monkeypatch, "anything")
         assert state == TicketIntakeState.IDLE
 
+    async def test_name_step_rejects_dom_noise(self, monkeypatch):
+        # "Footer" leaking in from the widget must NOT become the customer name —
+        # the FSM stays on the name step and re-asks.
+        from src.app.agent.brain import ticket_intake as ti
+        captured = {}
+
+        async def spy_create_support_ticket(**kwargs):
+            captured.update(kwargs)
+            return {"status": "success", "ticket_id": "T-7", "message": "created"}
+
+        monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="Footer",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_NAME,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_phone": "9876543210",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
+        assert state == TicketIntakeState.AWAITING_NAME
+        assert "name" in text.lower()
+        assert captured == {}
+
+    async def test_name_step_skip_proceeds_to_issue(self, monkeypatch):
+        from src.app.agent.brain import ticket_intake as ti
+        captured = {}
+
+        async def spy_create_support_ticket(**kwargs):
+            captured.update(kwargs)
+            return {"status": "success", "ticket_id": "T-8", "message": "created"}
+
+        monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="skip",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_NAME,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_phone": "9876543210",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending.get("pending_name", "") == ""
+        assert "issue" in text.lower()
+        assert captured == {}
+
     async def test_creates_ticket_when_message_redacted_but_meta_has_email(self, monkeypatch):
         # check_input redacts PII on the cleaned_message (email → [email]) but the
         # real value is captured from the RAW message and stored in session meta.
@@ -410,8 +562,27 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
-        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert state == TicketIntakeState.AWAITING_NAME
         assert pending["pending_email"] == "john@example.com"
+
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="John",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_NAME,
+                "ticket_intake_pending": {
+                    "trigger_message": "order damaged",
+                    "pending_email": "john@example.com",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending["pending_name"] == "John"
 
         text, state, pending, actions = await handle_ticket_intake_turn(
             cleaned_message="the box arrived damaged",
@@ -420,6 +591,7 @@ class TestTicketIntake:
                 "ticket_intake_pending": {
                     "trigger_message": "order damaged",
                     "pending_email": "john@example.com",
+                    "pending_name": "John",
                 },
             },
             tenant_id="t1",
@@ -433,6 +605,7 @@ class TestTicketIntake:
         assert pending == {}
         assert any(a["type"] == "show_ticket" for a in actions)
         assert captured.get("customer_email") == "john@example.com"
+        assert captured.get("customer_name") == "John"
 
     async def test_creates_ticket_when_message_redacted_but_meta_has_phone(self, monkeypatch):
         from src.app.agent.brain import ticket_intake as ti
@@ -483,13 +656,13 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
-        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert state == TicketIntakeState.AWAITING_NAME
         assert pending["pending_phone"] == "9876543210"
 
         text, state, pending, actions = await handle_ticket_intake_turn(
-            cleaned_message="I need a refund",
+            cleaned_message="Ravi Kumar",
             session_meta={
-                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_state": TicketIntakeState.AWAITING_NAME,
                 "ticket_intake_pending": {
                     "trigger_message": "refund",
                     "pending_phone": "9876543210",
@@ -502,9 +675,30 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending["pending_name"] == "Ravi Kumar"
+
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="I need a refund",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_phone": "9876543210",
+                    "pending_name": "Ravi Kumar",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
         assert state == TicketIntakeState.IDLE
         assert pending == {}
         assert captured.get("customer_phone") == "9876543210"
+        assert captured.get("customer_name") == "Ravi Kumar"
         assert captured.get("issue_summary") == "I need a refund"
 
     async def test_invalid_phone_asks_again(self, monkeypatch):

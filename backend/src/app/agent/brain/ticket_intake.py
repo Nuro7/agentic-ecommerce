@@ -37,6 +37,7 @@ class TicketIntakeState:
     IDLE = "idle"
     AWAITING_CONTACT = "awaiting_contact"
     VERIFYING_PHONE = "verifying_phone"
+    AWAITING_NAME = "awaiting_name"
     AWAITING_ISSUE = "awaiting_issue"
 
 
@@ -173,6 +174,62 @@ _REASK_ISSUE_TEXTS = {
     "kn": "Nimage ena samasya iddhe antha sankshipthavagi heLiri, naa team-gagi log madalu?",
 }
 
+# STEP 3 — ask for the customer's name (one field per prompt, human-like flow).
+_ASK_NAME_TEXTS = {
+    "en": "Great! Who do I have the pleasure of speaking with?",
+    "hi": "Badhiya! Main kis se baat kar raha hoon?",
+    "ml": "Kollam! Njan aarodu saambhashikkukayaanu?",
+    "ta": "Nandri! Naan yarodu pesi kondu irukken?",
+    "te": "Baagundi! Nenu evaritho matladutunnanu?",
+    "bn": "Bhalo! Ami kar sathe kotha boli?",
+    "kn": "Chennagide! Naanu yarondige matanadutiddene?",
+}
+
+# Re-ask name when the reply was empty / looked like DOM noise, not a name.
+_REASK_NAME_TEXTS = {
+    "en": "I didn't quite catch that. Could you tell me your name?",
+    "hi": "Mujhe thik se samajh nahi aaya. Kya aap apna naam bata sakte hain?",
+    "ml": "Njan sheriykk manassilaayilla. Ningalude peru parayaamo?",
+    "ta": "Naan sariyaga puriyala. Ungal peru sollunga?",
+    "te": "Nenu sariyaga artham cheyyalekapoyanu. Mee peru cheppara?",
+    "bn": "Ami thik kore bujhini. Apnar naam bollun?",
+    "kn": "Nanu sariyagi artha madikollalilla. Nimma hesaru heLiri?",
+}
+
+# DOM layout noise that must NEVER be stored as a customer name — the widget
+# occasionally leaks structural labels (Footer/Header/Navigation/Main) into the
+# captured text. Strictly blacklisted + filtered before persisting.
+_DOM_NAME_NOISE = {
+    "footer", "header", "navigation", "main", "sidebar", "banner", "menu",
+    "cart", "checkout", "search", "login", "signup", "register", "home",
+    "product", "products", "shop", "store", "page", "content", "wrapper",
+    "container", "hero", "featured", "section", "div", "span", "button",
+    "link", "modal", "popup", "topnav", "navmenu", "hero", "carousel",
+    "grid", "card", "footer-nav", "main-nav", "skip", "skip-link",
+}
+
+# A valid personal name: letters, spaces, apostrophes, hyphens, dots. Nothing
+# else (no digits, no tags, no punctuation soup).
+_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z' .-]{1,39}$")
+
+# Name-intro patterns (multi-language) → capture group is the candidate name.
+_NAME_CAPTURE_RE = re.compile(
+    r"\b(i'?m|my name is|call me|it'?s|this is|"
+    r"(?:mera|apna|amar|nanna|naa)\s+naam|"
+    r"(?:en|ente|naa|nanna)\s+peru|"
+    r"naam\s+hai|peru\s+enthaan|peru|"
+    r"(?:njaan|enthe)\s+peru|naanu|nanu|nene|naano)\s+"
+    r"([A-Za-z][A-Za-z' .-]{1,39})",
+    re.IGNORECASE,
+)
+
+# When the user politely skips giving a name ("not needed", "skip", "guest").
+_SKIP_NAME_RE = re.compile(
+    r"\b(no name|skip|guest|not needed|no thanks|don'?t ask|naam nahi|"
+    r"venda|nillu|sare|nahi chahiye)\b",
+    re.IGNORECASE,
+)
+
 # Ticket confirmed WITH the customer's own issue summary echoed back and the
 # callback channel/contact they gave — matches the "TK-1001 / 'summary' / call
 # you at <phone>" confirmation the user expects to see.
@@ -261,6 +318,51 @@ def reask_issue_prompt(language: str) -> str:
     return _localized(_REASK_ISSUE_TEXTS, language)
 
 
+def ask_name_prompt(language: str) -> str:
+    return _localized(_ASK_NAME_TEXTS, language)
+
+
+def reask_name_prompt(language: str) -> str:
+    return _localized(_REASK_NAME_TEXTS, language)
+
+
+def sanitize_customer_name(value: str) -> str:
+    """Return a clean, blacklisted personal name or '' (never DOM noise).
+
+    Strips layout labels (Footer/Header/Navigation/Main/…) and any token that
+    isn't a plausible human name. Never returns raw widget text.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    # Normalize: collapse whitespace, strip outer punctuation / tags.
+    candidate = re.sub(r"\s+", " ", raw).strip(" \t\n\r.,;:!?'\"<>[]()")
+    candidate = re.sub(r"<[^>]+>", "", candidate).strip()
+    if not candidate:
+        return ""
+    lower = candidate.lower()
+    # Whole-string DOM labels are never names.
+    if lower in _DOM_NAME_NOISE or candidate.lower() in {w.lower() for w in _DOM_NAME_NOISE}:
+        return ""
+    if _SKIP_NAME_RE.search(candidate):
+        return ""
+    if not _NAME_RE.match(candidate):
+        return ""
+    # Token-level: any single noise token poisons the whole capture.
+    tokens = [t.strip("' .-") for t in candidate.split()]
+    if any(t.lower() in _DOM_NAME_NOISE for t in tokens if t):
+        return ""
+    return candidate
+
+
+def extract_customer_name(text: str) -> str:
+    """Extract a name from an intro phrase ("my name is John") → sanitized."""
+    m = _NAME_CAPTURE_RE.search(str(text or ""))
+    if not m:
+        return ""
+    return sanitize_customer_name(m.group(2))
+
+
 def ticket_created_with_issue_message(
     language: str,
     ticket_number: str,
@@ -303,16 +405,15 @@ async def handle_ticket_intake_turn(
 ) -> Tuple[str, str, Dict[str, Any], List[Dict[str, Any]]]:
     """Process one intake reply → (text, next_state, pending, ui_actions).
 
-    Flow:
-      AWAITING_CONTACT: extract email or phone from the reply. An email is
-        self-verifying (format-checked), a phone is normalized to digits,
-        length-checked (>= 10). Both move the FSM forward — never persisted
-        until the customer has confirmed their number AND described the issue.
-      VERIFYING_PHONE: a positive reply ("yes"/"correct") moves to
-        AWAITING_ISSUE; a negative reply / new number returns to collection.
-      AWAITING_ISSUE: the customer's own words are captured as the ticket's
-        `issue_summary` and drive priority/heat/issue_type. Nothing is persisted
-        until the issue is described.
+    Flow (one field per voice prompt — human-like, step by step):
+      AWAITING_CONTACT: ask for the 10-digit mobile number (or email).
+      VERIFYING_PHONE: read the number back ("8-9-4-3-…") and require explicit
+        "yes"/"correct" before moving on.
+      AWAITING_NAME: ask "who do I have the pleasure of speaking with?" and
+        sanitize the reply (DOM noise like Footer/Header/Navigation is dropped).
+      AWAITING_ISSUE: ask what issue the team should help with; the customer's
+        own words become the ticket's `issue_summary` and drive priority/heat.
+      Nothing is persisted until the issue is described.
     """
     pending = (session_meta or {}).get("ticket_intake_pending") or {}
     if not isinstance(pending, dict) or not pending.get("trigger_message"):
@@ -324,28 +425,50 @@ async def handle_ticket_intake_turn(
              "kn": "Naanu nimagenu sahayavagabahudu?"}, language), TicketIntakeState.IDLE, {}, []
 
     low = " ".join(str(cleaned_message or "").lower().split())
-    if _CANCEL_RE.search(low):
+    state_now = (session_meta or {}).get("ticket_intake_state", TicketIntakeState.AWAITING_CONTACT)
+
+    # Global cancel — EXCEPT during the name step, where "skip"/"guest"/"no
+    # name" is a polite decline, not a ticket cancellation.
+    if _CANCEL_RE.search(low) and not (
+        state_now == TicketIntakeState.AWAITING_NAME and _SKIP_NAME_RE.search(low)
+    ):
         logger.info("Ticket intake cancelled session=%s", session_id)
         return _localized(_CANCEL_TEXTS, language), TicketIntakeState.IDLE, {}, []
-
-    state_now = (session_meta or {}).get("ticket_intake_state", TicketIntakeState.AWAITING_CONTACT)
 
     # ── Verification step: awaiting "yes" on the read-back number ────────────
     if state_now == TicketIntakeState.VERIFYING_PHONE:
         pending_phone = str(pending.get("pending_phone") or "").strip()
         if _CONFIRM_RE.search(low) and pending_phone:
             logger.info(
-                "Phone verified session=%s phone=%s (awaiting issue)",
+                "Phone verified session=%s phone=%s (awaiting name)",
                 session_id, pending_phone,
             )
             pending = dict(pending)
             pending["pending_phone"] = pending_phone
-            return ask_issue_prompt(language), TicketIntakeState.AWAITING_ISSUE, pending, []
+            return ask_name_prompt(language), TicketIntakeState.AWAITING_NAME, pending, []
         if _DENY_RE.search(low):
             # Number rejected — collect again.
             return reask_contact_prompt(language), TicketIntakeState.AWAITING_CONTACT, pending, []
         # Unclear reply — repeat the verification.
         return verify_phone_prompt(language, pending_phone), TicketIntakeState.VERIFYING_PHONE, pending, []
+
+    # ── Name-capture step: ask, then sanitize (DOM noise never persisted) ────
+    if state_now == TicketIntakeState.AWAITING_NAME:
+        name = extract_customer_name(cleaned_message or "")
+        if not name:
+            name = sanitize_customer_name(cleaned_message or "")
+        if not name:
+            if _SKIP_NAME_RE.search(str(cleaned_message or "")):
+                logger.info("Ticket name skipped session=%s", session_id)
+                pending = dict(pending)
+                pending["pending_name"] = ""
+                return ask_issue_prompt(language), TicketIntakeState.AWAITING_ISSUE, pending, []
+            logger.info("Ticket name rejected session=%s reply=%r", session_id, (cleaned_message or "")[:80])
+            return reask_name_prompt(language), TicketIntakeState.AWAITING_NAME, pending, []
+        logger.info("Ticket name captured session=%s name=%s", session_id, name)
+        pending = dict(pending)
+        pending["pending_name"] = name
+        return ask_issue_prompt(language), TicketIntakeState.AWAITING_ISSUE, pending, []
 
     # ── Issue-capture step: the customer's own words become the ticket ────────
     if state_now == TicketIntakeState.AWAITING_ISSUE:
@@ -401,12 +524,12 @@ async def handle_ticket_intake_turn(
             )
         return reask_contact_prompt(language), TicketIntakeState.AWAITING_CONTACT, pending, []
 
-    # An email is format-verified at capture — ask for the issue, then create.
+    # An email is format-verified at capture — ask for the name, then issue.
     if email:
-        logger.info("Ticket intake email session=%s email=%s (awaiting issue)", session_id, email)
+        logger.info("Ticket intake email session=%s email=%s (awaiting name)", session_id, email)
         pending = dict(pending)
         pending["pending_email"] = email
-        return ask_issue_prompt(language), TicketIntakeState.AWAITING_ISSUE, pending, []
+        return ask_name_prompt(language), TicketIntakeState.AWAITING_NAME, pending, []
 
     # Phone only — normalize, validate length, then read back for confirmation.
     clean_phone = normalize_phone(phone)
@@ -440,6 +563,7 @@ async def _create_ticket_with(
         session_service=session_service,
         customer_email=customer_email,
         customer_phone=customer_phone,
+        customer_name=str(pending.get("pending_name") or ""),
         trigger_message=str(pending.get("trigger_message") or ""),
         issue_summary=str(pending.get("issue_summary") or ""),
         product_id=pending.get("product_id"),

@@ -59,8 +59,9 @@ from ...services.promotions import rerank_and_annotate_promotions
 from .ticket_intake import (
     TicketIntakeState,
     ask_contact_prompt,
-    ask_issue_prompt,
+    ask_name_prompt,
     detect_escalation,
+    extract_customer_name,
     handle_ticket_intake_turn,
     reask_contact_prompt,
     session_contact,
@@ -499,17 +500,11 @@ async def ask_brain(
             store_context["customer_name"] = _cn
 
     # ── Name capture from user message (both text and voice paths) ─────────
+    # Only ever persist a sanitized name — DOM layout labels (Footer/Header/
+    # Navigation/Main…) and other widget noise are blacklisted before save.
     if isinstance(session_meta, dict) and not session_meta.get("customer_name"):
-        import re as _re
-        _nm = _re.search(
-            r"\b(i'?m|my name is|call me|it'?s|"
-            r"(?:mera|apna|amar|nanna|naa)\s+naam|"
-            r"(?:en|ente|naa|nanna)\s+peru|"
-            r"naam\s+hai|peru|per enthaan|enno|en frnd)\s+([a-z]{2,})",
-            cleaned_message, _re.I,
-        )
-        if _nm:
-            _captured = _nm.group(2).strip().capitalize()
+        _captured = extract_customer_name(cleaned_message)
+        if _captured:
             session_meta["customer_name"] = _captured
             store_context["customer_name"] = _captured
             if session_service:
@@ -802,15 +797,15 @@ async def ask_brain(
         # alone must be read back + confirmed first (see intake FSM) so corrupt
         # digits never reach the DB — route through the intake FSM instead.
         # Email is format-verified at capture → route into the intake FSM which
-        # asks for the customer's own description of the issue and only then
-        # persists the ticket (the stated reason drives the priority/heat).
+        # asks for the customer's name, then their own description of the issue
+        # and only then persists the ticket (the stated reason drives priority).
         if _contact_email:
             logger.info(
-                "[FLOW] brain escalation: email known, starting issue collection session=%s email=%s",
+                "[FLOW] brain escalation: email known, starting name collection session=%s email=%s",
                 session_id, _contact_email,
             )
             _next_meta = dict(session_meta) if isinstance(session_meta, dict) else {}
-            _next_meta["ticket_intake_state"] = TicketIntakeState.AWAITING_ISSUE
+            _next_meta["ticket_intake_state"] = TicketIntakeState.AWAITING_NAME
             _next_meta["ticket_intake_pending"] = {
                 "trigger_message": cleaned_message,
                 "product_id": _pid,
@@ -820,9 +815,9 @@ async def ask_brain(
             try:
                 await session_service.save_meta(tenant_id, session_id, _next_meta)
             except Exception as _meta_exc:
-                logger.debug("Ticket-intake email-issue save failed (non-critical): %s", _meta_exc)
+                logger.debug("Ticket-intake email-name save failed (non-critical): %s", _meta_exc)
             result = {
-                "response_text": ask_issue_prompt(lang),
+                "response_text": ask_name_prompt(lang),
                 "ui_actions": [],
                 "actions": [],
                 "suggested_replies": [],

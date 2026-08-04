@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...agent.brain.canned import say
+from ...agent.brain.text_utils import normalize_province_code, normalize_country_code
 from ...agent.prompts.filtering import detect_language
 from ...agent.voice.transcription import STTService
 from ...config import settings
@@ -350,19 +352,14 @@ async def chat_endpoint(
         pass
 
     # ── Name capture from first message ──────────────────────────────────────
+    # Sanitized via the shared extractor — DOM layout labels (Footer/Header/
+    # Navigation/Main…) are blacklisted and never persisted.
     if session_service:
         session_meta = await session_service.get_meta(tenant_id, payload.session_id)
         if not session_meta.get("customer_name"):
-            import re as _re
-            _nm = _re.search(
-                r"\b(i'?m|my name is|call me|it'?s|"
-                r"(?:mera|apna|amar|nanna|naa)\s+naam|"
-                r"(?:en|ente|naa|nanna)\s+peru|"
-                r"naam\s+hai|peru|per enthaan|enno|en frnd)\s+([a-z]{2,})",
-                payload.message, _re.I,
-            )
-            if _nm:
-                captured = _nm.group(2).strip().capitalize()
+            from ...agent.brain.ticket_intake import extract_customer_name
+            captured = extract_customer_name(payload.message)
+            if captured:
                 session_meta["customer_name"] = captured
                 await session_service.save_meta(tenant_id, payload.session_id, {**session_meta, "customer_name": captured})
 
@@ -485,9 +482,10 @@ async def prepare_checkout(
     cart and return the real API-generated checkoutUrl.
 
     Shopify hosted checkout ignores `checkout[...]` URL params and its DOM is
-    cross-origin, so the ONLY way to open it pre-filled is cartBuyerIdentityUpdate
-    on the Storefront cart that the customer is then taken to. The widget calls
-    this right before navigating to the returned checkoutUrl.
+    cross-origin, so the ONLY way to open it pre-filled is binding the delivery
+    address via cartDeliveryAddressesReplace on the Storefront cart that the
+    customer is then taken to. The widget calls this right before navigating to
+    the returned checkoutUrl.
 
     Supported lines are rebuilt on the server from the same product/variant ids the
     widget already added via the browser cart; the server Storefront cart is the
@@ -519,11 +517,23 @@ async def prepare_checkout(
     bind_method = getattr(store_client, "attach_buyer_identity", None)
     if bind_method:
         try:
+            # Enforce ISO-2 province/country codes (California→CA, Maharashtra→MH,
+            # country→US/IN/CA/GB) so Shopify's CartSelectableAddressInput accepts
+            # the bound address; default to the store country or US.
+            addr_payload = dict(payload.address or {})
+            _raw_state = addr_payload.get("province") or addr_payload.get("state")
+            _raw_country = addr_payload.get("country_code") or addr_payload.get("country")
+            addr_payload["state_code"] = normalize_province_code(
+                _raw_state, _raw_country or os.getenv("STORE_COUNTRY", "US")
+            )
+            addr_payload["country_code"] = normalize_country_code(
+                _raw_country, default=os.getenv("STORE_COUNTRY", "US")
+            )
             bound = await bind_method(
                 session_id=payload.session_id,
                 email=payload.email,
                 phone=payload.phone,
-                address=payload.address or {},
+                address=addr_payload,
             )
         except Exception as exc:
             logger.warning("cart/checkout: buyer identity bind failed: %s", exc)
