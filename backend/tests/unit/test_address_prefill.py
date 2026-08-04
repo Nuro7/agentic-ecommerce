@@ -403,3 +403,87 @@ def test_checkout_intent_does_not_emit_redirect_while_collecting(monkeypatch):
     assert "checkout" not in types
     assert nav_calls == [], "append_live_navigation must not run on an FSM-owned turn"
     assert "phone number" in (result.get("response_text") or "").lower()
+
+
+def test_active_phone_flow_routes_digits_to_fsm_not_search(monkeypatch):
+    """Regression: once the address FSM is collecting the phone, a bare phone
+    number on the NEXT turn must be routed back to the FSM (→ ask for the name),
+    NOT fall through to product search ("I could not find any products").
+
+    The old gate required THIS turn to look like checkout (page_type/URL or a
+    checkout phrase), but a phone number matches neither, so the digits were
+    classified as a product search. Fix: an active flow owns the turn.
+    """
+    from src.app.agent.brain import core as brain_core
+    from src.app.agent.classifier import IntentResult
+
+    nav_calls = []
+
+    async def fake_append_live_navigation(*args, **kwargs):
+        nav_calls.append((args, kwargs))
+
+    class FakeClassifier:
+        async def classify(self, message, lang):
+            return IntentResult(intent="search", confidence=0.9, via="test")
+
+    class FakeSession:
+        def __init__(self):
+            self.meta = {
+                "language": "en",
+                "address_state": "collecting_phone",
+                "address_data": {},
+            }
+            self.session = {}
+
+        async def get_meta(self, tenant_id, session_id):
+            return dict(self.meta)
+
+        async def save_meta(self, tenant_id, session_id, meta):
+            self.meta = {**self.meta, **meta}
+            return None
+
+        async def get_session(self, tenant_id, session_id):
+            return dict(self.session)
+
+        async def get_cart(self, tenant_id, session_id):
+            return None
+
+        async def save_cart(self, tenant_id, session_id, cart):
+            return None
+
+        async def update_session(self, tenant_id, session_id, **kwargs):
+            return None
+
+    class FakeFacts:
+        async def get(self, tenant_id, session_id):
+            return {}
+
+        async def update(self, tenant_id, session_id, message, facts_payload):
+            return None
+
+    class FakeBeta:
+        async def record_turn(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(brain_core, "append_live_navigation", fake_append_live_navigation)
+    monkeypatch.setattr(brain_core, "get_classifier", lambda: FakeClassifier())
+    monkeypatch.setattr(brain_core, "get_session_facts_service", lambda *a, **k: FakeFacts())
+    monkeypatch.setattr(brain_core, "get_beta_logger", lambda: FakeBeta())
+
+    result = asyncio.run(brain_core.ask_brain(
+        session_id="sess_phone_flow",
+        user_message="9876543210",
+        store_context={"url": "https://speako-demo.com"},
+        page_context={"url": "https://speako-demo.com/product/shoe", "page_type": "product"},
+        language="en",
+        store_client=object(),
+        session_service=FakeSession(),
+        redis=None,
+        db_session_factory=None,
+    ))
+
+    # FSM consumed the digits: asks for the name, never searches products.
+    assert "could not find" not in (result.get("response_text") or "").lower()
+    assert "name" in (result.get("response_text") or "").lower()
+    assert nav_calls == [], "append_live_navigation must not run on an FSM-owned turn"
+    assert "redirect" not in [a.get("type") for a in (result.get("ui_actions") or [])]

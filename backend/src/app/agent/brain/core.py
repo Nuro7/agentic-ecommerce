@@ -431,6 +431,10 @@ async def ask_brain(
 
     # â”€â”€ Step 1: Input sanitisation + guardrail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     cleaned_message = sanitize_text(user_message or "", max_len=500)
+    # Pre-redaction copy for the address FSM: check_input() replaces phone
+    # numbers with "[phone]", but the FSM needs the real digits to look up
+    # saved addresses / validate a 10-digit number.
+    _addr_input = cleaned_message
     # Capture REAL contact info from the RAW message BEFORE check_input redacts it
     # (extract_contact_info uses the exact _PII_PATTERNS). Stored server-side only —
     # the conversation transcript and the LLM continue to see [email]/[phone].
@@ -663,7 +667,11 @@ async def ask_brain(
     # turn, the generic append_live_navigation must NOT append a plain /checkout
     # redirect (that used to jump the customer to checkout mid address-collection).
     _addr_fsm_owned = False
-    if result is None and (_is_checkout_page or _checkout_intent) and (_addr_flow_active or _checkout_start):
+    # Once the address flow is ACTIVE, the FSM owns the turn regardless of this
+    # message's phrasing — otherwise mid-flow answers (a bare phone number, a
+    # name, an address line) fall through to product search ("I could not find
+    # any products"). The checkout signal is only needed to START the flow.
+    if result is None and (_addr_flow_active or _checkout_start):
         _raw_addr = session_meta.get("address_data", {}) if isinstance(session_meta, dict) else {}
         if not isinstance(_raw_addr, dict):
             _raw_addr = {}
@@ -674,7 +682,7 @@ async def ask_brain(
         try:
             _addr_resp, _addr_next, _addr_dict, _addr_actions = await handle_address_collection(
                 session_id=session_id,
-                user_message=cleaned_message,
+                user_message=_addr_input,
                 current_state=_addr_state,
                 address_data=_raw_addr,
                 language=lang,

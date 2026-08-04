@@ -31,7 +31,20 @@ navigated to checkout **before the phone/address was even asked** (the console
 `append_live_navigation` post-processor matched the word "checkout" and appended
 a plain `redirect /checkout` action alongside the FSM's phone prompt.
 
-All three are fixed. Details below.
+A **fourth bug** surfaced in the voice flow: after giving the phone number,
+Aria answered *"I could not find any products"*. Two causes in the brain gate:
+
+- `core.py` only ran the FSM when **this turn** looked like checkout
+  (`_is_checkout_page or _checkout_intent`). A bare phone number matches neither,
+  so mid-flow turns fell through to product search. Fixed: once the flow is
+  active (`_addr_flow_active`), the FSM owns the turn; the checkout signal is
+  only needed to **start** the flow (`core.py:670`).
+- Even when the FSM did run, `check_input()` had replaced the phone with
+  `[phone]` (PII redaction), so `normalize_phone_digits("[phone]")` was empty and
+  the FSM rejected it. Fixed: the FSM receives the pre-redaction sanitized text
+  (`_addr_input`, `core.py:670`-era block).
+
+All four are fixed. Details below.
 
 ---
 
@@ -82,7 +95,7 @@ itself except from the CONFIRMING "yes" branch.
 | `backend/static/wooagent-widget.js` | PDP/theme widget. Processes `ui_action`s and navigates. **DO NOT MODIFY WooCommerce paths.** |
 | `speako-checkout/extensions/ask-aria-checkout/src/Checkout.jsx` | Shopify checkout extension (block `purchase.checkout.block.render`). Real-time prefill via `useApplyShippingAddressChange`. |
 | `speako-checkout/extensions/ask-aria-checkout/shopify.extension.toml` | Extension config; `api_version = "2025-07"`. |
-| `backend/tests/unit/test_address_prefill.py` | 18 unit tests covering the FSM, ISO-2 helpers, client binding + the brain live-nav guard. |
+| `backend/tests/unit/test_address_prefill.py` | 19 unit tests covering the FSM, ISO-2 helpers, client binding + the brain live-nav guard + mid-flow routing. |
 | `backend/.env`, `backend/.env.worker` | `SHOPIFY_API_VERSION` — **bumped 2025-01 → 2025-07** so the modern mutation is reachable. |
 
 ---
@@ -309,7 +322,7 @@ with `buyerIdentity.deliveryAddressPreferences = [{"deliveryAddress": mailing}]`
 
 ---
 
-## 11. Tests (`test_address_prefill.py`, 18 tests)
+## 11. Tests (`test_address_prefill.py`, 19 tests)
 
 Coverage highlights:
 - FSM flow: phone-first entry, spoken/formatted phone normalization,
@@ -327,9 +340,13 @@ Coverage highlights:
   runs `ask_brain` with mocked deps for "proceed to checkout" from a cart page
   and asserts NO `redirect`/`redirect_checkout*` action is emitted and
   `append_live_navigation` is not invoked on an FSM-owned turn.
+- **Mid-flow routing (regression):** `test_active_phone_flow_routes_digits_to_fsm_not_search`
+  runs `ask_brain` with a session already in `collecting_phone`, sends a bare
+  phone number from a non-checkout page, and asserts the FSM consumes it (asks
+  for the name) instead of falling through to product search.
 
 Run: `cd backend && python -m pytest tests/unit/test_address_prefill.py -q`
-→ `18 passed`. Full unit suite: 37 passed / 3 failed (pre-existing, unrelated:
+→ `19 passed`. Full unit suite: 38 passed / 3 failed (pre-existing, unrelated:
 `test_live_navigation` × 2, `test_voice_architecture`).
 
 ---
@@ -343,8 +360,8 @@ legacy fallback, `36c0126` extension, `b82f793` live-nav guard). What remains is
 1. Backend deploy: on the production host (`/home/ubuntu/agentic-ecommerce`),
    pull the latest `main`, set production `.env` `SHOPIFY_API_VERSION=2025-07`,
    and recreate the app container (`up -d app`; restart does NOT reload `.env`).
-   This ships the three fixes: confirm-first FSM, legacy address fallback, and
-   the live-nav guard.
+   This ships the fixes: confirm-first FSM, legacy address fallback, the
+   live-nav guard, and the mid-flow routing + PII-redaction fixes.
 2. Extension deploy: `cd speako-checkout && shopify app deploy` (registers the
    in-checkout block that was previously committed as files only).
 3. Widget: re-register the script tag after any JS change (Shopify caches it).
