@@ -25,6 +25,7 @@ from ..guardrails import extract_contact_info, is_pii_placeholder
 from ...services.ticketing import (
     _HIGH_PRIORITY_TOKENS,
     _LOW_PRIORITY_TOKENS,
+    _PII_PLACEHOLDERS,
     create_support_ticket,
     ticket_created_message,
 )
@@ -36,6 +37,7 @@ class TicketIntakeState:
     IDLE = "idle"
     AWAITING_CONTACT = "awaiting_contact"
     VERIFYING_PHONE = "verifying_phone"
+    AWAITING_ISSUE = "awaiting_issue"
 
 
 # ── Escalation trigger ────────────────────────────────────────────────────────
@@ -148,6 +150,65 @@ _INVALID_PHONE_TEXTS = {
     "kn": "A number nanage sariyagi artha aagalilla. Dayavittu ondu valid 10-digit mobile number, allavaada nimma email address hELi.",
 }
 
+# Ask what the problem actually is — the customer's own words become the
+# persisted `issue_summary` and drive priority/heat (no chat-history guessing).
+_ASK_ISSUE_TEXTS = {
+    "en": "Great! Briefly, what issue would you like our team to help you with?",
+    "hi": "Badhiya! Sankhipt mein bataiye, team ko kis samasya mein aapki madad karni hai?",
+    "ml": "Kollam! Njan chirathil parayaam, njangalude team ninkku entha pradeepnathathil sahaayikkanam?",
+    "ta": "Nandri! Chiriththakama sollunga, engal team ungalukku enna issue-la help pannanum?",
+    "te": "Baagundi! Konchamga cheppandi, maa team mee problem lo e vidanga help cheyali?",
+    "bn": "Bhalo! Sanchhipte bollun, apnar kon samasya-te amaader team sahayjo korbe?",
+    "kn": "Chennagide! Sankshipthavagi heLiri, namma team nimage ena samasye-alli sahayavagabeku?",
+}
+
+# Re-ask the issue when the reply came back empty / unparseable.
+_REASK_ISSUE_TEXTS = {
+    "en": "Could you briefly tell me what issue you're facing, so I can log it for our team?",
+    "hi": "Kya aap sankhipt mein bata sakte hain ki kis samasya ka saamna kar rahe hain, taaki main ise team ke liye log kar sakun?",
+    "ml": "Ningalude pradeepnathamaaya prashnam enthaanennu chirathil parayaamo, njaan athu team-inaayi log cheyyaan?",
+    "ta": "Oru chiriththaka sollunga enna issue face panringa, adh-ai naan engal team-ukku log pannura madhiri?",
+    "te": "Konthamga cheppara mee problem ento, naa team kosam log cheyataniki?",
+    "bn": "Apnar ki somosya ta ar sammukhin hocchen, amader team er jonno log korar jonyo ekta kotha bollen?",
+    "kn": "Nimage ena samasya iddhe antha sankshipthavagi heLiri, naa team-gagi log madalu?",
+}
+
+# Ticket confirmed WITH the customer's own issue summary echoed back and the
+# callback channel/contact they gave — matches the "TK-1001 / 'summary' / call
+# you at <phone>" confirmation the user expects to see.
+_TICKET_CREATED_WITH_ISSUE_TEXTS = {
+    "en": "Thank you! I have created ticket #{number} with your issue summary: '{summary}'. Our support team will {callback} shortly.",
+    "hi": "Dhanyavaad! Maine #{number} ticket bana diya hai aapke issue summary ke saath: '{summary}'. Hamari team jald hi {callback} karegi.",
+    "ml": "Nanni! Njaan #{number} ticket undaakki, ningalude issue summary: '{summary}'. Njangalude team thazhottu {callback} cheyyum.",
+    "ta": "Nandri! Ungal issue summary-odu #{number} ticket uraakkiyirukkirrom: '{summary}'. Engal team seegram {callback} pannum.",
+    "te": "Dhanyavadalu! Mee issue summary-tho #{number} ticket tayaru chesanu: '{summary}'. Maa team tvaralo {callback} chestundi.",
+    "bn": "Dhonnobad! Apanr issue summary shoho #{number} ticket tairi korechi: '{summary}'. Amaader team shigghiri {callback} korbe.",
+    "kn": "Dhanyavaada! Nimma issue summary-jothe #{number} ticket madidde: '{summary}'. Namma team bega {callback} maadutte.",
+}
+
+# Contact callback phrasing per channel ("call you at 8943737227" / "email you
+# at a@b.co") — keeps the confirmation human and echoes the verified contact.
+_CALLBACK_PHRASES = {
+    "call": {
+        "en": "call you at {contact}",
+        "hi": "aapko {contact} par call karegi",
+        "ml": "ningale {contact} il vidikkum",
+        "ta": "ungalai {contact} la call pannum",
+        "te": "mee {contact} ki call chestundi",
+        "bn": "apnake {contact} e call korbe",
+        "kn": "nimmannu {contact} ge call maadutte",
+    },
+    "email": {
+        "en": "email you at {contact}",
+        "hi": "aapko {contact} par email karegi",
+        "ml": "ningalude {contact} il email ayakkum",
+        "ta": "ungalukku {contact} ku email pannum",
+        "te": "mee {contact} ki email chestundi",
+        "bn": "apnake {contact} e email korbe",
+        "kn": "nimmannu {contact} ge email maadutte",
+    },
+}
+
 # Positive confirmation the read-back number is correct.
 _CONFIRM_RE = re.compile(
     r"\b(yes|yeah|yep|correct|right|that's? right|that is right|"
@@ -192,6 +253,36 @@ def invalid_phone_prompt(language: str) -> str:
     return _localized(_INVALID_PHONE_TEXTS, language)
 
 
+def ask_issue_prompt(language: str) -> str:
+    return _localized(_ASK_ISSUE_TEXTS, language)
+
+
+def reask_issue_prompt(language: str) -> str:
+    return _localized(_REASK_ISSUE_TEXTS, language)
+
+
+def ticket_created_with_issue_message(
+    language: str,
+    ticket_number: str,
+    issue_summary: str,
+    contact_kind: str = "",
+    contact: str = "",
+) -> str:
+    """Confirmation echoing the ticket number, the customer's own issue summary
+    and the callback channel/contact (e.g. we will call you at <phone> shortly)."""
+    msg = _localized(_TICKET_CREATED_WITH_ISSUE_TEXTS, language)
+    callback = ""
+    if contact and contact_kind in _CALLBACK_PHRASES:
+        callback = _localized(_CALLBACK_PHRASES[contact_kind], language).format(
+            contact=contact
+        )
+    return msg.format(
+        number=str(ticket_number or ""),
+        summary=str(issue_summary or ""),
+        callback=callback,
+    )
+
+
 def normalize_phone(phone: str) -> str:
     """Pure 10-15 digit string from any raw transcription (no separators)."""
     return normalize_phone_digits(phone)
@@ -214,12 +305,14 @@ async def handle_ticket_intake_turn(
 
     Flow:
       AWAITING_CONTACT: extract email or phone from the reply. An email is
-        self-verifying (format-checked), so the ticket is created immediately.
-        A phone is normalized to digits, length-checked (>= 10), then the FSM
-        moves to VERIFYING_PHONE and reads the number back for confirmation.
-      VERIFYING_PHONE: a positive reply ("yes"/"correct") creates the ticket;
-        a negative reply / new number returns to collection. Nothing is
-        persisted until the phone is explicitly confirmed.
+        self-verifying (format-checked), a phone is normalized to digits,
+        length-checked (>= 10). Both move the FSM forward — never persisted
+        until the customer has confirmed their number AND described the issue.
+      VERIFYING_PHONE: a positive reply ("yes"/"correct") moves to
+        AWAITING_ISSUE; a negative reply / new number returns to collection.
+      AWAITING_ISSUE: the customer's own words are captured as the ticket's
+        `issue_summary` and drive priority/heat/issue_type. Nothing is persisted
+        until the issue is described.
     """
     pending = (session_meta or {}).get("ticket_intake_pending") or {}
     if not isinstance(pending, dict) or not pending.get("trigger_message"):
@@ -242,24 +335,38 @@ async def handle_ticket_intake_turn(
         pending_phone = str(pending.get("pending_phone") or "").strip()
         if _CONFIRM_RE.search(low) and pending_phone:
             logger.info(
-                "Phone verified session=%s phone=%s (creating ticket)",
+                "Phone verified session=%s phone=%s (awaiting issue)",
                 session_id, pending_phone,
             )
-            return await _create_ticket_with(
-                pending=pending,
-                language=language,
-                tenant_id=tenant_id,
-                session_id=session_id,
-                conversation_history=conversation_history or [],
-                store_client=store_client,
-                session_service=session_service,
-                customer_phone=pending_phone,
-            )
+            pending = dict(pending)
+            pending["pending_phone"] = pending_phone
+            return ask_issue_prompt(language), TicketIntakeState.AWAITING_ISSUE, pending, []
         if _DENY_RE.search(low):
             # Number rejected — collect again.
             return reask_contact_prompt(language), TicketIntakeState.AWAITING_CONTACT, pending, []
         # Unclear reply — repeat the verification.
         return verify_phone_prompt(language, pending_phone), TicketIntakeState.VERIFYING_PHONE, pending, []
+
+    # ── Issue-capture step: the customer's own words become the ticket ────────
+    if state_now == TicketIntakeState.AWAITING_ISSUE:
+        issue = str(cleaned_message or "").strip()
+        issue = re.sub(r"\s+", " ", issue).strip(" \t\n\r.,;:!?")
+        if not issue or issue.lower() in _PII_PLACEHOLDERS or len(issue) < 3:
+            return reask_issue_prompt(language), TicketIntakeState.AWAITING_ISSUE, pending, []
+        logger.info("Ticket issue captured session=%s issue=%r", session_id, issue[:120])
+        pending = dict(pending)
+        pending["issue_summary"] = issue
+        return await _create_ticket_with(
+            pending=pending,
+            language=language,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            conversation_history=conversation_history or [],
+            store_client=store_client,
+            session_service=session_service,
+            customer_email=str(pending.get("pending_email") or ""),
+            customer_phone=str(pending.get("pending_phone") or ""),
+        )
 
     # ── Contact collection step ───────────────────────────────────────────────
     email, phone = extract_contact_info(cleaned_message or "")
@@ -294,19 +401,12 @@ async def handle_ticket_intake_turn(
             )
         return reask_contact_prompt(language), TicketIntakeState.AWAITING_CONTACT, pending, []
 
-    # An email is format-verified at capture — persist immediately.
+    # An email is format-verified at capture — ask for the issue, then create.
     if email:
-        logger.info("Ticket intake email session=%s email=%s", session_id, email)
-        return await _create_ticket_with(
-            pending=pending,
-            language=language,
-            tenant_id=tenant_id,
-            session_id=session_id,
-            conversation_history=conversation_history or [],
-            store_client=store_client,
-            session_service=session_service,
-            customer_email=email,
-        )
+        logger.info("Ticket intake email session=%s email=%s (awaiting issue)", session_id, email)
+        pending = dict(pending)
+        pending["pending_email"] = email
+        return ask_issue_prompt(language), TicketIntakeState.AWAITING_ISSUE, pending, []
 
     # Phone only — normalize, validate length, then read back for confirmation.
     clean_phone = normalize_phone(phone)
@@ -331,7 +431,7 @@ async def _create_ticket_with(
     customer_email: str = "",
     customer_phone: str = "",
 ) -> Tuple[str, str, Dict[str, Any], List[Dict[str, Any]]]:
-    """Create the ticket with the verified contact → (text, next_state, pending, actions)."""
+    """Create the ticket with the verified contact + user-stated issue → (text, next_state, pending, actions)."""
     ticket_result = await create_support_ticket(
         tenant_id=tenant_id,
         session_id=session_id,
@@ -341,11 +441,22 @@ async def _create_ticket_with(
         customer_email=customer_email,
         customer_phone=customer_phone,
         trigger_message=str(pending.get("trigger_message") or ""),
+        issue_summary=str(pending.get("issue_summary") or ""),
         product_id=pending.get("product_id"),
         source="deterministic",
     )
 
     actions: List[Dict[str, Any]] = []
+    issue_summary = str(pending.get("issue_summary") or "")
+    contact_kind = "call" if customer_phone else ("email" if customer_email else "")
+    contact = customer_phone or customer_email
+    confirm_text = ticket_created_with_issue_message(
+        language,
+        str(ticket_result.get("ticket_number") or ""),
+        issue_summary,
+        contact_kind,
+        contact,
+    )
     if ticket_result.get("status") == "success":
         ticket_number = str(ticket_result.get("ticket_number") or "")
         actions.append({
@@ -355,8 +466,8 @@ async def _create_ticket_with(
                 "ticket_number": ticket_number,
                 "priority": ticket_result.get("priority", "medium"),
                 "heat": ticket_result.get("heat"),
-                "message": ticket_created_message(language, ticket_number),
+                "message": confirm_text,
             },
         })
-    text = str(ticket_result.get("message") or "") or ticket_created_message(language)
+    text = str(ticket_result.get("message") or "") or confirm_text or ticket_created_message(language)
     return text, TicketIntakeState.IDLE, {}, actions

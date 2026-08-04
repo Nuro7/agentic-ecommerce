@@ -367,11 +367,17 @@ async def create_support_ticket(
     customer_name: str = "",
     shop_domain: Optional[str] = None,
     trigger_message: str = "",
+    issue_summary: str = "",
     product_id: Optional[str] = None,
     source: str = "llm",
 ) -> Dict[str, Any]:
     """Create a voice ticket, persist it, emit the helpdesk webhook, and sync
     Shopify customer metafields. Returns the ticket id + the message to speak.
+
+    `issue_summary` carries the customer's OWN description of the problem when
+    the deterministic intake collected it explicitly (phone verified → "what
+    issue?"). When present it wins over chat-history inference for the stored
+    summary AND for priority/heat/issue_type scoring.
 
     De-duplication: an OPEN ticket for the same tenant+session created within
     the last `DEDUP_WINDOW_MINUTES` is reused (already_exists=true, no
@@ -444,12 +450,25 @@ async def create_support_ticket(
     context_text = " ".join(
         t["content"] for t in transcript_turns if t["role"] == "user"
     )
-    priority = _detect_priority(trigger_message or context_text)
-    issue_summary = _generate_issue_summary(conversation_history, trigger_message)
-    issue_type = _classify_issue(trigger_message or context_text)
-    order_id = _extract_order_id(trigger_message or context_text)
-    priority_reason = _priority_reason(trigger_message or context_text)
-    heat = _detect_heat(trigger_message or context_text, priority)
+    # The customer's OWN words win when the deterministic intake captured them
+    # explicitly — the stored summary and the priority/heat come from that.
+    scoring_text = str(issue_summary or "").strip()
+    if scoring_text:
+        # Clean the persisted summary from raw user speech (collapse, cap length).
+        cleaned = re.sub(r"\s+", " ", scoring_text).strip(" \t\n\r.,;:!?")
+        summary = cleaned[:200] if cleaned else ""
+        priority = _detect_priority(scoring_text)
+        issue_type = _classify_issue(scoring_text)
+        order_id = _extract_order_id(scoring_text)
+        priority_reason = _priority_reason(scoring_text)
+        heat = _detect_heat(scoring_text, priority)
+    else:
+        priority = _detect_priority(trigger_message or context_text)
+        summary = _generate_issue_summary(conversation_history, trigger_message)
+        issue_type = _classify_issue(trigger_message or context_text)
+        order_id = _extract_order_id(trigger_message or context_text)
+        priority_reason = _priority_reason(trigger_message or context_text)
+        heat = _detect_heat(trigger_message or context_text, priority)
 
     try:
         from ..core.database import AsyncSessionLocal
@@ -464,7 +483,7 @@ async def create_support_ticket(
                     "customer_name": name or None,
                     "customer_phone": phone or None,
                     "customer_email": email or None,
-                    "issue_summary": issue_summary,
+                    "issue_summary": summary or issue_summary,
                     "transcript_json": {"turns": transcript_turns},
                     "priority": priority,
                     "status": "open",
@@ -501,7 +520,7 @@ async def create_support_ticket(
         "ticket_number": ticket_number,
         "heat": heat,
         "priority": priority,
-        "issue_summary": issue_summary,
+        "issue_summary": summary or issue_summary,
         "transcript": transcript_text,
         "message": confirm_msg,
         "spoken_message": confirm_msg,

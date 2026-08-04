@@ -56,10 +56,10 @@ from ..classifier import (
     SEARCH, PRODUCT_DETAIL, INVENTORY,
 )
 from ...services.promotions import rerank_and_annotate_promotions
-from ...services.ticketing import create_support_ticket, ticket_created_message
 from .ticket_intake import (
     TicketIntakeState,
     ask_contact_prompt,
+    ask_issue_prompt,
     detect_escalation,
     handle_ticket_intake_turn,
     reask_contact_prompt,
@@ -801,23 +801,32 @@ async def ask_brain(
         # An email is format-verified at capture → create immediately. A phone
         # alone must be read back + confirmed first (see intake FSM) so corrupt
         # digits never reach the DB — route through the intake FSM instead.
+        # Email is format-verified at capture → route into the intake FSM which
+        # asks for the customer's own description of the issue and only then
+        # persists the ticket (the stated reason drives the priority/heat).
         if _contact_email:
             logger.info(
-                "[FLOW] brain escalation: email known, creating ticket session=%s email=%s",
+                "[FLOW] brain escalation: email known, starting issue collection session=%s email=%s",
                 session_id, _contact_email,
             )
-            _ticket_res = await create_support_ticket(
-                tenant_id=tenant_id,
-                session_id=session_id,
-                conversation_history=history,
-                store_client=store_client,
-                session_service=session_service,
-                customer_email=_contact_email,
-                trigger_message=cleaned_message,
-                product_id=_pid,
-                source="deterministic",
-            )
-            result = _escalation_result(_ticket_res, lang)
+            _next_meta = dict(session_meta) if isinstance(session_meta, dict) else {}
+            _next_meta["ticket_intake_state"] = TicketIntakeState.AWAITING_ISSUE
+            _next_meta["ticket_intake_pending"] = {
+                "trigger_message": cleaned_message,
+                "product_id": _pid,
+                "pending_email": _contact_email,
+            }
+            _next_meta["fsm_state"] = "SUPPORT_TICKET"
+            try:
+                await session_service.save_meta(tenant_id, session_id, _next_meta)
+            except Exception as _meta_exc:
+                logger.debug("Ticket-intake email-issue save failed (non-critical): %s", _meta_exc)
+            result = {
+                "response_text": ask_issue_prompt(lang),
+                "ui_actions": [],
+                "actions": [],
+                "suggested_replies": [],
+            }
         elif _contact_phone:
             logger.info(
                 "[FLOW] brain escalation: phone known, verifying via intake session=%s",
@@ -1668,28 +1677,4 @@ def _empty_response(session_id: str, text: str, lang: str) -> Dict[str, Any]:
         "ui_actions": [],
         "actions": [],
         "suggested_replies": ["Show products", "Show my cart", "Help me find something"],
-    }
-
-
-def _escalation_result(ticket_result: Dict[str, Any], lang: str) -> Dict[str, Any]:
-    """Build the deterministic escalation reply (ticket confirmation + show_ticket)."""
-    actions: List[Dict[str, Any]] = []
-    ticket_number = str(ticket_result.get("ticket_number") or "")
-    if ticket_result.get("status") == "success":
-        actions.append({
-            "type": "show_ticket",
-            "payload": {
-                "ticket_id": ticket_result["ticket_id"],
-                "ticket_number": ticket_number,
-                "priority": ticket_result.get("priority", "medium"),
-                "heat": ticket_result.get("heat"),
-                "message": ticket_created_message(lang, ticket_number),
-            },
-        })
-    text = str(ticket_result.get("message") or "") or ticket_created_message(lang, ticket_number)
-    return {
-        "response_text": text,
-        "ui_actions": actions,
-        "actions": actions,
-        "suggested_replies": [],
     }

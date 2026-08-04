@@ -8,6 +8,7 @@ from src.app.agent.brain.ticket_intake import (
     detect_escalation,
     handle_ticket_intake_turn,
     session_contact,
+    ticket_created_with_issue_message,
 )
 from src.app.agent.guardrails import extract_contact_info, is_pii_placeholder
 from src.app.modules.tickets.repository import TicketRepository
@@ -108,10 +109,33 @@ class TestTicketingHelpers:
         assert _detect_heat("talk to a human", "low") == "cold"
         assert _detect_heat("hello", "medium") == "cold"
 
+    def test_issue_summary_drives_priority(self):
+        # The customer's stated issue (captured by the intake FSM) is what scores
+        # the ticket — "damaged box + wrong size" must be high/warm, not whatever
+        # the chat history happened to say.
+        issue = "I received a damaged box and the shoe size is wrong"
+        assert _detect_priority(issue) == "high"
+        assert _detect_heat(issue, _detect_priority(issue)) == "warm"
+        assert _classify_issue(issue) == "damaged_order"
+        assert _detect_priority("please refund my money") == "high"
+        assert _detect_priority("talk to a real person please") == "low"
+
     def test_localized_message(self):
         assert "ticket" in ticket_created_message("en").lower()
         assert ticket_created_message("ml") != ticket_created_message("en")
         assert "TK-1001" in ticket_created_message("en", "TK-1001")
+
+    def test_created_message_echoes_issue_and_callback(self):
+        # Matches the expected flow: "ticket #TK-1001 with your issue summary:
+        # 'Damaged box and incorrect shoe size' ... will call you at
+        # 8943737227 shortly."
+        msg = ticket_created_with_issue_message(
+            "en", "TK-1001", "Damaged box and incorrect shoe size",
+            "call", "8943737227",
+        )
+        assert "TK-1001" in msg
+        assert "Damaged box and incorrect shoe size" in msg
+        assert "call you at 8943737227" in msg
 
 
 @pytest.mark.unit
@@ -158,12 +182,57 @@ class TestTicketIntake:
             language=language,
         )
 
-    async def test_creates_ticket_with_email(self, monkeypatch):
-        text, state, pending, actions = await self._run(
-            monkeypatch, "my email is john@example.com", pending={"trigger_message": "order damaged"}
+    async def test_email_asks_for_issue_then_creates_ticket(self, monkeypatch):
+        from src.app.agent.brain import ticket_intake as ti
+        captured = {}
+
+        async def spy_create_support_ticket(**kwargs):
+            captured.update(kwargs)
+            return {
+                "status": "success",
+                "ticket_id": "T-42",
+                "priority": "high",
+                "message": "created",
+            }
+
+        monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="my email is john@example.com",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_CONTACT,
+                "ticket_intake_pending": {"trigger_message": "order damaged"},
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending["pending_email"] == "john@example.com"
+        assert actions == []
+
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="I received a damaged box and the shoe size is wrong.",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_pending": {
+                    "trigger_message": "order damaged",
+                    "pending_email": "john@example.com",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
         )
         assert state == TicketIntakeState.IDLE
         assert pending == {}
+        assert captured.get("customer_email") == "john@example.com"
+        assert captured.get("issue_summary") == "I received a damaged box and the shoe size is wrong"
         assert any(a["type"] == "show_ticket" for a in actions)
 
     async def test_phone_requires_verification_first(self, monkeypatch):
@@ -177,7 +246,7 @@ class TestTicketIntake:
         assert "9-8-7-6-5-4-3-2-1-0" in text
         assert actions == []
 
-    async def test_phone_confirmed_creates_ticket(self, monkeypatch):
+    async def test_phone_confirmed_then_asks_issue_then_creates(self, monkeypatch):
         from src.app.agent.brain import ticket_intake as ti
         captured = {}
 
@@ -207,10 +276,60 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending["pending_phone"] == "9876543210"
+        assert "issue" in text.lower()
+        assert actions == []
+
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="I received a damaged box and the shoe size is wrong.",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_phone": "9876543210",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
         assert state == TicketIntakeState.IDLE
         assert pending == {}
         assert captured.get("customer_phone") == "9876543210"
+        assert captured.get("issue_summary") == "I received a damaged box and the shoe size is wrong"
         assert any(a["type"] == "show_ticket" for a in actions)
+
+    async def test_issue_capture_reasks_when_empty(self, monkeypatch):
+        from src.app.agent.brain import ticket_intake as ti
+        captured = {}
+
+        async def spy_create_support_ticket(**kwargs):
+            captured.update(kwargs)
+            return {"status": "success", "ticket_id": "T-42", "message": "created"}
+
+        monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="[email]",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_email": "john@example.com",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert captured == {}  # no ticket until a real issue is described
 
     async def test_phone_denied_recollects(self, monkeypatch):
         from src.app.agent.brain import ticket_intake as ti
@@ -291,6 +410,25 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending["pending_email"] == "john@example.com"
+
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="the box arrived damaged",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_pending": {
+                    "trigger_message": "order damaged",
+                    "pending_email": "john@example.com",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
         assert state == TicketIntakeState.IDLE
         assert pending == {}
         assert any(a["type"] == "show_ticket" for a in actions)
@@ -345,9 +483,29 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending["pending_phone"] == "9876543210"
+
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="I need a refund",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_ISSUE,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_phone": "9876543210",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
         assert state == TicketIntakeState.IDLE
         assert pending == {}
         assert captured.get("customer_phone") == "9876543210"
+        assert captured.get("issue_summary") == "I need a refund"
 
     async def test_invalid_phone_asks_again(self, monkeypatch):
         # User tried to say their number in parts ("73 72 27") — never persist a
