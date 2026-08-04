@@ -82,7 +82,7 @@ itself except from the CONFIRMING "yes" branch.
 | `backend/static/wooagent-widget.js` | PDP/theme widget. Processes `ui_action`s and navigates. **DO NOT MODIFY WooCommerce paths.** |
 | `speako-checkout/extensions/ask-aria-checkout/src/Checkout.jsx` | Shopify checkout extension (block `purchase.checkout.block.render`). Real-time prefill via `useApplyShippingAddressChange`. |
 | `speako-checkout/extensions/ask-aria-checkout/shopify.extension.toml` | Extension config; `api_version = "2025-07"`. |
-| `backend/tests/unit/test_address_prefill.py` | 17 unit tests covering FSM + client binding. |
+| `backend/tests/unit/test_address_prefill.py` | 18 unit tests covering the FSM, ISO-2 helpers, client binding + the brain live-nav guard. |
 | `backend/.env`, `backend/.env.worker` | `SHOPIFY_API_VERSION` — **bumped 2025-01 → 2025-07** so the modern mutation is reachable. |
 
 ---
@@ -155,10 +155,10 @@ customer was navigated to checkout before any address was collected.
 
 Fix: when the address FSM owns the turn, `append_live_navigation` is skipped
 entirely — the FSM alone decides checkout navigation. `core.py` tracks
-`_addr_fsm_owned` (set `True` when the FSM produced the result, `core.py:695`)
-and the call is wrapped in `if not _addr_fsm_owned:` (`core.py:1223`). The FSM
-then emits `prefill_address` while collecting, and only
-`redirect_checkout_with_address` on confirmation.
+`_addr_fsm_owned` (set `False` at `core.py:665`, `True` when the FSM produced
+the result, `core.py:698`) and the call is wrapped in `if not _addr_fsm_owned:`
+(`core.py:1221`). The FSM then emits `prefill_address` while collecting, and
+only `redirect_checkout_with_address` on confirmation.
 
 > **Red herring:** the console error
 > `https://<store>/private_access_tokens?id=...&checkout_type=c1 401 Unauthorized`
@@ -167,6 +167,8 @@ then emits `prefill_address` while collecting, and only
 > unrelated to this bug and must not be "fixed".
 
 ---
+
+## 5. ISO-2 normalization (`text_utils.py`)
 
 All addresses are normalized to ISO codes **before** they reach Shopify, because
 `CartSelectableAddressInput` requires valid province/country codes.
@@ -240,7 +242,7 @@ with `buyerIdentity.deliveryAddressPreferences = [{"deliveryAddress": mailing}]`
 
 ---
 
-## 7. Server handler (`public.py:475`)
+## 7. Server handler (`public.py:476`)
 
 `POST /api/v1/cart/checkout` (`prepare_checkout`):
 1. Rebuilds the session Storefront cart from the widget's line items.
@@ -334,14 +336,19 @@ Run: `cd backend && python -m pytest tests/unit/test_address_prefill.py -q`
 
 ## 12. Deploy checklist
 
-1. Commit the working-tree changes:
-   - `backend/src/app/agent/brain/core.py` (live-nav guard on FSM turns)
-   - `backend/src/app/agent/brain/address.py` (confirm-first fix)
-   - `backend/src/app/integrations/shopify/client.py` (legacy fallback)
-   - `backend/tests/unit/test_address_prefill.py`
-   - `CHECKOUT_PREFILL.md` (this file)
-   - `speako-checkout/` (committed)
-2. Backend deploy: restart the app on the production host and set production
-   `.env` `SHOPIFY_API_VERSION=2025-07`, then recreate the app container.
-3. Extension deploy: `cd speako-checkout && shopify app deploy`.
-4. Widget: re-register the script tag after any JS change (Shopify caches it).
+Current git state: all fixes are committed and pushed (`0991a61` confirm-first +
+legacy fallback, `36c0126` extension, `b82f793` live-nav guard). What remains is
+**production deployment** — the running backend still has the old behaviour:
+
+1. Backend deploy: on the production host (`/home/ubuntu/agentic-ecommerce`),
+   pull the latest `main`, set production `.env` `SHOPIFY_API_VERSION=2025-07`,
+   and recreate the app container (`up -d app`; restart does NOT reload `.env`).
+   This ships the three fixes: confirm-first FSM, legacy address fallback, and
+   the live-nav guard.
+2. Extension deploy: `cd speako-checkout && shopify app deploy` (registers the
+   in-checkout block that was previously committed as files only).
+3. Widget: re-register the script tag after any JS change (Shopify caches it).
+4. Verify: from a fresh session on the store, "proceed to checkout" should ask
+   for the phone (no navigation), collect/confirm the address, then redirect to
+   a pre-filled hosted checkout. The `private_access_tokens` 401 in the console
+   is expected Shopify bot-protection noise (see §4.6).
