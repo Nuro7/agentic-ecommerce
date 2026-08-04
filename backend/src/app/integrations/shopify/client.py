@@ -1480,6 +1480,8 @@ class ShopifyClient(BaseStoreClient):
             return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
 
         addr = address or {}
+        # Legacy (pre-2025-04) CartBuyerIdentityUpdate.deliveryAddressPreferences
+        # expects a flat MailAddressInput — kept for the fallback path.
         mailing = {
             "firstName": (addr.get("first_name") or "").strip() or None,
             "lastName": (addr.get("last_name") or "").strip() or None,
@@ -1493,6 +1495,26 @@ class ShopifyClient(BaseStoreClient):
         # CartSelectableAddressInput rejects empty strings on required fields; strip nulls.
         mailing = {k: v for k, v in mailing.items() if v is not None and str(v).strip()}
 
+        # Modern (2025-04+) cartDeliveryAddressesReplace expects
+        # CartSelectableAddressInput { address: CartAddressInput, oneTimeUse } and
+        # CartAddressInput wraps a CartDeliveryAddressInput with countryCode /
+        # provinceCode (ISO codes) — NOT the flat MailAddressInput shape.
+        delivery = {
+            "firstName": (addr.get("first_name") or "").strip() or None,
+            "lastName": (addr.get("last_name") or "").strip() or None,
+            "address1": (addr.get("address_1") or addr.get("address_line1") or "").strip() or None,
+            "city": (addr.get("city") or "").strip() or None,
+            "provinceCode": (
+                addr.get("state_code") or addr.get("province") or addr.get("state") or ""
+            ).strip().upper() or None,
+            "zip": (addr.get("postcode") or addr.get("zip") or "").strip() or None,
+            "phone": (addr.get("phone") or "").strip() or None,
+            "countryCode": (
+                addr.get("country_code") or addr.get("country") or ""
+            ).strip().upper() or "US",
+        }
+        delivery = {k: v for k, v in delivery.items() if v is not None and str(v).strip()}
+
         GQL = """
         mutation CartDeliveryAddressesReplace($cartId: ID!, $addresses: [CartSelectableAddressInput!]!) {
           cartDeliveryAddressesReplace(cartId: $cartId, addresses: $addresses) {
@@ -1504,7 +1526,12 @@ class ShopifyClient(BaseStoreClient):
         try:
             data = await self._storefront(
                 GQL,
-                {"cartId": gid, "addresses": [{"address": mailing, "oneTimeUse": True}]},
+                {
+                    "cartId": gid,
+                    "addresses": [
+                        {"address": {"deliveryAddress": delivery}, "oneTimeUse": True}
+                    ],
+                },
             )
             op = data.get("cartDeliveryAddressesReplace", {})
             errors = op.get("userErrors", [])
@@ -1512,7 +1539,7 @@ class ShopifyClient(BaseStoreClient):
                 logger.warning("Shopify cartDeliveryAddressesReplace errors: %s", errors)
             cart_node = op.get("cart")
             if not cart_node:
-                return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+                return await self._bind_address_legacy(gid, mailing)
             normalized = self._normalize_cart(cart_node)
             normalized["success"] = True
             return normalized
