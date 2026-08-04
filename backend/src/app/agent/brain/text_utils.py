@@ -597,6 +597,72 @@ def normalize_india_state(text: str) -> str:
     return raw
 
 
+US_STATE_CODES: Dict[str, str] = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "district of columbia": "DC", "florida": "FL", "georgia": "GA",
+    "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN",
+    "iowa": "IA", "kansas": "KS", "kentucky": "KY", "louisiana": "LA",
+    "maine": "ME", "maryland": "MD", "massachusetts": "MA", "michigan": "MI",
+    "minnesota": "MN", "mississippi": "MS", "missouri": "MO", "montana": "MT",
+    "nebraska": "NE", "nevada": "NV", "new hampshire": "NH", "new jersey": "NJ",
+    "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+    "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR",
+    "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+    "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY",
+}
+
+_COUNTRY_CODE_ALIASES: Dict[str, str] = {
+    "usa": "US", "us": "US", "united states": "US",
+    "united states of america": "US", "america": "US",
+    "india": "IN", "bharat": "IN",
+    "canada": "CA", "united kingdom": "GB", "uk": "GB", "great britain": "GB",
+    "britain": "GB", "england": "GB", "australia": "AU",
+    "germany": "DE", "france": "FR", "japan": "JP",
+}
+
+
+def normalize_province_code(state: Optional[str], country: Optional[str] = None) -> str:
+    """Map a free-text province/state to its ISO-2 code (US/IN) else uppercase raw.
+
+    Uses ``normalize_india_state`` for India; full US state-name mapping
+    otherwise. A bare 2-letter value is trusted and uppercased.
+    """
+    raw = str(state or "").strip()
+    if not raw:
+        return ""
+    c = normalize_country_code(country, default="")
+    if c == "IN":
+        return normalize_india_state(raw)
+    if c in ("", "US"):
+        normalized = re.sub(r"\s+", " ", raw).lower().strip()
+        if normalized in US_STATE_CODES:
+            return US_STATE_CODES[normalized]
+    if re.fullmatch(r"[a-zA-Z]{2}", raw):
+        return raw.upper()
+    return raw
+
+
+def normalize_country_code(country: Optional[str], default: str = "US") -> str:
+    """Return an ISO-3166 alpha-2 country code from any raw label.
+
+    Expands common aliases (including ``UK`` → ``GB``), trusts an
+    already-2-letter value (uppercased), and falls back to ``default``
+    (default ``US``).
+    """
+    raw = str(country or "").strip()
+    if not raw:
+        return default
+    normalized = re.sub(r"[^a-zA-Z ]", "", raw).lower().strip()
+    if normalized in _COUNTRY_CODE_ALIASES:
+        return _COUNTRY_CODE_ALIASES[normalized]
+    if re.fullmatch(r"[a-zA-Z]{2}", raw):
+        return raw.upper()
+    return default
+
+
 # â”€â”€ Type-safe coercions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def safe_int(value: Any, default: int = 0) -> int:

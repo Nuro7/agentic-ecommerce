@@ -67,6 +67,21 @@ def _gid_to_int(gid: str) -> int:
         return 0
 
 
+_CART_GID_PREFIX = "gid://shopify/Cart/"
+
+
+def _ensure_cart_gid(cart_id: str) -> str:
+    """Return a full Storefront Cart GID. Short cart tokens (e.g. "c1-abc")
+    get the ``gid://shopify/Cart/`` prefix prepended; full GIDs pass through.
+    """
+    cid = str(cart_id or "").strip()
+    if not cid:
+        return ""
+    if cid.startswith("gid://"):
+        return cid
+    return _CART_GID_PREFIX + cid
+
+
 def _product_matches_size(product: Dict[str, Any], size: str) -> bool:
     """True when a product exposes the requested size anywhere (name, tags,
     option values, or variant attribute values). Used because Shopify's search
@@ -1406,6 +1421,65 @@ class ShopifyClient(BaseStoreClient):
 
         return {"items": [], "item_count": 0, "is_empty": True, "total": "0"}
 
+    async def replace_cart_delivery_address(
+        self,
+        *,
+        cart_id: str,
+        address: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Bind a delivery address to the Storefront cart via the modern
+        ``cartDeliveryAddressesReplace`` mutation (replaces the deprecated
+        ``deliveryAddressPreferences`` on ``cartBuyerIdentityUpdate``). Uses an
+        ISO-2 province/country code where available so Shopify's hosted checkout
+        opens pre-filled. Returns the normalized cart with a live checkoutUrl,
+        or an empty cart dict when the mutation fails — callers fall back to the
+        cart's plain checkout redirect.
+        """
+        gid = _ensure_cart_gid(cart_id)
+        if not gid:
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+
+        addr = address or {}
+        mailing = {
+            "firstName": (addr.get("first_name") or "").strip() or None,
+            "lastName": (addr.get("last_name") or "").strip() or None,
+            "address1": (addr.get("address_1") or addr.get("address_line1") or "").strip() or None,
+            "city": (addr.get("city") or "").strip() or None,
+            "province": (addr.get("province") or addr.get("state_code") or addr.get("state") or "").strip() or None,
+            "zip": (addr.get("postcode") or addr.get("zip") or "").strip() or None,
+            "phone": (addr.get("phone") or "").strip() or None,
+            "country": (addr.get("country_code") or addr.get("country") or "").strip() or "US",
+        }
+        # CartSelectableAddressInput rejects empty strings on required fields; strip nulls.
+        mailing = {k: v for k, v in mailing.items() if v is not None and str(v).strip()}
+
+        GQL = """
+        mutation CartDeliveryAddressesReplace($cartId: ID!, $addresses: [CartSelectableAddressInput!]!) {
+          cartDeliveryAddressesReplace(cartId: $cartId, addresses: $addresses) {
+            cart { id checkoutUrl }
+            userErrors { field message }
+          }
+        }
+        """
+        try:
+            data = await self._storefront(
+                GQL,
+                {"cartId": gid, "addresses": [{"address": mailing, "oneTimeUse": True}]},
+            )
+            op = data.get("cartDeliveryAddressesReplace", {})
+            errors = op.get("userErrors", [])
+            if errors:
+                logger.warning("Shopify cartDeliveryAddressesReplace errors: %s", errors)
+            cart_node = op.get("cart")
+            if not cart_node:
+                return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+            normalized = self._normalize_cart(cart_node)
+            normalized["success"] = True
+            return normalized
+        except Exception as exc:
+            logger.warning("Shopify cartDeliveryAddressesReplace failed: %s", exc)
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+
     async def attach_buyer_identity(
         self,
         *,
@@ -1415,81 +1489,54 @@ class ShopifyClient(BaseStoreClient):
         address: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Bind the buyer's contact + delivery address to the session's Storefront
-        cart via cartBuyerIdentityUpdate, so Shopify's OWN hosted checkout opens
-        pre-populated (the only way to pre-fill hosted checkout — URL params are
-        ignored and the checkout DOM is cross-origin). Returns the normalized cart
-        with a live checkoutUrl, or an empty cart dict if binding failed.
+        cart via cartBuyerIdentityUpdate + cartDeliveryAddressesReplace, so
+        Shopify's OWN hosted checkout opens pre-populated (the only way to pre-fill
+        hosted checkout — URL params are ignored and the checkout DOM is
+        cross-origin). Returns the normalized cart with a live checkoutUrl, or an
+        empty cart dict if binding failed.
         """
         cart_id = await self._get_cart_id(session_id)
         if not cart_id:
             return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
 
+        result: Dict[str, Any] = {}
         addr = address or {}
-        mailing = {
-            "firstName": (addr.get("first_name") or "").strip() or None,
-            "lastName": (addr.get("last_name") or "").strip() or None,
-            "address1": (addr.get("address_1") or addr.get("address_line1") or "").strip() or None,
-            "city": (addr.get("city") or "").strip() or None,
-            "province": (addr.get("state") or addr.get("province") or "").strip() or None,
-            "zip": (addr.get("postcode") or addr.get("zip") or "").strip() or None,
-            "phone": (addr.get("phone") or phone or "").strip() or None,
-            "country": (addr.get("country") or "").strip() or "IN",
-        }
-        # MailingAddressInput rejects empty strings on required fields; strip nulls.
-        mailing = {k: v for k, v in mailing.items() if v is not None and str(v).strip()}
+        if addr:
+            result = await self.replace_cart_delivery_address(cart_id=cart_id, address=addr)
 
-        GQL = """
-        mutation CartBuyerIdentityUpdate(
-          $cartId: ID!
-          $buyerIdentity: CartBuyerIdentityInput!
-        ) {
-          cartBuyerIdentityUpdate(cartId: $cartId, buyerIdentity: $buyerIdentity) {
-            cart {
-              id checkoutUrl
-              buyerIdentity {
-                email phone
-                deliveryAddressPreferences {
-                  ... on MailingAddress { address1 city province zip country }
-                }
+        if email or phone:
+            GQL = """
+            mutation CartBuyerIdentityUpdate($cartId: ID!, $buyerIdentity: CartBuyerIdentityInput!) {
+              cartBuyerIdentityUpdate(cartId: $cartId, buyerIdentity: $buyerIdentity) {
+                cart { id checkoutUrl }
+                userErrors { field message }
               }
-              cost { totalAmount { amount currencyCode } }
             }
-            userErrors { field message }
-          }
-        }
-        """
-        variables: Dict[str, Any] = {
-            "cartId": cart_id,
-            "buyerIdentity": {
-                "email": email or mailing.get("email"),
-                "phone": phone or mailing.get("phone"),
-                "deliveryAddressPreferences": [{"deliveryAddress": mailing}],
-            },
-        }
-        # Drop empty buyerIdentity fields Shopify rejects (null email/phone are fine,
-        # but an empty dict for deliveryAddressPreferences is not, and an empty
-        # STRING email/phone can also be rejected — strip those to null).
-        _bi = variables["buyerIdentity"]
-        _bi = {k: (None if v == "" else v) for k, v in _bi.items() if v is not None}
-        if not _bi.get("deliveryAddressPreferences"):
-            _bi.pop("deliveryAddressPreferences", None)
-        variables["buyerIdentity"] = _bi
+            """
+            _bi: Dict[str, Any] = {}
+            if email:
+                _bi["email"] = email
+            if phone:
+                _bi["phone"] = phone
+            try:
+                data = await self._storefront(
+                    GQL,
+                    {"cartId": _ensure_cart_gid(cart_id), "buyerIdentity": _bi},
+                )
+                op = data.get("cartBuyerIdentityUpdate", {})
+                errors = op.get("userErrors", [])
+                if errors:
+                    logger.warning("Shopify cartBuyerIdentityUpdate errors: %s", errors)
+                cart_node = op.get("cart")
+                if cart_node:
+                    result = self._normalize_cart(cart_node)
+                    result["success"] = True
+            except Exception as exc:
+                logger.warning("Shopify cartBuyerIdentityUpdate failed: %s", exc)
 
-        try:
-            data = await self._storefront(GQL, variables)
-            op = data.get("cartBuyerIdentityUpdate", {})
-            errors = op.get("userErrors", [])
-            if errors:
-                logger.warning("Shopify cartBuyerIdentityUpdate errors: %s", errors)
-            cart_node = op.get("cart")
-            if not cart_node:
-                return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
-            normalized = self._normalize_cart(cart_node)
-            normalized["success"] = True
-            return normalized
-        except Exception as exc:
-            logger.warning("Shopify cartBuyerIdentityUpdate failed: %s", exc)
+        if not result:
             return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+        return result
 
     async def update_cart_quantity(
         self,

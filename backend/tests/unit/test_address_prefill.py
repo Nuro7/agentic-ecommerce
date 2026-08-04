@@ -4,6 +4,14 @@ from src.app.agent.brain.address import (
     AddressCollectionState as S,
     handle_address_collection,
 )
+from src.app.agent.brain.text_utils import (
+    normalize_province_code,
+    normalize_country_code,
+)
+from src.app.integrations.shopify.client import (
+    ShopifyClient,
+    _ensure_cart_gid,
+)
 
 
 def call(msg, state, addr_data, page_context, tenant_id="t1"):
@@ -107,3 +115,143 @@ def test_unknown_phone_keeps_manual_confirm_on_checkout(monkeypatch):
     assert next_state == S.COLLECTING_NAME
     assert addr.get("_using_saved", "") != "1"
     assert not any(a.get("type") == "redirect_checkout_with_address" for a in actions)
+
+
+# ── ISO-2 normalization helpers ────────────────────────────────────────────────
+
+def test_normalize_province_code_us_full_name():
+    assert normalize_province_code("California", "US") == "CA"
+    assert normalize_province_code("new york", "US") == "NY"
+    assert normalize_province_code("West Bengal", "US") == "West Bengal"
+
+
+def test_normalize_province_code_india():
+    assert normalize_province_code("Maharashtra", "IN") == "MH"
+    assert normalize_province_code("Tamil Nadu", "IN") == "TN"
+    assert normalize_province_code("KL", "IN") == "KL"
+
+
+def test_normalize_province_code_bare_and_unknown():
+    assert normalize_province_code("ca") == "CA"
+    assert normalize_province_code("Bavaria", "DE") == "Bavaria"
+    assert normalize_province_code("") == ""
+
+
+def test_normalize_country_code():
+    assert normalize_country_code("India") == "IN"
+    assert normalize_country_code("usa") == "US"
+    assert normalize_country_code("United Kingdom") == "GB"
+    assert normalize_country_code("uk") == "GB"
+    assert normalize_country_code("U.S.") == "US"
+    assert normalize_country_code("") == "US"
+    assert normalize_country_code("", default="IN") == "IN"
+    assert normalize_country_code("ca") == "CA"
+
+
+# ── FSM payloads now carry ISO-2 codes ─────────────────────────────────────────
+
+def test_prefill_payload_emits_iso2_codes():
+    addr = {
+        "first_name": "Ravi", "last_name": "Kumar", "address_line1": "12 Park Road",
+        "city": "Chennai", "state": "Tamil Nadu", "postcode": "600001", "phone": "9876543210",
+    }
+    resp, next_state, data, actions = call(
+        "skip", S.COLLECTING_EMAIL, addr, {"page_type": "checkout", "url": "https://store/checkout"},
+    )
+    prefill = next((a for a in actions if a.get("type") == "prefill_address"), None)
+    assert prefill is not None
+    payload = prefill["payload"]
+    assert payload["state_code"] == "TN"
+    assert payload["country_code"] == "IN"
+
+
+def test_redirect_payload_emits_iso2_codes(monkeypatch):
+    monkeypatch.setattr(
+        "src.app.modules.users.address_service.save_address",
+        lambda **kw: None,
+    )
+    addr = {
+        "first_name": "Asha", "last_name": "Nair", "address_line1": "Flat 12, MG Road",
+        "city": "Kochi", "state": "Kerala", "postcode": "682015", "phone": "9876543210",
+    }
+    resp, next_state, data, actions = call(
+        "yes", S.CONFIRMING, addr, {"page_type": "checkout", "url": "https://store/checkout"},
+    )
+    redirect = next((a for a in actions if a.get("type") == "redirect_checkout_with_address"), None)
+    assert redirect is not None
+    shipping = redirect["payload"]["shipping"]
+    assert shipping["state_code"] == "KL"
+    assert shipping["country_code"] == "IN"
+
+
+# ── cartDeliveryAddressesReplace client path ───────────────────────────────────
+
+def test_ensure_cart_gid():
+    assert _ensure_cart_gid("c1-abc123") == "gid://shopify/Cart/c1-abc123"
+    assert _ensure_cart_gid("gid://shopify/Cart/c1-abc123") == "gid://shopify/Cart/c1-abc123"
+    assert _ensure_cart_gid("") == ""
+
+
+def _new_client():
+    return ShopifyClient(store_domain="test.myshopify.com", storefront_token="tk")
+
+
+def test_replace_cart_delivery_address_sends_modern_mutation(monkeypatch):
+    captured = {}
+
+    async def fake_storefront(query, variables):
+        captured["query"] = query
+        captured["variables"] = variables
+        return {
+            "cartDeliveryAddressesReplace": {
+                "cart": {
+                    "id": "gid://shopify/Cart/c1-abc",
+                    "checkoutUrl": "https://checkout.test",
+                },
+                "userErrors": [],
+            }
+        }
+
+    client = _new_client()
+    monkeypatch.setattr(client, "_storefront", fake_storefront)
+    try:
+        result = asyncio.run(client.replace_cart_delivery_address(
+            cart_id="c1-abc",
+            address={
+                "first_name": "Asha", "last_name": "Nair", "address_1": "Flat 12, MG Road",
+                "city": "Kochi", "state": "Kerala", "state_code": "KL", "country_code": "IN",
+                "postcode": "682015", "phone": "9876543210",
+            },
+        ))
+    finally:
+        asyncio.run(client._http.aclose())
+
+    assert "cartDeliveryAddressesReplace" in captured["query"]
+    assert "deliveryAddressPreferences" not in captured["query"]
+    assert captured["variables"]["cartId"] == "gid://shopify/Cart/c1-abc"
+    assert captured["variables"]["addresses"][0]["oneTimeUse"] is True
+    assert captured["variables"]["addresses"][0]["address"]["province"] == "KL"
+    assert captured["variables"]["addresses"][0]["address"]["country"] == "IN"
+    assert result["success"] is True
+    assert result["checkout_url"] == "https://checkout.test"
+
+
+def test_replace_cart_delivery_address_falls_back_on_error(monkeypatch):
+    async def fake_storefront(query, variables):
+        raise RuntimeError(
+            "Shopify Storefront error: [{'message': \"Field 'cartDeliveryAddressesReplace' doesn't exist\"}]"
+        )
+
+    client = _new_client()
+    monkeypatch.setattr(client, "_storefront", fake_storefront)
+    try:
+        result = asyncio.run(client.replace_cart_delivery_address(
+            cart_id="gid://shopify/Cart/c1-abc",
+            address={"first_name": "Asha", "city": "Kochi"},
+        ))
+    finally:
+        asyncio.run(client._http.aclose())
+
+    assert result.get("success") is not True
+    assert result.get("checkout_url") == ""
+    assert result.get("is_empty") is True

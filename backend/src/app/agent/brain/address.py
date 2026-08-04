@@ -10,7 +10,8 @@ from ...core.security import sanitize_text
 from .text_utils import (
     speech_digits_to_ascii,
     normalize_phone_digits,
-    normalize_india_state,
+    normalize_province_code,
+    normalize_country_code,
     extract_email,
 )
 
@@ -48,7 +49,12 @@ class AddressData:
     def is_complete(self) -> bool:
         return all([self.first_name, self.last_name, self.address_line1, self.city, self.postcode, self.phone])
 
+    @property
+    def _store_country(self) -> str:
+        return os.getenv("STORE_COUNTRY", "IN")
+
     def to_woocommerce_format(self) -> Dict[str, str]:
+        country = self._store_country
         return {
             "first_name": self.first_name,
             "last_name": self.last_name,
@@ -56,9 +62,11 @@ class AddressData:
             "city": self.city,
             "state": self.state,
             "postcode": self.postcode,
-            "country": os.getenv("STORE_COUNTRY", "IN"),
+            "country": country,
             "phone": self.phone,
             "email": self.email,
+            "state_code": normalize_province_code(self.state, country),
+            "country_code": normalize_country_code(country, default="IN"),
         }
 
 
@@ -121,7 +129,7 @@ def _apply_update_value(addr: AddressData, field: str, cleaned: str) -> Tuple[bo
             return True, "Got it."
         return False, "Please tell me the city."
     if field == "state":
-        st = normalize_india_state(cleaned)
+        st = normalize_province_code(cleaned, country=os.getenv("STORE_COUNTRY", "IN"))
         if st:
             addr.state = st
             return True, "Got it."
@@ -269,7 +277,7 @@ async def handle_address_collection(
         response = lang_prompts["state"]
 
     elif current_state == AddressCollectionState.COLLECTING_STATE:
-        addr.state = normalize_india_state(cleaned)
+        addr.state = normalize_province_code(cleaned, country=os.getenv("STORE_COUNTRY", "IN"))
         next_state = AddressCollectionState.COLLECTING_PINCODE
         response = lang_prompts["pincode"]
 
