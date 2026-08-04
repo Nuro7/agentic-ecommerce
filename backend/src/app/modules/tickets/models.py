@@ -9,7 +9,11 @@ from ...core.database import Base
 
 # Status + priority values the merchant dashboard surfaces / mutates.
 TICKET_STATUSES = ("open", "in_progress", "resolved")
-TICKET_PRIORITIES = ("low", "medium", "high")
+TICKET_PRIORITIES = ("low", "medium", "high", "urgent")
+# Triage heat tiers: "hot" = needs immediate attention, "warm" = follow-up soon,
+# "cold" = informational / can wait. Derived deterministically from priority +
+# escalation keywords so the dashboard can sort by urgency.
+TICKET_HEAT = ("hot", "warm", "cold")
 
 
 class VoiceTicket(Base):
@@ -49,6 +53,14 @@ class VoiceTicket(Base):
     priority_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # Where the ticket came from: "llm" | "deterministic" (incl. intake flow).
     source: Mapped[str] = mapped_column(String(20), nullable=False, server_default="llm")
+
+    # Auto-generated merchant-facing number (e.g. "TK-1001") so support staff can
+    # reference a ticket without a UUID.
+    ticket_number: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, index=True)
+    # Triage heat: "hot" | "warm" | "cold" (see TICKET_HEAT).
+    heat: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    # Merchant staff notes (dashboard), separate from the AI issue_summary.
+    merchant_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # True when the ticket was also pushed to the merchant's external helpdesk
     # (Gorgias/Zendesk webhook) — for observability in the dashboard.

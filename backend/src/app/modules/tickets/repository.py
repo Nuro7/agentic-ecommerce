@@ -1,17 +1,42 @@
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import VoiceTicket
+
+TICKET_NUMBER_PREFIX = "TK"
 
 
 class TicketRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
+    async def _next_ticket_number(self, tenant_id: str) -> str:
+        """Next merchant-facing number: TK-1001, TK-1002, ... per tenant.
+
+        Derived from the highest existing per-tenant number (not a global
+        sequence) so tickets stay human-readable and cluster by shop. Uses a
+        MAX over the numeric suffix; falls back to TK-1001 on empty/parse-fail.
+        """
+        stmt = select(func.max(VoiceTicket.ticket_number)).where(
+            VoiceTicket.tenant_id == tenant_id,
+            VoiceTicket.ticket_number.isnot(None),
+        )
+        result = await self.db.execute(stmt)
+        highest = result.scalar()
+        last = 1000
+        if highest:
+            digits = str(highest).removeprefix(TICKET_NUMBER_PREFIX).lstrip("-").strip()
+            if digits.isdigit():
+                last = int(digits)
+        return f"{TICKET_NUMBER_PREFIX}-{last + 1:04d}"
+
     async def create(self, tenant_id: str, data: dict) -> VoiceTicket:
+        data = dict(data)
+        if not data.get("ticket_number"):
+            data["ticket_number"] = await self._next_ticket_number(tenant_id)
         ticket = VoiceTicket(tenant_id=tenant_id, **data)
         self.db.add(ticket)
         await self.db.commit()

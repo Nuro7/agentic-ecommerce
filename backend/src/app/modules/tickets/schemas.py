@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from .models import TICKET_PRIORITIES, TICKET_STATUSES
+from .models import TICKET_HEAT, TICKET_PRIORITIES, TICKET_STATUSES
 
 
 class TicketCreate(BaseModel):
@@ -21,11 +21,15 @@ class TicketCreate(BaseModel):
     product_id: Optional[str] = Field(None, max_length=50)
     priority_reason: Optional[str] = Field(None, max_length=255)
     source: str = Field(default="llm", max_length=20)
+    ticket_number: Optional[str] = Field(None, max_length=20)
+    heat: Optional[str] = Field(None, pattern="|".join(TICKET_HEAT))
+    merchant_notes: Optional[str] = Field(None, max_length=4000)
 
 
 class TicketUpdate(BaseModel):
-    """Merchant dashboard — update ticket status."""
-    status: str = Field(..., pattern="|".join(TICKET_STATUSES))
+    """Merchant dashboard — update ticket status and/or add internal notes."""
+    status: Optional[str] = Field(None, pattern="|".join(TICKET_STATUSES))
+    notes: Optional[str] = Field(None, max_length=4000)
 
 
 class TicketOut(BaseModel):
@@ -46,6 +50,9 @@ class TicketOut(BaseModel):
     product_id: Optional[str]
     priority_reason: Optional[str]
     source: str
+    ticket_number: Optional[str]
+    heat: Optional[str]
+    merchant_notes: Optional[str]
     created_at: datetime
     updated_at: datetime
 

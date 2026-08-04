@@ -77,7 +77,7 @@ async def update_ticket(
     service: TicketService = Depends(get_ticket_service),
 ):
     tenant_id = await _resolve_tenant_id(tenant, shop, db)
-    updated = await service.update_status(ticket_id, tenant_id, body.status)
+    updated = await service.update_status(ticket_id, tenant_id, body.status, body.notes)
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
     return updated

@@ -31,7 +31,6 @@ TICKET_CREATED_MESSAGE = (
     "I've created a support ticket for your request. "
     "Our team will review your chat history and contact you shortly."
 )
-
 # Localized variants for the deterministic escalation path (voice speaks these
 # directly without the LLM, so they must match the detected language).
 _TICKET_CREATED_LOCALIZED = {
@@ -50,12 +49,19 @@ DEDUP_WINDOW_MINUTES = 60
 
 # ── Priority heuristics (keyword-based, deterministic — no extra LLM latency) ─
 
+_URGENT_TOKENS = {
+    "urgent", "asap", "immediately", "right now", "emergency", "fire",
+    "furious", "angry", "very upset", "manager", "complain", "complaint",
+    "legal", "sue", "lawsuit", "scam", "fraud", "stolen", "bleeding",
+    "waiting too long", "unacceptable", "worst", "terrible service",
+}
 _HIGH_PRIORITY_TOKENS = {
     "refund", "refunds", "damaged", "damage", "broken", "defective", "wrong item",
     "wrong item received", "missing item", "never received", "not received",
-    "furious", "angry", "very upset", "manager", "complain", "complaint", "legal",
-    "sue", "lawsuit", "urgent", "scam", "fraud", "not delivered", "didn't receive",
-    "exchanged", "return", "returning", "returned", "cracked", "torn", "stolen",
+    "urgent", "asap", "furious", "angry", "very upset", "manager", "complain",
+    "complaint", "legal", "sue", "lawsuit", "scam", "fraud", "not delivered",
+    "didn't receive", "exchanged", "return", "returning", "returned", "cracked",
+    "torn", "stolen",
 }
 _LOW_PRIORITY_TOKENS = {
     "talk to human", "talk to a human", "human agent", "representative", "customer care",
@@ -63,9 +69,20 @@ _LOW_PRIORITY_TOKENS = {
     "contact support", "talk to support", "speak to support",
 }
 
+# Triage heat tiers — how quickly a human must jump in. Derived from priority +
+# escalation keywords so the dashboard can sort by urgency.
+_HOT_TOKENS = _URGENT_TOKENS
+_WARM_TOKENS = {
+    "refund", "damaged", "damage", "broken", "defective", "wrong item",
+    "missing item", "never received", "not received", "not delivered", "cracked",
+    "torn", "return", "returning", "returned", "exchange", "exchanged",
+}
+
 
 def _detect_priority(text: str) -> str:
     low = " ".join(str(text or "").lower().split())
+    if any(tok in low for tok in _URGENT_TOKENS):
+        return "urgent"
     if any(tok in low for tok in _HIGH_PRIORITY_TOKENS):
         return "high"
     if any(tok in low for tok in _LOW_PRIORITY_TOKENS):
@@ -73,9 +90,24 @@ def _detect_priority(text: str) -> str:
     return "medium"
 
 
-def ticket_created_message(language: str = "en") -> str:
+def _detect_heat(text: str, priority: str) -> str:
+    """Map text+priority onto a triage heat tier: hot / warm / cold."""
+    low = " ".join(str(text or "").lower().split())
+    if priority == "urgent":
+        return "hot"
+    if any(tok in low for tok in _HOT_TOKENS):
+        return "hot"
+    if priority in ("high",) or any(tok in low for tok in _WARM_TOKENS):
+        return "warm"
+    return "cold"
+
+
+def ticket_created_message(language: str = "en", ticket_number: str = "") -> str:
     """Language-aware ticket-confirmation line for the deterministic path."""
-    return _TICKET_CREATED_LOCALIZED.get(language, _TICKET_CREATED_LOCALIZED["en"])
+    msg = _TICKET_CREATED_LOCALIZED.get(language, _TICKET_CREATED_LOCALIZED["en"])
+    if ticket_number:
+        return f"{msg} Your ticket number is {ticket_number}."
+    return msg
 
 
 def _classify_issue(text: str) -> str:
@@ -147,6 +179,9 @@ def _extract_order_id(text: str) -> str:
 def _priority_reason(text: str) -> str:
     """Which keyword drove the priority, or 'llm' when none did."""
     low = " ".join(str(text or "").lower().split())
+    for tok in _URGENT_TOKENS:
+        if tok in low:
+            return f"keyword:{tok}"
     for tok in _HIGH_PRIORITY_TOKENS:
         if tok in low:
             return f"keyword:{tok}"
@@ -281,6 +316,8 @@ async def create_support_ticket(
     """
     # ── Dedup: reuse an OPEN ticket for this tenant+session within 60 min ─────
     ticket_id: Optional[str] = None
+    ticket_number: Optional[str] = None
+    heat: Optional[str] = None
     already_exists = False
     priority = "medium"
     issue_summary = ""
@@ -299,6 +336,8 @@ async def create_support_ticket(
                     already_exists = True
                     priority = existing.priority
                     issue_summary = existing.issue_summary
+                    ticket_number = existing.ticket_number
+                    heat = existing.heat
                     logger.info(
                         "Ticket dedup: reusing open ticket %s (session %s, <%dmin)",
                         ticket_id, session_id, DEDUP_WINDOW_MINUTES,
@@ -310,12 +349,14 @@ async def create_support_ticket(
         return {
             "status": "success",
             "ticket_id": ticket_id,
+            "ticket_number": ticket_number,
+            "heat": heat,
             "already_exists": True,
             "priority": priority,
             "issue_summary": issue_summary,
             "transcript": _build_transcript_text(conversation_history),
-            "message": TICKET_CREATED_MESSAGE,
-            "spoken_message": TICKET_CREATED_MESSAGE,
+            "message": ticket_created_message("en", ticket_number or ""),
+            "spoken_message": ticket_created_message("en", ticket_number or ""),
         }
 
     customer = await _collect_customer_context(
@@ -334,6 +375,7 @@ async def create_support_ticket(
     issue_type = _classify_issue(trigger_message or context_text)
     order_id = _extract_order_id(trigger_message or context_text)
     priority_reason = _priority_reason(trigger_message or context_text)
+    heat = _detect_heat(trigger_message or context_text, priority)
 
     try:
         from ..core.database import AsyncSessionLocal
@@ -357,14 +399,17 @@ async def create_support_ticket(
                     "product_id": product_id or None,
                     "priority_reason": priority_reason,
                     "source": source or "llm",
+                    "heat": heat,
                 },
             )
             ticket_id = ticket.id
+            ticket_number = ticket.ticket_number
     except Exception as exc:
         # Persistence must never take down the voice turn — degrade to an
         # in-memory ticket id so the customer still gets the confirmation.
         logger.error("Ticket persistence failed session=%s: %s", session_id, exc, exc_info=True)
         ticket_id = f"SPEC-{uuid.uuid4().hex[:6].upper()}"
+        ticket_number = None
 
     transcript_text = _build_transcript_text(conversation_history)
 
@@ -375,14 +420,17 @@ async def create_support_ticket(
     except Exception as exc:
         logger.warning("Shopify ticket metafield sync skipped: %s", exc)
 
+    confirm_msg = ticket_created_message("en", ticket_number or "")
     return {
         "status": "success",
         "ticket_id": ticket_id,
+        "ticket_number": ticket_number,
+        "heat": heat,
         "priority": priority,
         "issue_summary": issue_summary,
         "transcript": transcript_text,
-        "message": TICKET_CREATED_MESSAGE,
-        "spoken_message": TICKET_CREATED_MESSAGE,
+        "message": confirm_msg,
+        "spoken_message": confirm_msg,
     }
 
 

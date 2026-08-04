@@ -584,6 +584,9 @@ async def _request_human_support(
             "type": "show_ticket",
             "payload": {
                 "ticket_id": ticket_result["ticket_id"],
+                "ticket_number": ticket_result.get("ticket_number"),
+                "priority": ticket_result.get("priority", "medium"),
+                "heat": ticket_result.get("heat"),
                 "message": ticket_result.get("message", ""),
             },
         })
@@ -631,7 +634,9 @@ async def _create_support_ticket(
             "type": "show_ticket",
             "payload": {
                 "ticket_id": ticket_result["ticket_id"],
+                "ticket_number": ticket_result.get("ticket_number"),
                 "priority": ticket_result.get("priority", "medium"),
+                "heat": ticket_result.get("heat"),
                 "message": ticket_result.get("message", ""),
             },
         })

@@ -62,11 +62,24 @@ class TicketService:
 
     # ── Update ────────────────────────────────────────────────────────────────
 
-    async def update_status(self, ticket_id: str, tenant_id: str, status: str) -> Optional[VoiceTicket]:
+    async def update_status(
+        self,
+        ticket_id: str,
+        tenant_id: str,
+        status: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Optional[VoiceTicket]:
         ticket = await self.repo.get_by_id(ticket_id, tenant_id)
         if not ticket:
             return None
-        return await self.repo.update(ticket, {"status": status})
+        updates: Dict[str, str] = {}
+        if status is not None:
+            updates["status"] = status
+        if notes is not None:
+            updates["merchant_notes"] = notes
+        if not updates:
+            return ticket
+        return await self.repo.update(ticket, updates)
 
     # ── Webhook helpers ───────────────────────────────────────────────────────
 
@@ -91,15 +104,21 @@ class TicketService:
             "event": "ticket.created",
             "payload": {
                 "id": ticket.id,
+                "ticket_number": ticket.ticket_number,
                 "shop_domain": ticket.shop_domain,
                 "session_id": ticket.session_id,
                 "customer_name": ticket.customer_name,
                 "customer_phone": ticket.customer_phone,
                 "customer_email": ticket.customer_email,
+                "order_id": ticket.order_id,
+                "product_id": ticket.product_id,
+                "issue_type": ticket.issue_type,
                 "issue_summary": ticket.issue_summary,
                 "transcript": ticket.transcript_json,
                 "priority": ticket.priority,
+                "heat": ticket.heat,
                 "status": ticket.status,
+                "source": ticket.source,
                 "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
             },
         }

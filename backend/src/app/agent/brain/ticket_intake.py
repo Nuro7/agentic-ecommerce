@@ -217,12 +217,15 @@ async def handle_ticket_intake_turn(
 
     actions: List[Dict[str, Any]] = []
     if ticket_result.get("status") == "success":
+        ticket_number = str(ticket_result.get("ticket_number") or "")
         actions.append({
             "type": "show_ticket",
             "payload": {
                 "ticket_id": ticket_result["ticket_id"],
+                "ticket_number": ticket_number,
                 "priority": ticket_result.get("priority", "medium"),
-                "message": ticket_created_message(language),
+                "heat": ticket_result.get("heat"),
+                "message": ticket_created_message(language, ticket_number),
             },
         })
     text = str(ticket_result.get("message") or "") or ticket_created_message(language)

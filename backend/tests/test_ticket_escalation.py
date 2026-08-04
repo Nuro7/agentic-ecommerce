@@ -13,6 +13,7 @@ from src.app.agent.guardrails import extract_contact_info, is_pii_placeholder
 from src.app.modules.tickets.repository import TicketRepository
 from src.app.services.ticketing import (
     _classify_issue,
+    _detect_heat,
     _detect_priority,
     _extract_order_id,
     _priority_reason,
@@ -94,12 +95,22 @@ class TestTicketingHelpers:
         assert _detect_priority("refund please") == "high"
         assert _detect_priority("talk to a human") == "low"
         assert _detect_priority("hello") == "medium"
+        assert _detect_priority("this is urgent, my order was stolen") == "urgent"
         assert _priority_reason("refund please") == "keyword:refund"
         assert _priority_reason("hello") == "llm"
+
+    def test_heat(self):
+        assert _detect_heat("my order was stolen help asap", "urgent") == "hot"
+        assert _detect_heat("this is urgent", "high") == "hot"
+        assert _detect_heat("my order arrived damaged", "high") == "warm"
+        assert _detect_heat("I want a refund", "high") == "warm"
+        assert _detect_heat("talk to a human", "low") == "cold"
+        assert _detect_heat("hello", "medium") == "cold"
 
     def test_localized_message(self):
         assert "ticket" in ticket_created_message("en").lower()
         assert ticket_created_message("ml") != ticket_created_message("en")
+        assert "TK-1001" in ticket_created_message("en", "TK-1001")
 
 
 @pytest.mark.unit
@@ -301,3 +312,20 @@ class TestRepositoryFindOpenBySession:
             "created_at": now - timedelta(minutes=5),
         })
         assert await repo.find_open_by_session("t1", "s1", now - timedelta(minutes=60)) is None
+
+    async def test_sequential_ticket_numbers_per_tenant(self, repo_db):
+        repo = TicketRepository(repo_db)
+        now = datetime.now(timezone.utc)
+        t1a = await repo.create("t1", {
+            "session_id": "s1", "issue_summary": "one", "created_at": now,
+        })
+        t1b = await repo.create("t1", {
+            "session_id": "s2", "issue_summary": "two", "created_at": now,
+        })
+        t2a = await repo.create("t2", {
+            "session_id": "s3", "issue_summary": "three", "created_at": now,
+        })
+        assert t1a.ticket_number == "TK-1001"
+        assert t1b.ticket_number == "TK-1002"
+        # Per-tenant counter restarts — tenant t2 gets its own TK-1001.
+        assert t2a.ticket_number == "TK-1001"

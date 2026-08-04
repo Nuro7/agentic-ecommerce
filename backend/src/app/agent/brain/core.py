@@ -1616,16 +1616,19 @@ def _empty_response(session_id: str, text: str, lang: str) -> Dict[str, Any]:
 def _escalation_result(ticket_result: Dict[str, Any], lang: str) -> Dict[str, Any]:
     """Build the deterministic escalation reply (ticket confirmation + show_ticket)."""
     actions: List[Dict[str, Any]] = []
+    ticket_number = str(ticket_result.get("ticket_number") or "")
     if ticket_result.get("status") == "success":
         actions.append({
             "type": "show_ticket",
             "payload": {
                 "ticket_id": ticket_result["ticket_id"],
+                "ticket_number": ticket_number,
                 "priority": ticket_result.get("priority", "medium"),
-                "message": ticket_created_message(lang),
+                "heat": ticket_result.get("heat"),
+                "message": ticket_created_message(lang, ticket_number),
             },
         })
-    text = str(ticket_result.get("message") or "") or ticket_created_message(lang)
+    text = str(ticket_result.get("message") or "") or ticket_created_message(lang, ticket_number)
     return {
         "response_text": text,
         "ui_actions": actions,
