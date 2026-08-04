@@ -4,10 +4,12 @@ Drives support escalation end-to-end:
   1. `detect_escalation()` — keyword match on complaint / talk-to-human tokens,
      run BEFORE the LLM so a mis-routed (e.g. Malayalam) damaged-order complaint
      escalates deterministically instead of getting a product-search answer.
-  2. If the customer's contact info is already known (session meta), a ticket is
-     created immediately (de-duplicated per session within 60 minutes).
-  3. Otherwise the turn is OWNED by the intake FSM: Aria asks for an email or
-     phone number and creates the ticket on the follow-up message.
+  2. Contact collection is gated by a VERIFICATION step: a phone number is
+     normalized to digits, validated to >= 10 digits, then read back and must be
+     confirmed ("yes"/"correct") before the ticket is persisted — so corrupt /
+     mis-transcribed numbers never reach `voice_tickets`.
+  3. While the FSM owns the turn, product/catalog search is locked out (the brain
+     returns the FSM response and never falls through to search / LLM).
 
 State is persisted in session meta under `ticket_intake_state` /
 `ticket_intake_pending` (same pattern as the address FSM in address.py).
@@ -33,6 +35,7 @@ logger = logging.getLogger(__name__)
 class TicketIntakeState:
     IDLE = "idle"
     AWAITING_CONTACT = "awaiting_contact"
+    VERIFYING_PHONE = "verifying_phone"
 
 
 # ── Escalation trigger ────────────────────────────────────────────────────────
@@ -123,6 +126,42 @@ _CANCEL_TEXTS = {
     "kn": "Parvagilla — bere enadru beku andre naanu ilddane iddene.",
 }
 
+# Read-back confirmation: "Got it. That's 8-9-4-3-7-3-7-2-2-7, correct?"
+_VERIFY_PHONE_TEXTS = {
+    "en": "Got it. So that's {digits}, correct?",
+    "hi": "Samajh gaya. To yah hai {digits}, kya yeh sahi hai?",
+    "ml": "Manassilaayi. Ennaal athu {digits}, sheriyaano?",
+    "ta": "Puriyuthu. Adhu {digits}, sariya?",
+    "te": "Arthamaindi. Adi {digits}, correct ah?",
+    "bn": "Bujhechi. Tai ei {digits}, ki thik?",
+    "kn": "Arthavayitu. Adu {digits}, sariya?",
+}
+
+# The number they gave was too short / unparseable.
+_INVALID_PHONE_TEXTS = {
+    "en": "I didn't catch that properly. Please share a valid 10-digit mobile number, or your email address instead.",
+    "hi": "Mujhe woh number thik se samajh nahi aaya. Kripya ek valid 10-digit mobile number, ya apna email address dijiye.",
+    "ml": "Aa number enikku kurachu thettiyayi. Dayavayi onnu sheriyaya 10-digit mobile number, allengil email address parayamo?",
+    "ta": "Antha number enakku sariyaga puriyala. Oru valid 10-digit mobile number, allathu ungal email address sollunga.",
+    "te": "Aa number naaku sariyaga ardham kaaledu. Dayachesi oka valid 10-digit mobile number, lekundaa mee email address cheppandi.",
+    "bn": "Number-ta ami thik bhabe bujhini. Onugolpo ekta valid 10-digit mobile number, ba apnar email address din.",
+    "kn": "A number nanage sariyagi artha aagalilla. Dayavittu ondu valid 10-digit mobile number, allavaada nimma email address hELi.",
+}
+
+# Positive confirmation the read-back number is correct.
+_CONFIRM_RE = re.compile(
+    r"\b(yes|yeah|yep|correct|right|that's? right|that is right|"
+    r"sahi|haan|theek hai|sheri|sari|avun|correct ah|thik hai|theek)\b",
+    re.IGNORECASE,
+)
+
+# User says the number was wrong / wants to give a new one.
+_DENY_RE = re.compile(
+    r"\b(no|nope|nah|wrong|not correct|not right|alla|venda|nahi|"
+    r"edit|change|let me (say|give|type)|try again)\b",
+    re.IGNORECASE,
+)
+
 # Cancelling an in-progress intake ("never mind", "stop", "nothing"…).
 _CANCEL_RE = re.compile(
     r"\b(never\s*?mind|cancel|stop|skip|forget it|leave it|quit|nothing|"
@@ -143,6 +182,21 @@ def reask_contact_prompt(language: str) -> str:
     return _localized(_REASK_CONTACT_TEXTS, language)
 
 
+def verify_phone_prompt(language: str, phone: str) -> str:
+    return _localized(_VERIFY_PHONE_TEXTS, language).format(
+        digits="-".join(phone)
+    )
+
+
+def invalid_phone_prompt(language: str) -> str:
+    return _localized(_INVALID_PHONE_TEXTS, language)
+
+
+def normalize_phone(phone: str) -> str:
+    """Pure 10-15 digit string from any raw transcription (no separators)."""
+    return normalize_phone_digits(phone)
+
+
 # ── Intake turn handler ───────────────────────────────────────────────────────
 
 async def handle_ticket_intake_turn(
@@ -158,9 +212,14 @@ async def handle_ticket_intake_turn(
 ) -> Tuple[str, str, Dict[str, Any], List[Dict[str, Any]]]:
     """Process one intake reply → (text, next_state, pending, ui_actions).
 
-    While `awaiting_contact`, extracts an email or phone from the reply; on
-    success it creates the ticket (de-duplicated) and returns the confirmation +
-    a `show_ticket` ui_action. On a cancellation it resets the FSM to idle.
+    Flow:
+      AWAITING_CONTACT: extract email or phone from the reply. An email is
+        self-verifying (format-checked), so the ticket is created immediately.
+        A phone is normalized to digits, length-checked (>= 10), then the FSM
+        moves to VERIFYING_PHONE and reads the number back for confirmation.
+      VERIFYING_PHONE: a positive reply ("yes"/"correct") creates the ticket;
+        a negative reply / new number returns to collection. Nothing is
+        persisted until the phone is explicitly confirmed.
     """
     pending = (session_meta or {}).get("ticket_intake_pending") or {}
     if not isinstance(pending, dict) or not pending.get("trigger_message"):
@@ -176,6 +235,33 @@ async def handle_ticket_intake_turn(
         logger.info("Ticket intake cancelled session=%s", session_id)
         return _localized(_CANCEL_TEXTS, language), TicketIntakeState.IDLE, {}, []
 
+    state_now = (session_meta or {}).get("ticket_intake_state", TicketIntakeState.AWAITING_CONTACT)
+
+    # ── Verification step: awaiting "yes" on the read-back number ────────────
+    if state_now == TicketIntakeState.VERIFYING_PHONE:
+        pending_phone = str(pending.get("pending_phone") or "").strip()
+        if _CONFIRM_RE.search(low) and pending_phone:
+            logger.info(
+                "Phone verified session=%s phone=%s (creating ticket)",
+                session_id, pending_phone,
+            )
+            return await _create_ticket_with(
+                pending=pending,
+                language=language,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                conversation_history=conversation_history or [],
+                store_client=store_client,
+                session_service=session_service,
+                customer_phone=pending_phone,
+            )
+        if _DENY_RE.search(low):
+            # Number rejected — collect again.
+            return reask_contact_prompt(language), TicketIntakeState.AWAITING_CONTACT, pending, []
+        # Unclear reply — repeat the verification.
+        return verify_phone_prompt(language, pending_phone), TicketIntakeState.VERIFYING_PHONE, pending, []
+
+    # ── Contact collection step ───────────────────────────────────────────────
     email, phone = extract_contact_info(cleaned_message or "")
     if not email:
         email = str(extract_email(low) or "").strip().lower()
@@ -196,20 +282,64 @@ async def handle_ticket_intake_turn(
             phone = known_phone
 
     if not email and not phone:
+        # A partial / mashed number (e.g. "73 72 27") must never be persisted
+        # silently — tell the customer what went wrong and ask for a full one.
+        digits = normalize_phone_digits(cleaned_message or "")
+        if digits and len(digits) < 10:
+            return (
+                invalid_phone_prompt(language),
+                TicketIntakeState.AWAITING_CONTACT,
+                pending,
+                [],
+            )
         return reask_contact_prompt(language), TicketIntakeState.AWAITING_CONTACT, pending, []
 
-    logger.info(
-        "Ticket intake complete session=%s email=%s phone=%s (creating ticket)",
-        session_id, email or "-", phone or "-",
-    )
+    # An email is format-verified at capture — persist immediately.
+    if email:
+        logger.info("Ticket intake email session=%s email=%s", session_id, email)
+        return await _create_ticket_with(
+            pending=pending,
+            language=language,
+            tenant_id=tenant_id,
+            session_id=session_id,
+            conversation_history=conversation_history or [],
+            store_client=store_client,
+            session_service=session_service,
+            customer_email=email,
+        )
+
+    # Phone only — normalize, validate length, then read back for confirmation.
+    clean_phone = normalize_phone(phone)
+    if len(clean_phone) < 10:
+        return invalid_phone_prompt(language), TicketIntakeState.AWAITING_CONTACT, pending, []
+
+    pending = dict(pending)
+    pending["pending_phone"] = clean_phone
+    logger.info("Phone captured session=%s phone=%s (awaiting verification)", session_id, clean_phone)
+    return verify_phone_prompt(language, clean_phone), TicketIntakeState.VERIFYING_PHONE, pending, []
+
+
+async def _create_ticket_with(
+    *,
+    pending: Dict[str, Any],
+    language: str,
+    tenant_id: str,
+    session_id: str,
+    conversation_history: List[Dict[str, Any]],
+    store_client: Any,
+    session_service: Any,
+    customer_email: str = "",
+    customer_phone: str = "",
+) -> Tuple[str, str, Dict[str, Any], List[Dict[str, Any]]]:
+    """Create the ticket with the verified contact → (text, next_state, pending, actions)."""
     ticket_result = await create_support_ticket(
         tenant_id=tenant_id,
         session_id=session_id,
-        conversation_history=conversation_history or [],
+        conversation_history=conversation_history,
         store_client=store_client,
         session_service=session_service,
-        customer_email=email,
-        customer_phone=phone,
+        customer_email=customer_email,
+        customer_phone=customer_phone,
         trigger_message=str(pending.get("trigger_message") or ""),
         product_id=pending.get("product_id"),
         source="deterministic",

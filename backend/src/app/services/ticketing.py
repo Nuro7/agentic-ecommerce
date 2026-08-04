@@ -22,6 +22,31 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Redaction placeholders that must never be persisted to a transcript.
+_PII_PLACEHOLDERS = frozenset({"[email]", "[phone]", "[card]", "[pan]", "[aadhaar]"})
+
+# Substrings that indicate prompt/system/fallback noise rather than a real turn.
+_ARTIFACT_MARKERS = (
+    "system prompt", "assistant instructions", "you are aria", "your instructions",
+    "speako system", "fallback error", "output validation", "retry_with_stricter",
+    "safe_fallback", "guardrail", "build_retrieved_context", "tool_dispatch",
+    "[trace]", "[flow]", "[turn ", "trace step", "debug:", "traceback",
+)
+
+# JSON-ish / empty shells ("{}", "None", "{'turns': ...}") are never real turns.
+_ARTIFACT_RE = re.compile(r"^\s*(?:\{\}|\{\}|None|null|\[\])\s*$", re.IGNORECASE)
+
+
+def _looks_like_artifact(content: str) -> bool:
+    low = str(content or "").strip().lower()
+    if not low:
+        return True
+    if _ARTIFACT_RE.search(low):
+        return True
+    if any(marker in low for marker in _ARTIFACT_MARKERS):
+        return True
+    return False
+
 TICKET_NAMESPACE = "speako"
 TICKET_STATUS_KEY = "ticket_status"
 TICKET_ID_KEY = "last_ticket_id"
@@ -192,15 +217,25 @@ def _priority_reason(text: str) -> str:
 
 
 def _build_transcript_turns(conversation_history: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Conversation history → [{role, content}] turns (sanitized + bounded)."""
+    """Conversation history → [{role, content}] turns (sanitized + bounded).
+
+    Only valid user/assistant turns with non-empty text are kept. Redaction
+    placeholders ([email]/[phone]) and obvious prompt/fallback artifacts are
+    dropped so the stored transcript stays compact and human-readable.
+    """
     turns: List[Dict[str, str]] = []
     for turn in (conversation_history or [])[-40:]:
         if not isinstance(turn, dict):
             continue
         role = str(turn.get("role", "")).strip().lower()
         content = str(turn.get("content", "")).strip()
-        if role in {"user", "assistant"} and content:
-            turns.append({"role": role, "content": content[:1000]})
+        if role not in {"user", "assistant"} or not content:
+            continue
+        if content in _PII_PLACEHOLDERS:
+            continue
+        if _looks_like_artifact(content):
+            continue
+        turns.append({"role": role, "content": content[:1000]})
     return turns
 
 
@@ -217,24 +252,53 @@ def _generate_issue_summary(
     conversation_history: List[Dict[str, Any]],
     trigger_message: str,
 ) -> str:
-    """Deterministic AI-style summary: the customer's recent turns + trigger tag."""
-    user_turns = [
-        str(t.get("content", "")).strip()
-        for t in (conversation_history or [])
-        if isinstance(t, dict) and str(t.get("role", "")).lower() == "user"
-    ]
-    if trigger_message and trigger_message.strip():
-        user_turns.append(str(trigger_message).strip())
+    """Deterministic 1-sentence summary of the customer's actual problem.
+
+    Only the customer's real words are used — no system prompts, no empty
+    quotes, no fallback noise. Returns a short ("<15 word") classification
+    sentence, optionally with a compact context snippet.
+    """
+    user_turns = []
+    for t in (conversation_history or []):
+        if not isinstance(t, dict):
+            continue
+        if str(t.get("role", "")).lower() != "user":
+            continue
+        content = str(t.get("content", "")).strip()
+        if not content or _looks_like_artifact(content):
+            continue
+        if content in _PII_PLACEHOLDERS:
+            continue
+        user_turns.append(content)
+
+    if trigger_message and str(trigger_message).strip():
+        tm = str(trigger_message).strip()
+        if not _looks_like_artifact(tm) and tm not in _PII_PLACEHOLDERS:
+            user_turns.append(tm)
+
     recent = " ".join(user_turns[-3:])
-    recent = re.sub(r"\s+", " ", recent)[:500]
-    if "refund" in (recent or "").lower():
+    recent = re.sub(r"\s+", " ", recent)[:400]
+    low = recent.lower()
+
+    if "refund" in low:
         summary = "Customer is requesting a refund."
-    elif any(w in (recent or "").lower() for w in ("damaged", "broken", "defective", "cracked", "torn")):
-        summary = "Customer reports receiving a damaged/defective order."
+    elif any(w in low for w in ("damaged", "broken", "defective", "cracked", "torn")):
+        summary = "Customer received a damaged or defective order."
+    elif any(w in low for w in ("wrong item", "wrong size", "wrong shoe", "wrong product")):
+        summary = "Customer received the wrong item or size."
+    elif any(w in low for w in ("missing item", "never received", "not received", "not delivered")):
+        summary = "Customer's order was not received."
+    elif any(w in low for w in ("talk to human", "customer care", "human agent", "representative")):
+        summary = "Customer requested to speak to a human support agent."
+    elif recent:
+        summary = "Customer requested support for an order issue."
     else:
-        summary = "Customer requested human assistance / could not be resolved by the assistant."
-    if recent:
-        summary += f" Context: {recent}"
+        summary = "Customer requested human assistance."
+
+    # Append a short, single-line context only when it adds signal.
+    context = " ".join(recent.split()[:18])
+    if context:
+        summary += f" Context: {context}."
     return summary[:600]
 
 
@@ -362,7 +426,10 @@ async def create_support_ticket(
     customer = await _collect_customer_context(
         session_service, tenant_id, session_id, customer_email
     )
-    phone = str(customer_phone or customer["phone"] or "").strip()
+    # Final safety net: only ever persist a normalized, >= 10-digit phone.
+    phone = re.sub(r"\D", "", str(customer_phone or customer["phone"] or ""))
+    if len(phone) < 10:
+        phone = ""
     name = str(customer_name or customer["name"] or "").strip()
     email = str(customer_email or customer["email"] or "").strip().lower()
 

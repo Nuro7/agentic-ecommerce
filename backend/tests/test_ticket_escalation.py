@@ -166,12 +166,79 @@ class TestTicketIntake:
         assert pending == {}
         assert any(a["type"] == "show_ticket" for a in actions)
 
-    async def test_creates_ticket_with_phone(self, monkeypatch):
+    async def test_phone_requires_verification_first(self, monkeypatch):
+        # A phone number is NOT persisted directly — it must be read back and
+        # confirmed. First reply moves to VERIFYING_PHONE and asks for "yes".
         text, state, pending, actions = await self._run(
             monkeypatch, "call me at 9876543210", pending={"trigger_message": "refund"}
         )
+        assert state == TicketIntakeState.VERIFYING_PHONE
+        assert pending["pending_phone"] == "9876543210"
+        assert "9-8-7-6-5-4-3-2-1-0" in text
+        assert actions == []
+
+    async def test_phone_confirmed_creates_ticket(self, monkeypatch):
+        from src.app.agent.brain import ticket_intake as ti
+        captured = {}
+
+        async def spy_create_support_ticket(**kwargs):
+            captured.update(kwargs)
+            return {
+                "status": "success",
+                "ticket_id": "T-42",
+                "priority": "high",
+                "message": "created",
+            }
+
+        monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="yes that's correct",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.VERIFYING_PHONE,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_phone": "9876543210",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
         assert state == TicketIntakeState.IDLE
-        assert actions[0]["payload"]["ticket_id"] == "T-42"
+        assert pending == {}
+        assert captured.get("customer_phone") == "9876543210"
+        assert any(a["type"] == "show_ticket" for a in actions)
+
+    async def test_phone_denied_recollects(self, monkeypatch):
+        from src.app.agent.brain import ticket_intake as ti
+        captured = {}
+
+        async def spy_create_support_ticket(**kwargs):
+            captured.update(kwargs)
+            return {"status": "success", "ticket_id": "T-42", "message": "created"}
+
+        monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="no that's wrong",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.VERIFYING_PHONE,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_phone": "9876543210",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
+        assert state == TicketIntakeState.AWAITING_CONTACT
+        assert captured == {}  # no ticket created on a denied number
 
     async def test_reasks_when_no_contact(self, monkeypatch):
         text, state, pending, actions = await self._run(
@@ -243,6 +310,8 @@ class TestTicketIntake:
             }
 
         monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+        # Phone captured from session meta → goes to verification, NOT straight
+        # to the DB. Confirm it on the follow-up turn.
         text, state, pending, actions = await handle_ticket_intake_turn(
             cleaned_message="call me at [phone]",
             session_meta={
@@ -257,9 +326,38 @@ class TestTicketIntake:
             session_service=None,
             language="en",
         )
+        assert state == TicketIntakeState.VERIFYING_PHONE
+        assert pending["pending_phone"] == "9876543210"
+
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="yes",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.VERIFYING_PHONE,
+                "ticket_intake_pending": {
+                    "trigger_message": "refund",
+                    "pending_phone": "9876543210",
+                },
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
         assert state == TicketIntakeState.IDLE
         assert pending == {}
         assert captured.get("customer_phone") == "9876543210"
+
+    async def test_invalid_phone_asks_again(self, monkeypatch):
+        # User tried to say their number in parts ("73 72 27") — never persist a
+        # short / mashed number; re-prompt for a valid 10-digit number.
+        text, state, pending, actions = await self._run(
+            monkeypatch, "73 72 27", pending={"trigger_message": "order damaged"}
+        )
+        assert state == TicketIntakeState.AWAITING_CONTACT
+        assert actions == []
+        assert "valid" in text.lower()
 
 
 @pytest.mark.integration

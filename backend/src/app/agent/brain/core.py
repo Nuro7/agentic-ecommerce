@@ -62,7 +62,9 @@ from .ticket_intake import (
     ask_contact_prompt,
     detect_escalation,
     handle_ticket_intake_turn,
+    reask_contact_prompt,
     session_contact,
+    verify_phone_prompt,
 )
 from .canned import normalize_language, chitchat_response, off_topic_response, _OFF_TOPIC_RESPONSES
 from .fast_intent import (
@@ -727,6 +729,7 @@ async def ask_brain(
             _next_meta = dict(session_meta) if isinstance(session_meta, dict) else {}
             _next_meta["ticket_intake_state"] = _intake_next
             _next_meta["ticket_intake_pending"] = _intake_pending
+            _next_meta["fsm_state"] = "SUPPORT_TICKET" if _intake_next != TicketIntakeState.IDLE else ""
             try:
                 await session_service.save_meta(tenant_id, session_id, _next_meta)
             except Exception as _meta_exc:
@@ -742,7 +745,36 @@ async def ask_brain(
                 _intake_next, len(_intake_actions), session_id,
             )
         except Exception as _intake_exc:
-            logger.warning("[turn %s] Ticket-intake FSM failed, falling through: %s", turn_id, _intake_exc)
+            # CRITICAL: never fall through to product search while the support
+            # ticket FSM owns the conversation — the customer is mid-escalation.
+            # Keep the FSM active and reply neutrally instead.
+            logger.warning("[turn %s] Ticket-intake FSM failed, staying locked: %s", turn_id, _intake_exc)
+            result = {
+                "response_text": ask_contact_prompt(lang),
+                "ui_actions": [],
+                "actions": [],
+                "suggested_replies": [],
+            }
+
+    # ── Support-ticket context lock ──────────────────────────────────────────
+    # While the intake FSM is active (ticket_intake_state != idle), the turn is
+    # LOCKED to the support flow: product search, catalog lookup, fast-intent and
+    # the LLM are all skipped so a mid-escalation message can never trigger a
+    # shoe recommendation. Only cancellation or ticket completion releases it.
+    if result is None and (
+        _ticket_intake_state != TicketIntakeState.IDLE
+        or (isinstance(session_meta, dict) and session_meta.get("fsm_state") == "SUPPORT_TICKET")
+    ):
+        logger.info(
+            "[FLOW] brain support-lock: holding turn session=%s state=%s",
+            session_id, _ticket_intake_state,
+        )
+        result = {
+            "response_text": reask_contact_prompt(lang),
+            "ui_actions": [],
+            "actions": [],
+            "suggested_replies": [],
+        }
 
     # ── Step 5a: Pure UI / navigation commands ─────────────────────────────
     # "scroll down", "go to the top", "go home" are page actions, not product
@@ -766,10 +798,13 @@ async def ask_brain(
     if result is None and detect_escalation(cleaned_message):
         _contact_email, _contact_phone = session_contact(session_meta, state)
         _pid = page_context.get("product_id") if isinstance(page_context, dict) else None
-        if _contact_email or _contact_phone:
+        # An email is format-verified at capture → create immediately. A phone
+        # alone must be read back + confirmed first (see intake FSM) so corrupt
+        # digits never reach the DB — route through the intake FSM instead.
+        if _contact_email:
             logger.info(
-                "[FLOW] brain escalation: contact known, creating ticket session=%s email=%s phone=%s",
-                session_id, bool(_contact_email), bool(_contact_phone),
+                "[FLOW] brain escalation: email known, creating ticket session=%s email=%s",
+                session_id, _contact_email,
             )
             _ticket_res = await create_support_ticket(
                 tenant_id=tenant_id,
@@ -778,12 +813,34 @@ async def ask_brain(
                 store_client=store_client,
                 session_service=session_service,
                 customer_email=_contact_email,
-                customer_phone=_contact_phone,
                 trigger_message=cleaned_message,
                 product_id=_pid,
                 source="deterministic",
             )
             result = _escalation_result(_ticket_res, lang)
+        elif _contact_phone:
+            logger.info(
+                "[FLOW] brain escalation: phone known, verifying via intake session=%s",
+                session_id,
+            )
+            _next_meta = dict(session_meta) if isinstance(session_meta, dict) else {}
+            _next_meta["ticket_intake_state"] = TicketIntakeState.VERIFYING_PHONE
+            _next_meta["ticket_intake_pending"] = {
+                "trigger_message": cleaned_message,
+                "product_id": _pid,
+                "pending_phone": _contact_phone,
+            }
+            _next_meta["fsm_state"] = "SUPPORT_TICKET"
+            try:
+                await session_service.save_meta(tenant_id, session_id, _next_meta)
+            except Exception as _meta_exc:
+                logger.debug("Ticket-intake phone-verify save failed (non-critical): %s", _meta_exc)
+            result = {
+                "response_text": verify_phone_prompt(lang, _contact_phone),
+                "ui_actions": [],
+                "actions": [],
+                "suggested_replies": [],
+            }
         else:
             logger.info("[FLOW] brain escalation: no contact, starting intake session=%s", session_id)
             _next_meta = dict(session_meta) if isinstance(session_meta, dict) else {}
@@ -792,6 +849,7 @@ async def ask_brain(
                 "trigger_message": cleaned_message,
                 "product_id": _pid,
             }
+            _next_meta["fsm_state"] = "SUPPORT_TICKET"
             try:
                 await session_service.save_meta(tenant_id, session_id, _next_meta)
             except Exception as _meta_exc:
