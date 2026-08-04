@@ -1478,6 +1478,46 @@ class ShopifyClient(BaseStoreClient):
             return normalized
         except Exception as exc:
             logger.warning("Shopify cartDeliveryAddressesReplace failed: %s", exc)
+            # Storefront API versions before 2025-04 don't expose
+            # cartDeliveryAddressesReplace → fall back to the deprecated (but
+            # still functional) deliveryAddressPreferences binding so checkout
+            # prefill keeps working on older API versions.
+            return await self._bind_address_legacy(gid, mailing)
+
+    async def _bind_address_legacy(self, gid: str, mailing: Dict[str, Any]) -> Dict[str, Any]:
+        """Bind a delivery address via the pre-2025-04 path (deprecated
+        deliveryAddressPreferences on cartBuyerIdentityUpdate). Fallback used
+        when the modern cartDeliveryAddressesReplace mutation isn't available."""
+        GQL = """
+        mutation CartBuyerIdentityUpdate($cartId: ID!, $buyerIdentity: CartBuyerIdentityInput!) {
+          cartBuyerIdentityUpdate(cartId: $cartId, buyerIdentity: $buyerIdentity) {
+            cart { id checkoutUrl }
+            userErrors { field message }
+          }
+        }
+        """
+        try:
+            data = await self._storefront(
+                GQL,
+                {
+                    "cartId": gid,
+                    "buyerIdentity": {
+                        "deliveryAddressPreferences": [{"deliveryAddress": mailing}],
+                    },
+                },
+            )
+            op = data.get("cartBuyerIdentityUpdate", {})
+            errors = op.get("userErrors", [])
+            if errors:
+                logger.warning("Shopify cartBuyerIdentityUpdate (legacy address) errors: %s", errors)
+            cart_node = op.get("cart")
+            if not cart_node:
+                return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+            normalized = self._normalize_cart(cart_node)
+            normalized["success"] = True
+            return normalized
+        except Exception as exc:
+            logger.warning("Shopify legacy address bind failed: %s", exc)
             return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
 
     async def attach_buyer_identity(

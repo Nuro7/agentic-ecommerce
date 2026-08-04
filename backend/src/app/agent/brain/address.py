@@ -325,22 +325,24 @@ async def handle_address_collection(
                     addr._using_saved = "1"
                     addr._pending_field = ""
 
-                    # Saved address is complete enough to ship → confirm and
-                    # redirect to checkout immediately (no address prompts).
+                    # Saved address is complete enough to ship → show it for
+                    # CONFIRMATION (never jump straight to checkout). The
+                    # customer verifies the details, then the CONFIRMING branch
+                    # issues the Storefront checkout redirect on "yes".
                     if addr.address_line1 and addr.city and addr.postcode:
-                        _saved_line = ", ".join(x for x in [
-                            addr.address_line1, addr.city,
-                            (addr.postcode if addr.postcode else ""),
-                        ] if x)
-                        next_state = AddressCollectionState.COMPLETE
-                        response = f"Found your saved address at {_saved_line}! Taking you to checkout now."
+                        addr._using_saved = "1"
+                        next_state = AddressCollectionState.CONFIRMING
+                        response = lang_prompts["confirm"].format(
+                            name=f"{addr.first_name} {addr.last_name}".strip(),
+                            address=addr.address_line1,
+                            city=addr.city,
+                            pincode=addr.postcode,
+                            phone=addr.phone,
+                            email=addr.email or "not provided",
+                        )
                         ui_actions.append({
-                            "type": "redirect_checkout_with_address",
-                            "payload": {
-                                "url": "/checkout",
-                                "billing": addr.to_woocommerce_format(),
-                                "shipping": addr.to_woocommerce_format(),
-                            },
+                            "type": "prefill_address",
+                            "payload": addr.to_woocommerce_format(),
                         })
                         return response, next_state, addr.__dict__, ui_actions
 

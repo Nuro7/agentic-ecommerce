@@ -44,14 +44,38 @@ def test_existing_customer_fetched_by_phone_and_prefilled(monkeypatch):
     resp, next_state, addr, actions = call(
         "9876543210", S.COLLECTING_PHONE, {}, {"page_type": "checkout", "url": "https://store/checkout"},
     )
-    # Known DB match → BYPASS address prompts: confirm saved address and
-    # immediately issue the checkout redirect.
-    assert next_state == S.COMPLETE
+    # Known DB match → fill the saved details, prefill the form, and go to
+    # CONFIRMING so the customer verifies BEFORE the checkout redirect.
+    assert next_state == S.CONFIRMING
     assert addr["first_name"] == "Asha"
     assert addr["_using_saved"] == "1"
     assert addr["postcode"] == "682015"
-    assert any(a.get("type") == "redirect_checkout_with_address" for a in actions)
-    assert not any(a.get("type") == "prefill_address" for a in actions)
+    assert any(a.get("type") == "prefill_address" for a in actions)
+    assert not any(a.get("type") == "redirect_checkout_with_address" for a in actions)
+
+
+def test_saved_address_confirm_then_checkout(monkeypatch):
+    saved = {}
+    async def fake_save(session_id, tenant_id, phone, address_data):
+        saved["phone"] = phone
+    monkeypatch.setattr("src.app.modules.users.address_service.save_address", fake_save)
+
+    # Returning customer whose phone matches a saved address: first the FSM
+    # pre-fills and asks to confirm (no redirect yet)...
+    addr_data = {
+        "first_name": "Asha", "last_name": "Nair", "address_line1": "Flat 12, MG Road",
+        "city": "Kochi", "state": "Kerala", "postcode": "682015",
+        "phone": "9876543210", "email": "asha@example.com", "_using_saved": "1",
+    }
+    resp, next_state, data, actions = call(
+        "yes", S.CONFIRMING, addr_data, {"page_type": "checkout", "url": "https://store/checkout"},
+    )
+    # ...only a confirmed "yes" issues the checkout redirect (address auto-fill).
+    assert next_state == S.COMPLETE
+    redirect = next((a for a in actions if a.get("type") == "redirect_checkout_with_address"), None)
+    assert redirect is not None
+    assert redirect["payload"]["shipping"]["state_code"] == "KL"
+    assert saved.get("phone") == "9876543210"
 
 
 def test_spoken_digit_phone_normalized_before_validation(monkeypatch):
@@ -236,11 +260,51 @@ def test_replace_cart_delivery_address_sends_modern_mutation(monkeypatch):
     assert result["checkout_url"] == "https://checkout.test"
 
 
-def test_replace_cart_delivery_address_falls_back_on_error(monkeypatch):
+def test_replace_cart_delivery_address_falls_back_on_old_api(monkeypatch):
+    calls = []
+    captured = {}
+
     async def fake_storefront(query, variables):
-        raise RuntimeError(
-            "Shopify Storefront error: [{'message': \"Field 'cartDeliveryAddressesReplace' doesn't exist\"}]"
-        )
+        calls.append(query)
+        if len(calls) == 1:
+            raise RuntimeError(
+                "Shopify Storefront error: [{'message': \"Field 'cartDeliveryAddressesReplace' doesn't exist on type 'Mutation'\"}]"
+            )
+        captured["variables"] = variables
+        return {
+            "cartBuyerIdentityUpdate": {
+                "cart": {"id": "gid://shopify/Cart/c1-abc", "checkoutUrl": "https://checkout.test"},
+                "userErrors": [],
+            }
+        }
+
+    client = _new_client()
+    monkeypatch.setattr(client, "_storefront", fake_storefront)
+    try:
+        result = asyncio.run(client.replace_cart_delivery_address(
+            cart_id="gid://shopify/Cart/c1-abc",
+            address={
+                "first_name": "Asha", "last_name": "Nair", "address_1": "Flat 12, MG Road",
+                "city": "Kochi", "state": "Kerala", "state_code": "KL", "country_code": "IN",
+                "postcode": "682015", "phone": "9876543210",
+            },
+        ))
+    finally:
+        asyncio.run(client._http.aclose())
+
+    assert len(calls) == 2
+    assert "cartDeliveryAddressesReplace" in calls[0]
+    assert "cartBuyerIdentityUpdate" in calls[1]
+    legacy_addr = captured["variables"]["buyerIdentity"]["deliveryAddressPreferences"][0]["deliveryAddress"]
+    assert legacy_addr["province"] == "KL"
+    assert legacy_addr["country"] == "IN"
+    assert result["success"] is True
+    assert result["checkout_url"] == "https://checkout.test"
+
+
+def test_replace_cart_delivery_address_empty_when_both_paths_fail(monkeypatch):
+    async def fake_storefront(query, variables):
+        raise RuntimeError("Shopify Storefront error: connection refused")
 
     client = _new_client()
     monkeypatch.setattr(client, "_storefront", fake_storefront)
