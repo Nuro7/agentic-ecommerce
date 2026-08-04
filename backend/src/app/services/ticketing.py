@@ -81,6 +81,19 @@ _SKIP_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Sentence-y fragments that are never a personal name. Guards the pure-letter
+# `_NAME_RE` (which happily matches "problem with my last order") so a customer
+# who restates their issue instead of giving a name is never stored as one.
+_SENTENCE_NAME_TOKENS = frozenset({
+    "i", "my", "our", "your", "the", "a", "an", "and", "with", "to", "of",
+    "it", "this", "that", "for", "on", "in", "is", "are", "was", "were",
+    "have", "has", "had", "do", "did", "not", "no", "want", "need", "please",
+    "problem", "issue", "order", "orders", "damaged", "damage", "broken",
+    "defective", "refund", "received", "arrived", "delivery", "delivered",
+    "item", "items", "last", "connect", "customer", "care", "talk", "human",
+    "help", "support", "agent", "ticket", "raise", "can", "you", "me",
+})
+
 
 def _sanitize_customer_name(value: str) -> str:
     """Return a clean personal name or '' — never DOM layout noise."""
@@ -102,6 +115,8 @@ def _sanitize_customer_name(value: str) -> str:
         return ""
     tokens = [t.strip("' .-") for t in candidate.split()]
     if any(t.lower() in _NAME_DOM_NOISE for t in tokens if t):
+        return ""
+    if any(t.lower() in _SENTENCE_NAME_TOKENS for t in tokens if t):
         return ""
     return candidate[:100]
 
@@ -395,6 +410,114 @@ def _generate_issue_summary(
     return summary[:200]
 
 
+# ── 2-Layer Intent Accumulation Engine ─────────────────────────────────────────
+#
+# Layer 1 (ticket_intake.py): every meaningful user statement across the FSM is
+# buffered into `ticket_intake_pending["user_intents"]` — phones, confirmations,
+# names and email addresses are excluded at capture time.
+# Layer 2 (here): when the final issue the customer states is generic ("connect
+# to customer care"), the engine joins it with the most recent SPECIFIC detail
+# from the buffer → "Problem with last order (Customer Care Request)" — so a
+# merchant never sees a ticket whose summary is just a hand-off request.
+
+# Words that carry real complaint/detail signal. A statement containing any of
+# these is treated as SPECIFIC (never generic); anything else is a generic
+# hand-off phrase ("connect to customer care", "talk to a human", "help"…).
+_SPECIFIC_ISSUE_WORDS = frozenset({
+    "order", "orders", "refund", "refunds", "damaged", "damage", "broken",
+    "defective", "cracked", "torn", "wrong", "missing", "received", "arrived",
+    "delivery", "delivered", "product", "item", "items", "shoe", "shoes",
+    "size", "box", "package", "parcel", "late", "delay", "charged", "charge",
+    "billing", "stolen", "problem", "issue", "complaint", "quality", "coupon",
+    "tracking", "exchange", "return", "returned",
+})
+
+
+def _is_generic_issue(text: str) -> bool:
+    """True when `text` carries no specific complaint detail (pure hand-off)."""
+    low = " ".join(str(text or "").lower().split())
+    if not low:
+        return True
+    return not any(tok in low for tok in _SPECIFIC_ISSUE_WORDS)
+
+
+def _call_gemini_issue_summarizer(user_text: str) -> str:
+    """Optional LLM pass: condense the buffered user statements into a short,
+    merchant-facing summary. Returns '' when Gemini is unavailable or fails —
+    never raises, never blocks the <1s ticket path (only called when
+    `use_llm=True` is explicitly requested)."""
+    if not user_text or not str(user_text).strip():
+        return ""
+    try:
+        from ..agent.llm_clients import BRAIN_MODEL, gemini_client
+        if gemini_client is None:
+            return ""
+        prompt = (
+            "You are a customer-support triage summarizer. Read the shopper's "
+            "own statements below (separated by ' | '). Write ONE short, "
+            "merchant-facing summary of the issue (max 60 chars, no quotes, no "
+            "greetings, no customer names, no contact info).\n\nStatements:\n"
+            f"{str(user_text)[:500]}"
+        )
+        resp = gemini_client.models.generate_content(
+            model=BRAIN_MODEL, contents=prompt
+        )
+        text = getattr(resp, "text", "") or ""
+        text = str(text).strip().replace("\n", " ").replace("\r", " ")
+        return _clean_issue_summary(text) if text else ""
+    except Exception as exc:
+        logger.debug("Gemini issue summarizer unavailable: %s", exc)
+        return ""
+
+
+def build_final_issue_summary(
+    explicit_issue: str,
+    user_intents: Optional[List[str]] = None,
+    use_llm: bool = False,
+) -> str:
+    """Combine the customer's own words into the final ticket issue summary.
+
+    - `explicit_issue` (the AWAITING_ISSUE statement) WINS when it is specific:
+      "Item arrived broken" → "Item arrived broken".
+    - When it is generic ("connect to customer care") the most recent SPECIFIC
+      detail buffered earlier in the intake flow is joined with a
+      "(Customer Care Request)" marker → "Problem with last order (Customer Care
+      Request)". Pure generic statements with no earlier detail collapse to the
+      cleaned generic phrase.
+    - `use_llm=True` optionally runs the Gemini summarizer over the buffered
+      statements first; the deterministic path is the always-available fallback.
+    """
+    explicit = str(explicit_issue or "").strip()
+    explicit = re.sub(r"\s+", " ", explicit).strip(" \t\n\r.,;:!?")
+    intents = [str(i).strip() for i in (user_intents or []) if str(i).strip()]
+
+    if use_llm and intents:
+        llm_summary = _call_gemini_issue_summarizer(" | ".join(intents))
+        if llm_summary:
+            return _clean_issue_summary(llm_summary)
+
+    if not _is_generic_issue(explicit):
+        return _clean_issue_summary(explicit)
+
+    # Generic / empty explicit issue → join the most recent SPECIFIC detail the
+    # customer stated earlier in the intake flow.
+    specific = [it for it in reversed(intents) if not _is_generic_issue(it)]
+    if specific:
+        detail = specific[0]
+        if explicit:
+            combined = f"{detail[:1].upper()}{detail[1:]} (Customer Care Request)"
+            return _clean_issue_summary(combined)
+        return _clean_issue_summary(detail)
+
+    if explicit:
+        return _clean_issue_summary(explicit)
+    if intents:
+        last = intents[-1]
+        if not _is_generic_issue(last):
+            return _clean_issue_summary(last)
+    return ""
+
+
 def _resolve_shop_domain(store_client: Any, shop_domain: Optional[str]) -> str:
     if shop_domain and str(shop_domain).strip():
         return str(shop_domain).strip().rstrip("/")
@@ -461,6 +584,8 @@ async def create_support_ticket(
     shop_domain: Optional[str] = None,
     trigger_message: str = "",
     issue_summary: str = "",
+    user_intents: Optional[List[str]] = None,
+    use_llm: bool = False,
     product_id: Optional[str] = None,
     source: str = "llm",
 ) -> Dict[str, Any]:
@@ -483,7 +608,6 @@ async def create_support_ticket(
     heat: Optional[str] = None
     already_exists = False
     priority = "medium"
-    issue_summary = ""
     if session_id and str(session_id).strip() and str(session_id).strip() != "legacy":
         try:
             from ..core.database import AsyncSessionLocal
@@ -545,7 +669,13 @@ async def create_support_ticket(
     )
     # The customer's OWN words win when the deterministic intake captured them
     # explicitly — the stored summary and the priority/heat come from that.
+    # The 2-Layer engine then joins buffered user statements so a generic final
+    # issue ("connect to customer care") never becomes an empty / generic ticket.
     scoring_text = str(issue_summary or "").strip()
+    if user_intents:
+        scoring_text = build_final_issue_summary(
+            scoring_text, user_intents, use_llm=use_llm
+        )
     if scoring_text:
         # Clean the persisted summary from raw user speech — one sentence, max
         # 100 chars, no prompt boilerplate (deterministic, no LLM blocking).

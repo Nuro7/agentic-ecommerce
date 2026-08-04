@@ -26,6 +26,8 @@ from ...services.ticketing import (
     _HIGH_PRIORITY_TOKENS,
     _LOW_PRIORITY_TOKENS,
     _PII_PLACEHOLDERS,
+    _SPECIFIC_ISSUE_WORDS,
+    build_final_issue_summary,
     create_support_ticket,
     ticket_created_message,
 )
@@ -212,6 +214,20 @@ _DOM_NAME_NOISE = {
 # else (no digits, no tags, no punctuation soup).
 _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z' .-]{1,39}$")
 
+# Sentence-y fragments that are never a personal name. `_NAME_RE` is purely
+# alphabetic so it happily matches "problem with my last order" — a customer who
+# restates their issue instead of answering the name prompt must never have that
+# sentence persisted as their name.
+_SENTENCE_NAME_TOKENS = frozenset({
+    "i", "my", "our", "your", "the", "a", "an", "and", "with", "to", "of",
+    "it", "this", "that", "for", "on", "in", "is", "are", "was", "were",
+    "have", "has", "had", "do", "did", "not", "no", "want", "need", "please",
+    "problem", "issue", "order", "orders", "damaged", "damage", "broken",
+    "defective", "refund", "received", "arrived", "delivery", "delivered",
+    "item", "items", "last", "connect", "customer", "care", "talk", "human",
+    "help", "support", "agent", "ticket", "raise", "can", "you", "me",
+})
+
 # Name-intro patterns (multi-language) → capture group is the candidate name.
 _NAME_CAPTURE_RE = re.compile(
     r"\b(i'?m|my name is|call me|it'?s|this is|"
@@ -352,6 +368,8 @@ def sanitize_customer_name(value: str) -> str:
     tokens = [t.strip("' .-") for t in candidate.split()]
     if any(t.lower() in _DOM_NAME_NOISE for t in tokens if t):
         return ""
+    if any(t.lower() in _SENTENCE_NAME_TOKENS for t in tokens if t):
+        return ""
     return candidate
 
 
@@ -388,6 +406,97 @@ def ticket_created_with_issue_message(
 def normalize_phone(phone: str) -> str:
     """Pure 10-15 digit string from any raw transcription (no separators)."""
     return normalize_phone_digits(phone)
+
+
+# ── 2-Layer intent accumulation: user-statement buffer ────────────────────────
+#
+# Layer 1 of the engine. Every meaningful statement the customer makes while the
+# intake FSM owns the conversation is buffered into
+# `ticket_intake_pending["user_intents"]` (survives turn-to-turn via session
+# meta). Names, phone-only replies, email addresses and read-back confirmations
+# are excluded so the buffer only ever holds real intent signal — it never
+# pollutes the persisted summary and is never fed to the LLM summarizer as-is.
+
+# Whole-reply confirmations ("yes", "that's right", "theek hai"…) are never an
+# intent — they are FSM answers, not issue descriptions.
+_CONFIRMATION_RE = re.compile(
+    r"^(?:yes|yeah|yep|correct|right|ok|okay|ha|haan|sahi|theek hai|thik hai|"
+    r"sheri|sheriyano|sari|sariya|avun|correct ah|no|nope|nah|nahi|venda|nillu|"
+    r"sare|fine|sure|alright|got it|that'?s (?:right|correct)|it'?s (?:right|correct)|"
+    r"yes (?:please|correct|that'?s correct)|ok (?:yes|fine|sure)|okay (?:yes|fine))"
+    r"[\s.,!?]*$",
+    re.IGNORECASE,
+)
+
+# Contact-intro phrases ("my email is …", "reach me at …") — the value that
+# follows is captured separately as contact info, the lead is not an intent.
+_CONTACT_LEAD_RE = re.compile(
+    r"(?i)\b(my email(?: address)? is|my phone(?: number)? is|my number is|"
+    r"reach me at|contact me (?:at|on)|email me at)\b"
+)
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_PHONE_RUN_RE = re.compile(r"\d[\d\s\-+()]{6,}")
+_NAME_INTRO_RE = re.compile(r"(?i)\b(my name is|i am|i'?m|call me|this is|it'?s)\b")
+# Conversational leads ("I have a …", "I got the …", "so …") add no signal and
+# would otherwise land verbatim in the persisted summary.
+_LEAD_STRIP_RE = re.compile(
+    r"(?i)^\s*(?:i\s+(?:have|had|got)\s+(?:a\s+|an\s+|some\s+|the\s+)?|"
+    r"there\s+(?:is|are)\s+(?:a\s+|some\s+)?|so\s+|well\s+|and\s+|actually\s+|"
+    r"kindly\s+|please\s+)*"
+)
+
+
+def _extract_core_user_intent(text: str, customer_name: str = "") -> str:
+    """Clean a user reply into the core intent statement, or '' when it's noise.
+
+    Drops name-intro phrases ("my name is John"), the provided customer name,
+    emails, phone-number runs, contact-intro leads, pure-confirmation replies and
+    anything under 3 chars. A leftover single/short word that carries no specific
+    issue signal ("Rahul", "my name is John") is treated as a name → ''.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    s = raw
+    s = _EMAIL_RE.sub(" ", s)
+    s = _PHONE_RUN_RE.sub(" ", s)
+    s = _CONTACT_LEAD_RE.sub(" ", s)
+    s = _NAME_INTRO_RE.sub(" ", s)
+    name = str(customer_name or "").strip()
+    if name:
+        s = re.sub(r"(?i)\b" + re.escape(name) + r"\b", " ", s)
+    s = _LEAD_STRIP_RE.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip(" \t\n\r.,;:!?'\"<>[]()")
+    if not s:
+        return ""
+    if re.fullmatch(r"[\d\s\-+()]+", s):
+        return ""
+    if _CONFIRMATION_RE.fullmatch(s):
+        return ""
+    if len(s) < 3:
+        return ""
+    words = s.lower().split()
+    # A leftover that reads like a name (1-2 words, no complaint signal) is not
+    # an intent — keep only statements that carry real detail.
+    if len(words) <= 2 and not any(w in _SPECIFIC_ISSUE_WORDS for w in words):
+        return ""
+    return s
+
+
+def _buffer_user_intent(pending: Dict[str, Any], message: str) -> Dict[str, Any]:
+    """Append the core intent of `message` to `pending["user_intents"]` (deduped,
+    capped at the last 8) so it survives across intake turns. Returns `pending`
+    unchanged when the message carries no intent."""
+    intent = _extract_core_user_intent(message)
+    if not intent:
+        return pending
+    intents = [str(i) for i in (pending.get("user_intents") or []) if str(i).strip()]
+    if intent.lower() not in {i.lower() for i in intents}:
+        intents.append(intent)
+    pending = dict(pending)
+    pending["user_intents"] = intents[-8:]
+    return pending
 
 
 # ── Intake turn handler ───────────────────────────────────────────────────────
@@ -434,6 +543,16 @@ async def handle_ticket_intake_turn(
     ):
         logger.info("Ticket intake cancelled session=%s", session_id)
         return _localized(_CANCEL_TEXTS, language), TicketIntakeState.IDLE, {}, []
+
+    # ── 2-Layer intent accumulation: buffer the customer's statements ────────
+    # Seed the buffer with the escalation trigger once, then append every
+    # meaningful reply (names / phones / confirmations are filtered inside
+    # `_extract_core_user_intent`). The buffer lives in `ticket_intake_pending`
+    # so it persists turn-to-turn; Layer 2 (`build_final_issue_summary`) joins a
+    # generic final issue with the most recent specific detail from it.
+    if not pending.get("user_intents") and pending.get("trigger_message"):
+        pending = _buffer_user_intent(pending, str(pending.get("trigger_message") or ""))
+    pending = _buffer_user_intent(pending, cleaned_message)
 
     # ── Verification step: awaiting "yes" on the read-back number ────────────
     if state_now == TicketIntakeState.VERIFYING_PHONE:
@@ -566,12 +685,17 @@ async def _create_ticket_with(
         customer_name=str(pending.get("pending_name") or ""),
         trigger_message=str(pending.get("trigger_message") or ""),
         issue_summary=str(pending.get("issue_summary") or ""),
+        user_intents=pending.get("user_intents"),
         product_id=pending.get("product_id"),
         source="deterministic",
     )
 
     actions: List[Dict[str, Any]] = []
-    issue_summary = str(pending.get("issue_summary") or "")
+    # Echo the FINAL issue summary (the 2-Layer engine's combined output), falling
+    # back to the customer's raw statement when the result didn't carry one.
+    issue_summary = str(
+        ticket_result.get("issue_summary") or pending.get("issue_summary") or ""
+    )
     contact_kind = "call" if customer_phone else ("email" if customer_email else "")
     contact = customer_phone or customer_email
     confirm_text = ticket_created_with_issue_message(

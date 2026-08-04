@@ -5,6 +5,7 @@ import pytest
 
 from src.app.agent.brain.ticket_intake import (
     TicketIntakeState,
+    _extract_core_user_intent,
     detect_escalation,
     extract_customer_name,
     handle_ticket_intake_turn,
@@ -20,7 +21,9 @@ from src.app.services.ticketing import (
     _detect_heat,
     _detect_priority,
     _extract_order_id,
+    _is_generic_issue,
     _priority_reason,
+    build_final_issue_summary,
     ticket_created_message,
 )
 
@@ -185,6 +188,81 @@ class TestIssueSummaryCleaning:
         from src.app.services import ticketing as svc
         assert svc._clean_issue_summary("") == ""
         assert svc._clean_issue_summary("[email] refund please") == "refund please"
+
+
+@pytest.mark.unit
+class TestExtractCoreUserIntent:
+    def test_specific_complaint_kept(self):
+        assert _extract_core_user_intent("my order is broken") == "my order is broken"
+        assert _extract_core_user_intent("problem with my last order") == "problem with my last order"
+        assert _extract_core_user_intent("I received a damaged box") == "I received a damaged box"
+
+    def test_conversational_lead_stripped(self):
+        assert _extract_core_user_intent("I have a problem with my last order") == "problem with my last order"
+        assert _extract_core_user_intent("I got the wrong size") == "wrong size"
+
+    def test_phone_only_reply_dropped(self):
+        assert _extract_core_user_intent("8943737227") == ""
+        assert _extract_core_user_intent("9 8 4 3 7 3 7 2 2 7") == ""
+
+    def test_confirmation_replies_dropped(self):
+        for reply in ("yes", "yeah", "that's correct", "theek hai", "no", "sheri"):
+            assert _extract_core_user_intent(reply) == "", reply
+
+    def test_name_only_reply_dropped(self):
+        assert _extract_core_user_intent("Rahul") == ""
+        assert _extract_core_user_intent("Ravi Kumar") == ""
+        assert _extract_core_user_intent("my name is John") == ""
+
+    def test_email_contact_reply_dropped(self):
+        assert _extract_core_user_intent("my email is john@example.com") == ""
+        assert _extract_core_user_intent("call me at 9876543210") == ""
+
+    def test_customer_name_stripped(self):
+        assert _extract_core_user_intent(
+            "Rahul my order is broken", customer_name="Rahul"
+        ) == "my order is broken"
+
+    def test_empty_and_tiny(self):
+        assert _extract_core_user_intent("") == ""
+        assert _extract_core_user_intent("hi") == ""
+
+
+@pytest.mark.unit
+class TestBuildFinalIssueSummary:
+    def test_specific_explicit_wins(self):
+        assert build_final_issue_summary(
+            "Item arrived broken", ["my order is broken"]
+        ) == "Item arrived broken"
+
+    def test_generic_explicit_joins_earlier_detail(self):
+        # TK-1004: customer states a specific detail mid-intake, then answers the
+        # final "what issue?" prompt with a generic hand-off request.
+        assert build_final_issue_summary(
+            "connect to customer care", ["problem with my last order"]
+        ) == "Problem with my last order (Customer Care Request)"
+
+    def test_generic_explicit_uses_most_recent_specific_detail(self):
+        assert build_final_issue_summary(
+            "talk to a human", ["order arrived late", "I got the wrong size"]
+        ) == "I got the wrong size (Customer Care Request)"
+
+    def test_generic_explicit_no_detail_keeps_cleaned_generic(self):
+        assert build_final_issue_summary("connect to customer care", []) == "connect to customer care"
+
+    def test_empty_explicit_falls_back_to_last_intent(self):
+        assert build_final_issue_summary("", ["order is missing"]) == "order is missing"
+
+    def test_no_signal_returns_empty(self):
+        assert build_final_issue_summary("", []) == ""
+        assert build_final_issue_summary("", ["yes", "9876543210"]) == ""
+
+    def test_generic_detection(self):
+        assert _is_generic_issue("connect to customer care")
+        assert _is_generic_issue("talk to a human")
+        assert _is_generic_issue("help")
+        assert not _is_generic_issue("problem with my last order")
+        assert not _is_generic_issue("my order arrived damaged")
 
 
 @pytest.mark.unit
@@ -711,6 +789,110 @@ class TestTicketIntake:
         assert actions == []
         assert "valid" in text.lower()
 
+    async def test_noise_replies_never_pollute_buffer(self, monkeypatch):
+        from src.app.agent.brain import ticket_intake as ti
+
+        async def fake_create_support_ticket(**kwargs):
+            return {
+                "status": "success",
+                "ticket_id": "T-42",
+                "priority": "medium",
+                "message": "created",
+                "issue_summary": kwargs.get("issue_summary", ""),
+            }
+
+        monkeypatch.setattr(ti, "create_support_ticket", fake_create_support_ticket)
+        # Trigger + phone reply → the buffer holds ONLY the trigger's intent;
+        # the phone number (PII) and the "yes" read-back confirmation are noise.
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="my phone is 9876543210",
+            session_meta={
+                "ticket_intake_state": TicketIntakeState.AWAITING_CONTACT,
+                "ticket_intake_pending": {"trigger_message": "order damaged"},
+            },
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            session_service=None,
+            language="en",
+        )
+        assert state == TicketIntakeState.VERIFYING_PHONE
+        assert pending["user_intents"] == ["order damaged"]
+
+    async def test_accumulated_intents_flow_through_to_ticket(self, monkeypatch):
+        from src.app.agent.brain import ticket_intake as ti
+        captured = {}
+
+        async def spy_create_support_ticket(**kwargs):
+            captured.update(kwargs)
+            return {
+                "status": "success",
+                "ticket_id": "T-42",
+                "priority": "medium",
+                "message": "created",
+                "issue_summary": kwargs.get("issue_summary", ""),
+            }
+
+        monkeypatch.setattr(ti, "create_support_ticket", spy_create_support_ticket)
+
+        meta = {
+            "ticket_intake_state": TicketIntakeState.AWAITING_CONTACT,
+            "ticket_intake_pending": {"trigger_message": "connect to customer care"},
+        }
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="my phone is 9876543210", session_meta=meta,
+            tenant_id="t1", session_id="s1", conversation_history=[],
+            store_client=None, session_service=None, language="en",
+        )
+        assert state == TicketIntakeState.VERIFYING_PHONE
+        assert pending["pending_phone"] == "9876543210"
+        assert pending["user_intents"] == ["connect to customer care"]
+
+        meta = {"ticket_intake_state": state, "ticket_intake_pending": pending}
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="yes that's correct", session_meta=meta,
+            tenant_id="t1", session_id="s1", conversation_history=[],
+            store_client=None, session_service=None, language="en",
+        )
+        assert state == TicketIntakeState.AWAITING_NAME
+
+        # Customer restates the issue instead of giving a name → intent buffered,
+        # name re-asked (a sentence is never persisted as a name).
+        meta = {"ticket_intake_state": state, "ticket_intake_pending": pending}
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="I have a problem with my last order", session_meta=meta,
+            tenant_id="t1", session_id="s1", conversation_history=[],
+            store_client=None, session_service=None, language="en",
+        )
+        assert state == TicketIntakeState.AWAITING_NAME
+        assert pending["user_intents"][-1] == "problem with my last order"
+
+        meta = {"ticket_intake_state": state, "ticket_intake_pending": pending}
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="Rahul", session_meta=meta,
+            tenant_id="t1", session_id="s1", conversation_history=[],
+            store_client=None, session_service=None, language="en",
+        )
+        assert state == TicketIntakeState.AWAITING_ISSUE
+        assert pending["pending_name"] == "Rahul"
+
+        # Generic final issue → ticket created with the accumulated detail and
+        # the verified contact (Layer 2 combines them at create time).
+        meta = {"ticket_intake_state": state, "ticket_intake_pending": pending}
+        text, state, pending, actions = await handle_ticket_intake_turn(
+            cleaned_message="connect to customer care", session_meta=meta,
+            tenant_id="t1", session_id="s1", conversation_history=[],
+            store_client=None, session_service=None, language="en",
+        )
+        assert state == TicketIntakeState.IDLE
+        assert captured.get("customer_phone") == "9876543210"
+        assert captured.get("customer_name") == "Rahul"
+        assert captured.get("issue_summary") == "connect to customer care"
+        assert captured.get("user_intents") == [
+            "connect to customer care", "problem with my last order",
+        ]
+
 
 @pytest.mark.integration
 class TestCreateSupportTicketTranscript:
@@ -769,6 +951,90 @@ class TestCreateSupportTicketTranscript:
         assert turns[-1]["role"] == "user"
         assert turns[-1]["content"] == "my order arrived damaged"
         assert persisted["heat"] == "warm"
+
+    async def _patch_persistence(self, monkeypatch):
+        """Monkeypatch DB + TicketService so create_support_ticket records the
+        exact `data` dict it would persist. Returns the dict for assertions."""
+        import src.app.core.database as dbmod
+        import src.app.modules.tickets.service as svcmod
+
+        persisted = {}
+
+        class FakeTicket:
+            def __init__(self, data):
+                self.id = "T-1"
+                self.ticket_number = "TK-1001"
+                self.heat = data.get("heat")
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        def fake_db():
+            return _FakeSession()
+
+        monkeypatch.setattr(dbmod, "AsyncSessionLocal", fake_db)
+
+        class FakeTicketService:
+            def __init__(self, db):
+                pass
+
+            async def create_ticket(self, tenant_id, data):
+                persisted.update(data)
+                return FakeTicket(data)
+
+        monkeypatch.setattr(svcmod, "TicketService", FakeTicketService)
+        return persisted
+
+    async def test_combines_generic_issue_with_accumulated_detail(self, monkeypatch):
+        """TK-1004: a generic final issue ('connect to customer care') joins the
+        most recent specific detail buffered during intake → the merchant sees
+        'Problem with my last order (Customer Care Request)', never a bare
+        hand-off request."""
+        import src.app.services.ticketing as svc
+
+        persisted = await self._patch_persistence(monkeypatch)
+        result = await svc.create_support_ticket(
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[],
+            store_client=None,
+            customer_phone="9876543210",
+            issue_summary="connect to customer care",
+            user_intents=[
+                "connect to customer care",
+                "problem with my last order",
+            ],
+            source="deterministic",
+        )
+        assert result["status"] == "success"
+        assert persisted["issue_summary"] == "Problem with my last order (Customer Care Request)"
+        assert result["issue_summary"] == "Problem with my last order (Customer Care Request)"
+
+    async def test_explicit_specific_issue_not_clobbered(self, monkeypatch):
+        """Regression: the passed `issue_summary` must not be wiped before
+        scoring — the deterministic intake's explicit issue wins over both the
+        accumulation engine and chat-history inference."""
+        import src.app.services.ticketing as svc
+
+        persisted = await self._patch_persistence(monkeypatch)
+        result = await svc.create_support_ticket(
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[
+                {"role": "user", "content": "can you help with anything?"},
+            ],
+            store_client=None,
+            issue_summary="Item arrived broken",
+            user_intents=["connect to customer care"],
+            source="deterministic",
+        )
+        assert result["status"] == "success"
+        assert persisted["issue_summary"] == "Item arrived broken"
+        assert result["issue_summary"] == "Item arrived broken"
 
 
 @pytest.mark.integration
