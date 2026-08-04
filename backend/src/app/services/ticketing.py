@@ -366,7 +366,14 @@ async def create_support_ticket(
     name = str(customer_name or customer["name"] or "").strip()
     email = str(customer_email or customer["email"] or "").strip().lower()
 
-    transcript_turns = _build_transcript_turns(conversation_history)
+    # The conversation history captured at brain Step 2 predates THIS turn, so
+    # the triggering message isn't in it yet — append it as the final user turn
+    # so the stored transcript reflects the full chat up to the escalation.
+    full_history = list(conversation_history or [])
+    if trigger_message and str(trigger_message).strip():
+        full_history.append({"role": "user", "content": str(trigger_message).strip()})
+
+    transcript_turns = _build_transcript_turns(full_history)
     context_text = " ".join(
         t["content"] for t in transcript_turns if t["role"] == "user"
     )

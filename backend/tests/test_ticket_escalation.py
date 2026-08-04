@@ -12,6 +12,7 @@ from src.app.agent.brain.ticket_intake import (
 from src.app.agent.guardrails import extract_contact_info, is_pii_placeholder
 from src.app.modules.tickets.repository import TicketRepository
 from src.app.services.ticketing import (
+    _build_transcript_turns,
     _classify_issue,
     _detect_heat,
     _detect_priority,
@@ -259,6 +260,65 @@ class TestTicketIntake:
         assert state == TicketIntakeState.IDLE
         assert pending == {}
         assert captured.get("customer_phone") == "9876543210"
+
+
+@pytest.mark.integration
+class TestCreateSupportTicketTranscript:
+    async def test_persisted_transcript_includes_trigger_message(self, monkeypatch):
+        """The ticket's transcript_json must include the full chat up to and
+        including the escalation-triggering turn — not just pre-turn history."""
+        import src.app.services.ticketing as svc
+        import src.app.core.database as dbmod
+        import src.app.modules.tickets.service as svcmod
+
+        persisted = {}
+
+        class FakeTicket:
+            def __init__(self, data):
+                self.id = "T-1"
+                self.ticket_number = "TK-1001"
+                self.heat = data.get("heat")
+
+        class _FakeSession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        def fake_db():
+            return _FakeSession()
+
+        monkeypatch.setattr(dbmod, "AsyncSessionLocal", fake_db)
+
+        class FakeTicketService:
+            def __init__(self, db):
+                pass
+
+            async def create_ticket(self, tenant_id, data):
+                persisted.update(data)
+                return FakeTicket(data)
+
+        monkeypatch.setattr(svcmod, "TicketService", FakeTicketService)
+
+        result = await svc.create_support_ticket(
+            tenant_id="t1",
+            session_id="s1",
+            conversation_history=[
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "how can I help?"},
+            ],
+            store_client=None,
+            trigger_message="my order arrived damaged",
+            source="deterministic",
+        )
+
+        assert result["status"] == "success"
+        assert result["ticket_number"] == "TK-1001"
+        turns = persisted["transcript_json"]["turns"]
+        assert turns[-1]["role"] == "user"
+        assert turns[-1]["content"] == "my order arrived damaged"
+        assert persisted["heat"] == "warm"
 
 
 @pytest.mark.integration
