@@ -635,6 +635,7 @@ def test_prepare_checkout_skips_bad_line_and_still_binds(monkeypatch):
             return {
                 "item_count": 1, "is_empty": False,
                 "total": "10.00", "checkout_url": "https://checkout.test",
+                "success": True,
             }
 
     fake_client = FakeStoreClient()
@@ -685,6 +686,43 @@ def test_prepare_checkout_fails_when_all_lines_bad(monkeypatch):
 
     assert result["ok"] is False
     assert result["error"] == "cart_build_failed"
+    assert result["checkout_url"] == ""
+
+
+def test_prepare_checkout_no_checkout_url_when_bind_fails(monkeypatch):
+    """A bind that does not set success must NOT return a checkout_url — otherwise
+    the widget would navigate to a Storefront cart that carries no address and the
+    hosted checkout would open blank (Bug A)."""
+    from src.app.api.v1 import public as public_mod
+    from src.app.api.v1.public import PrepareCheckoutRequest
+
+    class FakeStoreClient:
+        async def add_to_cart(self, **kwargs):
+            return {
+                "item_count": 1, "is_empty": False,
+                "total": "10.00", "checkout_url": "https://checkout.test",
+            }
+
+        async def attach_buyer_identity(self, **kwargs):
+            # Production returns an empty cart (no success) when the Storefront
+            # bind fails/times out.
+            return {"item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+
+    fake_client = FakeStoreClient()
+    monkeypatch.setattr(public_mod.os, "getenv", lambda k, d="": {"STORE_COUNTRY": "US"}.get(k, d))
+
+    payload = PrepareCheckoutRequest(
+        session_id="s1",
+        lines=[{"product_id": 9, "variant_id": 101, "quantity": 1}],
+        email="a@b.co",
+        phone="9876543210",
+        address={"first_name": "Asha", "address_1": "MG Road", "city": "Kochi", "state": "Kerala", "postcode": "682015"},
+    )
+
+    result = asyncio.run(public_mod.prepare_checkout(payload, fake_client, _rl=lambda: None))
+
+    assert result["ok"] is False
+    assert result["bound"] is False
     assert result["checkout_url"] == ""
 
 

@@ -4226,12 +4226,18 @@ try {
       address: a,
     };
     let res = await api('/cart/checkout', payload);
-    // If the server cart build failed (typically a stale variant id — the
-    // product/variant was re-created in Shopify so its numeric id changed),
-    // re-fetch the LIVE cart once and retry before giving up. The backend also
-    // self-heals by resolving the current purchasable variant, so this retry is
-    // a safety net for when the live fetch below was skipped/stale the first time.
-    if (res && (res.error === 'cart_build_failed' || !res.checkout_url)) {
+    // Only navigate once the address has been bound to the server Storefront
+    // cart. The backend returns ok=true ONLY when the bind succeeded; a failed
+    // bind (Shopify timeout, userErrors, API mismatch) returns ok=false and an
+    // empty checkout_url. Retry transient failures (up to 3 times) — the backend
+    // self-heals by resolving the current purchasable variant, so re-fetching the
+    // LIVE cart each attempt covers stale variant ids too.
+    let attempt = 0;
+    while (
+      attempt < 3 &&
+      !(res && res.ok === true && res.bound === true && res.cart && res.cart.success === true && res.checkout_url)
+    ) {
+      attempt++;
       try {
         const live = await fetchCartShopify(true);
         if (live && Array.isArray(live.items) && live.items.length) {
@@ -4240,18 +4246,23 @@ try {
             variant_id: i.variation_id || i.variant_id || 0,
             quantity: i.quantity || 1,
           }));
-          res = await api('/cart/checkout', payload);
         }
       } catch (_e) {}
+      await new Promise(r => setTimeout(r, 500));
+      res = await api('/cart/checkout', payload);
     }
-    const checkoutUrl = (res && res.checkout_url) ? String(res.checkout_url) : '';
-    // Only navigate once the address has been bound to the server Storefront
-    // cart. If the bind failed, keep the pre-fill contention running on the
-    // same-origin checkout (applyStoredCheckoutAddress re-fills on load).
+    const boundOk = res && res.ok === true && res.bound === true && res.cart && res.cart.success === true;
+    const checkoutUrl = (boundOk && res.checkout_url) ? String(res.checkout_url) : '';
     if (checkoutUrl) {
       setTimeout(() => { window.location.href = checkoutUrl; }, 800);
       return;
     }
+    // Bind never succeeded — don't silently push to a blank checkout. Persist the
+    // address so a same-origin checkout form can be re-filled client-side, then
+    // land on the store's /checkout anyway (better than being stuck in chat).
+    try {
+      persistCheckoutAddress({ billing: addr, shipping: addr });
+    } catch (_e) {}
     setTimeout(() => { window.location.href = '/checkout'; }, 800);
   }
   function checkoutAfterAdd() {

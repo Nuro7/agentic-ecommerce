@@ -527,29 +527,7 @@ async def prepare_checkout(
 
     bound: Dict[str, Any] = {}
     bind_method = getattr(store_client, "attach_buyer_identity", None)
-    if bind_method:
-        try:
-            # Enforce ISO-2 province/country codes (California→CA, Maharashtra→MH,
-            # country→US/IN/CA/GB) so Shopify's CartSelectableAddressInput accepts
-            # the bound address; default to the store country or US.
-            addr_payload = dict(payload.address or {})
-            _raw_state = addr_payload.get("province") or addr_payload.get("state")
-            _raw_country = addr_payload.get("country_code") or addr_payload.get("country")
-            addr_payload["state_code"] = normalize_province_code(
-                _raw_state, _raw_country or os.getenv("STORE_COUNTRY", "US")
-            )
-            addr_payload["country_code"] = normalize_country_code(
-                _raw_country, default=os.getenv("STORE_COUNTRY", "US")
-            )
-            bound = await bind_method(
-                session_id=payload.session_id,
-                email=payload.email,
-                phone=payload.phone,
-                address=addr_payload,
-            )
-        except Exception as exc:
-            logger.warning("cart/checkout: buyer identity bind failed: %s", exc)
-    else:
+    if not bind_method:
         # WooCommerce / other platforms: no Storefront cart to bind; the widget
         # keeps using its client-side DOM prefill path instead.
         return {
@@ -559,18 +537,41 @@ async def prepare_checkout(
             "bound": False,
         }
 
-    checkout_url = bound.get("checkout_url") or (cart or {}).get("checkout_url", "")
-    if not checkout_url:
-        # Fallback: session cart's native checkout URL if binding couldn't refresh it.
-        try:
-            latest = await store_client.get_cart(session_id=payload.session_id)
-            checkout_url = latest.get("checkout_url", "")
-        except Exception:
-            pass
+    try:
+        # Enforce ISO-2 province/country codes (California→CA, Maharashtra→MH,
+        # country→US/IN/CA/GB) so Shopify's CartSelectableAddressInput accepts
+        # the bound address; default to the store country or US.
+        addr_payload = dict(payload.address or {})
+        _raw_state = addr_payload.get("province") or addr_payload.get("state")
+        _raw_country = addr_payload.get("country_code") or addr_payload.get("country")
+        addr_payload["state_code"] = normalize_province_code(
+            _raw_state, _raw_country or os.getenv("STORE_COUNTRY", "US")
+        )
+        addr_payload["country_code"] = normalize_country_code(
+            _raw_country, default=os.getenv("STORE_COUNTRY", "US")
+        )
+        bound = await bind_method(
+            session_id=payload.session_id,
+            email=payload.email,
+            phone=payload.phone,
+            address=addr_payload,
+        )
+    except Exception as exc:
+        logger.warning("cart/checkout: buyer identity bind failed: %s", exc)
+
+    # Only report a checkout_url when the address was ACTUALLY bound to the
+    # session Storefront cart (bound.success). If the bind failed (Shopify
+    # timeout / userErrors / API mismatch), do NOT hand back the cart's plain
+    # checkout URL — that URL carries no address and the hosted checkout would
+    # open blank. The widget treats a missing checkout_url / ok=false as a
+    # failed prefill and falls back to its address persistence path instead of
+    # silently shipping the customer to an empty form.
+    bound_ok = bool(bound) and bool(bound.get("success"))
+    checkout_url = bound.get("checkout_url", "") if bound_ok else ""
 
     return {
-        "ok": bool(checkout_url),
+        "ok": bound_ok,
         "checkout_url": checkout_url,
         "cart": bound if bound else cart,
-        "bound": True,
+        "bound": bound_ok,
     }

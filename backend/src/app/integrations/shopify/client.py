@@ -1554,7 +1554,10 @@ class ShopifyClient(BaseStoreClient):
             if errors:
                 logger.warning("Shopify cartDeliveryAddressesReplace errors: %s", errors)
             cart_node = op.get("cart")
-            if not cart_node:
+            if errors or not cart_node:
+                # The modern mutation errored (or returned no cart) — the address
+                # may not have been stored, so checkouts would open blank. Fall
+                # back to the legacy buyerIdentity binding so prefill still works.
                 return await self._bind_address_legacy(gid, mailing)
             normalized = self._normalize_cart(cart_node)
             normalized["success"] = True
@@ -1598,6 +1601,11 @@ class ShopifyClient(BaseStoreClient):
                 return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
             normalized = self._normalize_cart(cart_node)
             normalized["success"] = True
+            # Flag so attach_buyer_identity knows the delivery address lives on
+            # buyerIdentity (legacy path) and must be merged with email/phone into
+            # a SINGLE cartBuyerIdentityUpdate — a separate update would overwrite
+            # the buyer identity and drop the address → blank checkout.
+            normalized["__legacy"] = True
             return normalized
         except Exception as exc:
             logger.warning("Shopify legacy address bind failed: %s", exc)
@@ -1624,8 +1632,26 @@ class ShopifyClient(BaseStoreClient):
 
         result: Dict[str, Any] = {}
         addr = address or {}
+        used_legacy = False
+        mailing: Dict[str, Any] = {}
         if addr:
             result = await self.replace_cart_delivery_address(cart_id=cart_id, address=addr)
+            used_legacy = bool(result.get("__legacy"))
+            if used_legacy and result.get("success"):
+                # Legacy path stores the address on buyerIdentity. Re-send it in the
+                # SAME cartBuyerIdentityUpdate below (email/phone) so the address is
+                # not overwritten/dropped. Rebuild the flat MailAddressInput shape.
+                mailing = {
+                    "firstName": (addr.get("first_name") or "").strip() or None,
+                    "lastName": (addr.get("last_name") or "").strip() or None,
+                    "address1": (addr.get("address_1") or addr.get("address_line1") or "").strip() or None,
+                    "city": (addr.get("city") or "").strip() or None,
+                    "province": (addr.get("province") or addr.get("state_code") or addr.get("state") or "").strip() or None,
+                    "zip": (addr.get("postcode") or addr.get("zip") or "").strip() or None,
+                    "phone": (addr.get("phone") or "").strip() or None,
+                    "country": (addr.get("country_code") or addr.get("country") or "").strip() or "US",
+                }
+                mailing = {k: v for k, v in mailing.items() if v is not None and str(v).strip()}
 
         if email or phone:
             GQL = """
@@ -1641,6 +1667,11 @@ class ShopifyClient(BaseStoreClient):
                 _bi["email"] = email
             if phone:
                 _bi["phone"] = phone
+            # On the legacy API the delivery address lives on buyerIdentity, so it
+            # MUST ride along in this same update or setting email/phone overwrites
+            # it and the hosted checkout opens with blank delivery fields.
+            if used_legacy and mailing:
+                _bi["deliveryAddressPreferences"] = [{"deliveryAddress": mailing}]
             try:
                 data = await self._storefront(
                     GQL,
