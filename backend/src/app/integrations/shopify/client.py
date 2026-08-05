@@ -268,8 +268,21 @@ class ShopifyClient(BaseStoreClient):
 
     # â”€â”€ Internal HTTP helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    async def _storefront(self, query: str, variables: Optional[Dict] = None) -> Dict[str, Any]:
-        """Execute a Storefront GraphQL query."""
+    async def _storefront(
+        self,
+        query: str,
+        variables: Optional[Dict] = None,
+        *,
+        buyer_ip: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Execute a Storefront GraphQL query.
+
+        ``buyer_ip`` (the buyer's public client IP) is forwarded via the
+        ``Shopify-Storefront-Buyer-IP`` header. Shopify's bot-mitigation /
+        reCAPTCHA layer treats server-to-server Storefront calls without the
+        buyer's IP as bot traffic and can throttle/reject the mutation (e.g. the
+        address bind), so we always pass it through for buyer-originated ops.
+        """
         if not self.store_domain or not self.storefront_token:
             raise RuntimeError("SHOPIFY_STORE_DOMAIN and SHOPIFY_STOREFRONT_TOKEN are required")
 
@@ -277,14 +290,19 @@ class ShopifyClient(BaseStoreClient):
         if variables:
             payload["variables"] = variables
 
+        headers = {
+            "X-Shopify-Storefront-Access-Token": self.storefront_token,
+            "Content-Type": "application/json",
+        }
+        buyer_ip = buyer_ip or getattr(self, "_buyer_ip", None)
+        if buyer_ip:
+            headers["Shopify-Storefront-Buyer-IP"] = buyer_ip
+
         resp = await request_with_retries(
             lambda: self._http.post(
                 self._storefront_url,
                 json=payload,
-                headers={
-                    "X-Shopify-Storefront-Access-Token": self.storefront_token,
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
             ),
             label="shopify-storefront",
         )
@@ -1475,6 +1493,7 @@ class ShopifyClient(BaseStoreClient):
         *,
         cart_id: str,
         address: Optional[Dict[str, Any]] = None,
+        buyer_ip: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Bind a delivery address to the Storefront cart via the modern
         ``cartDeliveryAddressesReplace`` mutation (replaces the deprecated
@@ -1556,6 +1575,7 @@ class ShopifyClient(BaseStoreClient):
                         }
                     ],
                 },
+                buyer_ip=buyer_ip,
             )
             op = data.get("cartDeliveryAddressesReplace", {})
             errors = op.get("userErrors", [])
@@ -1640,6 +1660,7 @@ class ShopifyClient(BaseStoreClient):
         email: Optional[str] = None,
         phone: Optional[str] = None,
         address: Optional[Dict[str, Any]] = None,
+        buyer_ip: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Bind the buyer's contact + delivery address to the session's Storefront
         cart via cartBuyerIdentityUpdate + cartDeliveryAddressesReplace, so
@@ -1669,7 +1690,7 @@ class ShopifyClient(BaseStoreClient):
         # later email/phone-only buyerIdentity update succeeding).
         address_ok = False
         if addr:
-            result = await self.replace_cart_delivery_address(cart_id=cart_id, address=addr)
+            result = await self.replace_cart_delivery_address(cart_id=cart_id, address=addr, buyer_ip=buyer_ip)
             address_ok = bool(result.get("success")) and bool(result.get("checkout_url"))
             used_legacy = bool(result.get("__legacy"))
             if address_ok and used_legacy:
@@ -1711,6 +1732,7 @@ class ShopifyClient(BaseStoreClient):
                 data = await self._storefront(
                     GQL,
                     {"cartId": _ensure_cart_gid(cart_id), "buyerIdentity": _bi},
+                    buyer_ip=buyer_ip,
                 )
                 op = data.get("cartBuyerIdentityUpdate", {})
                 errors = op.get("userErrors", [])

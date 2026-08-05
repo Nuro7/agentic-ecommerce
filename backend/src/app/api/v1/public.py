@@ -29,6 +29,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["widget"])
 
 
+def _client_ip(request: Request) -> str:
+    """Best-effort buyer IP for the Shopify-Storefront-Buyer-IP header.
+
+    Behind Caddy/nginx the real client IP arrives via X-Forwarded-For (leftmost
+    is the original client). Falls back to the direct peer address.
+    """
+    fwd = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if fwd:
+        return fwd
+    client = getattr(request, "client", None)
+    return (client.host or "") if client else ""
+
+
 class GreetCurrentPage(BaseModel):
     url: Optional[str] = None
     title: Optional[str] = None
@@ -475,6 +488,7 @@ class PrepareCheckoutRequest(BaseModel):
 @router.post("/cart/checkout")
 async def prepare_checkout(
     payload: PrepareCheckoutRequest,
+    request: Request,
     store_client: Any = Depends(get_tenant_store_client),
     _rl=Depends(rate_limit(limit=30, window=60, scope="cart_checkout")),
 ):
@@ -555,6 +569,7 @@ async def prepare_checkout(
             email=payload.email,
             phone=payload.phone,
             address=addr_payload,
+            buyer_ip=_client_ip(request),
         )
     except Exception as exc:
         logger.warning("cart/checkout: buyer identity bind failed: %s", exc)

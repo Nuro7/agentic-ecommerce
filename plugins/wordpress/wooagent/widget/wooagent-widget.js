@@ -4202,6 +4202,20 @@ try {
   // its DOM is cross-origin, so this Storefront-cart binding is the ONLY way the
   // hosted checkout opens with the address already filled by Shopify itself.
   async function prepareShopifyCheckout(addr) {
+    // In-flight lock: the widget can fire /cart/checkout from multiple listeners
+    // (voice redirect, buy-now, page_update re-entry) within milliseconds. Firing
+    // several concurrent mutations against the same Storefront cart token can
+    // trigger Shopify cart-locking/race errors — serialize them instead.
+    if (S._checkoutInFlight) { return; }
+    S._checkoutInFlight = true;
+    try {
+      await _prepareShopifyCheckoutInner(addr);
+    } finally {
+      setTimeout(() => { S._checkoutInFlight = false; }, 1500);
+    }
+  }
+
+  async function _prepareShopifyCheckoutInner(addr) {
     const a = (addr && typeof addr === 'object') ? addr : {};
     // Refresh the cart from Shopify's live /cart.js BEFORE building the binding
     // payload. The S.cartSnapshot seeded at widget init comes from

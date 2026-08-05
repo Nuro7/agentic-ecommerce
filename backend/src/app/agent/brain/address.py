@@ -73,6 +73,22 @@ class AddressData:
 
 # ── Returning-customer partial-update helpers ────────────────────────────────
 
+# Conversational filler a voice/user utterance may wrap a name in. Stripped
+# BEFORE splitting into first/last so "my name is John Doe" yields
+# first_name="John", last_name="Doe" (not first="My", last="name is John Doe").
+_NAME_FILLER_RE = re.compile(
+    r"^\s*(?:my\s+)?(?:full\s+)?name\s+is\s+|i\s+am\s+|i'm\s+|this\s+is\s+"
+    r"|its\s+|it's\s+|the\s+name\s+is\s+|im\s+|i\s*am\s*",
+    re.IGNORECASE,
+)
+
+
+def _clean_full_name(text: str) -> str:
+    """Strip leading conversational filler and collapse inner whitespace."""
+    cleaned = _NAME_FILLER_RE.sub("", str(text or ""))
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
 # Map a user-spoken detail onto an AddressData field + the prompt key that asks
 # for its value. `tokens` is matched as a substring of the lowercased utterance.
 _FIELD_SPECS = [
@@ -273,7 +289,7 @@ async def handle_address_collection(
         return response, next_state, addr.__dict__, ui_actions
 
     if current_state == AddressCollectionState.COLLECTING_NAME:
-        parts = cleaned.split(maxsplit=1)
+        parts = _clean_full_name(cleaned).split(maxsplit=1)
         addr.first_name = parts[0] if parts else ""
         if len(parts) > 1:
             addr.last_name = parts[1]
@@ -284,7 +300,7 @@ async def handle_address_collection(
             response = lang_prompts["last_name"]
 
     elif current_state == AddressCollectionState.COLLECTING_LAST_NAME:
-        last_name = cleaned.strip()
+        last_name = _clean_full_name(cleaned)
         if last_name:
             addr.last_name = last_name
             next_state = AddressCollectionState.COLLECTING_ADDRESS_LINE1

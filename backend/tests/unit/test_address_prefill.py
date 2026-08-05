@@ -274,7 +274,7 @@ def _new_client():
 def test_replace_cart_delivery_address_sends_modern_mutation(monkeypatch):
     captured = {}
 
-    async def fake_storefront(query, variables):
+    async def fake_storefront(query, variables, *, buyer_ip=None):
         captured["query"] = query
         captured["variables"] = variables
         return {
@@ -323,7 +323,7 @@ def test_replace_cart_delivery_address_reports_failure_on_old_api(monkeypatch):
     # checkout_url while the form stayed blank.)
     calls = []
 
-    async def fake_storefront(query, variables):
+    async def fake_storefront(query, variables, *, buyer_ip=None):
         calls.append(query)
         raise RuntimeError(
             "Shopify Storefront error: [{message: \"Field 'cartDeliveryAddressesReplace' doesn't exist on type 'Mutation'\"}]"
@@ -352,7 +352,7 @@ def test_replace_cart_delivery_address_reports_failure_on_old_api(monkeypatch):
 
 
 def test_replace_cart_delivery_address_empty_when_both_paths_fail(monkeypatch):
-    async def fake_storefront(query, variables):
+    async def fake_storefront(query, variables, *, buyer_ip=None):
         raise RuntimeError("Shopify Storefront error: connection refused")
 
     client = _new_client()
@@ -551,7 +551,7 @@ def test_add_to_cart_self_heals_stale_variant(monkeypatch):
     client = _new_client()
     calls = []
 
-    async def fake_storefront(query, variables):
+    async def fake_storefront(query, variables, *, buyer_ip=None):
         calls.append(variables)
         if len(calls) == 1:
             return {
@@ -609,6 +609,15 @@ def test_add_to_cart_self_heals_stale_variant(monkeypatch):
 
 # ── prepare_checkout per-line fault tolerance ─────────────────────────────────
 
+class _MockRequest:
+    def __init__(self, headers=None, host="127.0.0.1"):
+        self.headers = headers or {}
+        self.client = type("C", (), {"host": host})()
+
+    def _client_ip(self):  # pragma: no cover - placeholder
+        return "127.0.0.1"
+
+
 def test_prepare_checkout_skips_bad_line_and_still_binds(monkeypatch):
     """A single stale line must not abort checkout: prepare_checkout skips it
     and still binds the address to the remaining cart."""
@@ -648,7 +657,7 @@ def test_prepare_checkout_skips_bad_line_and_still_binds(monkeypatch):
         address={"first_name": "Asha", "last_name": "Nair", "address_1": "MG Road", "city": "Kochi", "state": "Kerala", "postcode": "682015"},
     )
 
-    result = asyncio.run(public_mod.prepare_checkout(payload, fake_client, _rl=lambda: None))
+    result = asyncio.run(public_mod.prepare_checkout(payload, _MockRequest(), fake_client, _rl=lambda: None))
 
     assert [c["variation_id"] for c in add_calls] == [10107682521328, 777]
     assert result["ok"] is True
@@ -678,7 +687,7 @@ def test_prepare_checkout_fails_when_all_lines_bad(monkeypatch):
         address={"first_name": "Asha", "address_1": "MG Road", "city": "Kochi", "state": "Kerala", "postcode": "682015"},
     )
 
-    result = asyncio.run(public_mod.prepare_checkout(payload, fake_client, _rl=lambda: None))
+    result = asyncio.run(public_mod.prepare_checkout(payload, _MockRequest(), fake_client, _rl=lambda: None))
 
     assert result["ok"] is False
     assert result["error"] == "cart_build_failed"
@@ -715,7 +724,7 @@ def test_prepare_checkout_no_checkout_url_when_bind_fails(monkeypatch):
         address={"first_name": "Asha", "address_1": "MG Road", "city": "Kochi", "state": "Kerala", "postcode": "682015"},
     )
 
-    result = asyncio.run(public_mod.prepare_checkout(payload, fake_client, _rl=lambda: None))
+    result = asyncio.run(public_mod.prepare_checkout(payload, _MockRequest(), fake_client, _rl=lambda: None))
 
     assert result["ok"] is False
     assert result["bound"] is False
@@ -730,7 +739,7 @@ def test_attach_buyer_identity_fails_when_address_bind_fails_even_if_email_ok(mo
     calls = []
     captured = {}
 
-    async def fake_storefront(query, variables):
+    async def fake_storefront(query, variables, *, buyer_ip=None):
         calls.append(query)
         if "cartDeliveryAddressesReplace" in query:
             captured["addr"] = variables
@@ -792,6 +801,70 @@ def test_get_cart_id_handles_redis_decode_responses():
     assert asyncio.run(client._get_cart_id("s1")) is None
 
     asyncio.run(client._http.aclose())
+
+
+def test_name_collection_strips_conversational_filler():
+    """Regression: voice utterance 'my name is John Doe' must yield
+    first_name='John', last_name='Doe' — NOT first='My', last='name is John Doe'.
+    The naive first-space split produced a corrupted GraphQL payload name."""
+    resp, next_state, addr, actions = call(
+        "My name is John Doe", S.COLLECTING_NAME, {}, {},
+    )
+    assert addr["first_name"] == "John"
+    assert addr["last_name"] == "Doe"
+    assert next_state == S.COLLECTING_ADDRESS_LINE1
+
+
+def test_name_collection_strips_i_am_filler():
+    resp, next_state, addr, actions = call(
+        "I am Asha Nair", S.COLLECTING_NAME, {}, {},
+    )
+    assert addr["first_name"] == "Asha"
+    assert addr["last_name"] == "Nair"
+    assert next_state == S.COLLECTING_ADDRESS_LINE1
+
+
+def test_last_name_collection_strips_filler():
+    resp, next_state, addr, actions = call(
+        "My name is Doe", S.COLLECTING_LAST_NAME, {}, {},
+    )
+    assert addr["last_name"] == "Doe"
+    assert next_state == S.COLLECTING_ADDRESS_LINE1
+
+
+def test_attach_buyer_identity_sends_buyer_ip_header(monkeypatch):
+    """The Shopify-Storefront-Buyer-IP header must be forwarded on the address
+    bind so Shopify's bot mitigation doesn't flag the backend container (seen as
+    a reCAPTCHA-protection rejection on the hosted checkout)."""
+    captured = {}
+
+    async def fake_storefront(query, variables, *, buyer_ip=None):
+        captured["buyer_ip"] = buyer_ip
+        return {
+            "cartDeliveryAddressesReplace": {
+                "cart": {"id": "gid://shopify/Cart/c1-abc", "checkoutUrl": "https://checkout.test"},
+                "userErrors": [],
+            }
+        }
+
+    client = _new_client()
+    monkeypatch.setattr(client, "_storefront", fake_storefront)
+    async def fake_get_cart_id(session_id):
+        return "c1-abc"
+    monkeypatch.setattr(client, "_get_cart_id", fake_get_cart_id)
+    try:
+        result = asyncio.run(client.attach_buyer_identity(
+            session_id="s1",
+            email="a@b.co",
+            address={"first_name": "John", "address_1": "123 Main Street", "city": "NYC",
+                     "state_code": "NY", "country_code": "US", "postcode": "10001"},
+            buyer_ip="203.0.113.9",
+        ))
+    finally:
+        asyncio.run(client._http.aclose())
+
+    assert captured.get("buyer_ip") == "203.0.113.9"
+    assert result.get("success") is True
 
 
 async def _noop():
