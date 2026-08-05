@@ -4185,7 +4185,7 @@ try {
   // must first run the guided address-collection flow through the backend.
   function _addrUsable() {
     const a = (S.addressDraft && typeof S.addressDraft === 'object') ? S.addressDraft : {};
-    return !!(a.first_name && a.address_line1 && a.city && a.phone);
+    return !!(a.first_name && (a.address_1 || a.address_line1) && a.city && (a.postcode || a.zip));
   }
 
   // "Buy it now" → the item is already added locally; then we must check out.

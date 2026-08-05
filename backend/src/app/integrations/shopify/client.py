@@ -1556,19 +1556,33 @@ class ShopifyClient(BaseStoreClient):
             cart_node = op.get("cart")
             if errors or not cart_node:
                 # The modern mutation errored (or returned no cart) — the address
-                # may not have been stored, so checkouts would open blank. Fall
-                # back to the legacy buyerIdentity binding so prefill still works.
-                return await self._bind_address_legacy(gid, mailing)
+                # was NOT stored, so a hosted checkout opened from this cart would
+                # be blank. Do NOT silently fall back to the legacy
+                # deliveryAddressPreferences path: Shopify's hosted checkout never
+                # uses a preference-only address to prefill (it returns success +
+                # a valid checkoutUrl yet leaves the delivery form empty), so a
+                # "successful" legacy bind would send the customer to a blank
+                # form. Report failure instead so the widget keeps the address
+                # persistence path (retry / same-origin fill) rather than shipping
+                # the customer to an empty checkout.
+                logger.warning(
+                    "Shopify cartDeliveryAddressesReplace: no cart / userErrors=%s — "
+                    "not falling back to legacy; reporting bind failure",
+                    errors,
+                )
+                return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False}
             normalized = self._normalize_cart(cart_node)
             normalized["success"] = True
             return normalized
         except Exception as exc:
             logger.warning("Shopify cartDeliveryAddressesReplace failed: %s", exc)
             # Storefront API versions before 2025-10 don't expose
-            # cartDeliveryAddressesReplace → fall back to the deprecated (but
-            # still functional) deliveryAddressPreferences binding so checkout
-            # prefill keeps working on older API versions.
-            return await self._bind_address_legacy(gid, mailing)
+            # cartDeliveryAddressesReplace at all. The legacy deliveryAddressPreferences
+            # path can NOT prefill Shopify's hosted checkout (verified against the
+            # live store + Shopify docs: it returns a checkoutUrl yet the delivery
+            # form opens blank), so a fallback would only fake success. Fail loud
+            # so the widget never navigates to a blank checkout.
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False}
 
     async def _bind_address_legacy(self, gid: str, mailing: Dict[str, Any]) -> Dict[str, Any]:
         """Bind a delivery address via the pre-2025-10 path (deprecated
@@ -1634,10 +1648,18 @@ class ShopifyClient(BaseStoreClient):
         addr = address or {}
         used_legacy = False
         mailing: Dict[str, Any] = {}
+
+        # When an address was provided it MUST be successfully bound for the whole
+        # bind to count as "success" — otherwise the widget would navigate to a
+        # hosted checkout with blank delivery fields while the response claims
+        # success. A failed address bind is reported as failure (never masked by a
+        # later email/phone-only buyerIdentity update succeeding).
+        address_ok = False
         if addr:
             result = await self.replace_cart_delivery_address(cart_id=cart_id, address=addr)
+            address_ok = bool(result.get("success")) and bool(result.get("checkout_url"))
             used_legacy = bool(result.get("__legacy"))
-            if used_legacy and result.get("success"):
+            if address_ok and used_legacy:
                 # Legacy path stores the address on buyerIdentity. Re-send it in the
                 # SAME cartBuyerIdentityUpdate below (email/phone) so the address is
                 # not overwritten/dropped. Rebuild the flat MailAddressInput shape.
@@ -1690,6 +1712,16 @@ class ShopifyClient(BaseStoreClient):
 
         if not result:
             return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+
+        # The delivery address is the whole point of this bind. If an address was
+        # requested but NOT successfully bound (failed address replace, no
+        # checkout_url), report failure no matter how the email/phone update went —
+        # a hosted checkout opened from this cart would otherwise have blank
+        # delivery fields while the response claims success.
+        if addr and not address_ok:
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False}
+
+        result["success"] = address_ok if addr else bool(result.get("success"))
         return result
 
     async def update_cart_quantity(

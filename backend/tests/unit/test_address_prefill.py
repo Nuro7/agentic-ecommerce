@@ -313,23 +313,21 @@ def test_replace_cart_delivery_address_sends_modern_mutation(monkeypatch):
     assert result["checkout_url"] == "https://checkout.test"
 
 
-def test_replace_cart_delivery_address_falls_back_on_old_api(monkeypatch):
+def test_replace_cart_delivery_address_reports_failure_on_old_api(monkeypatch):
+    # Shopify's hosted checkout never prefills from the legacy
+    # deliveryAddressPreferences path (it returns a checkoutUrl yet leaves the
+    # delivery form blank). So when the modern cartDeliveryAddressesReplace
+    # mutation is unavailable (old API) the bind must FAIL LOUD — not silently
+    # "succeed" via the legacy path — so the widget never ships the customer to
+    # an empty checkout. (Bug: silent legacy fallback reported success + a
+    # checkout_url while the form stayed blank.)
     calls = []
-    captured = {}
 
     async def fake_storefront(query, variables):
         calls.append(query)
-        if len(calls) == 1:
-            raise RuntimeError(
-                "Shopify Storefront error: [{'message': \"Field 'cartDeliveryAddressesReplace' doesn't exist on type 'Mutation'\"}]"
-            )
-        captured["variables"] = variables
-        return {
-            "cartBuyerIdentityUpdate": {
-                "cart": {"id": "gid://shopify/Cart/c1-abc", "checkoutUrl": "https://checkout.test"},
-                "userErrors": [],
-            }
-        }
+        raise RuntimeError(
+            "Shopify Storefront error: [{message: \"Field 'cartDeliveryAddressesReplace' doesn't exist on type 'Mutation'\"}]"
+        )
 
     client = _new_client()
     monkeypatch.setattr(client, "_storefront", fake_storefront)
@@ -345,14 +343,12 @@ def test_replace_cart_delivery_address_falls_back_on_old_api(monkeypatch):
     finally:
         asyncio.run(client._http.aclose())
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert "cartDeliveryAddressesReplace" in calls[0]
-    assert "cartBuyerIdentityUpdate" in calls[1]
-    legacy_addr = captured["variables"]["buyerIdentity"]["deliveryAddressPreferences"][0]["deliveryAddress"]
-    assert legacy_addr["province"] == "KL"
-    assert legacy_addr["country"] == "IN"
-    assert result["success"] is True
-    assert result["checkout_url"] == "https://checkout.test"
+    # Must NOT fall back to the (non-prefilling) legacy path.
+    assert not any("cartBuyerIdentityUpdate" in c for c in calls)
+    assert result.get("success") is False
+    assert result.get("checkout_url") == ""
 
 
 def test_replace_cart_delivery_address_empty_when_both_paths_fail(monkeypatch):
@@ -724,6 +720,52 @@ def test_prepare_checkout_no_checkout_url_when_bind_fails(monkeypatch):
     assert result["ok"] is False
     assert result["bound"] is False
     assert result["checkout_url"] == ""
+
+
+def test_attach_buyer_identity_fails_when_address_bind_fails_even_if_email_ok(monkeypatch):
+    """Regression: a failed address bind must NOT be masked by a succeeding
+    email/phone cartBuyerIdentityUpdate. Previously the second update overwrote
+    `result` with success=True + a checkout_url, so the widget navigated to a
+    hosted checkout whose delivery form was blank while the API claimed success."""
+    calls = []
+    captured = {}
+
+    async def fake_storefront(query, variables):
+        calls.append(query)
+        if "cartDeliveryAddressesReplace" in query:
+            captured["addr"] = variables
+            # Modern address mutation unavailable on this store → must FAIL LOUD.
+            raise RuntimeError(
+                "Shopify Storefront error: [{message: \"Field 'cartDeliveryAddressesReplace' doesn't exist on type 'Mutation'\"}]"
+            )
+        if "cartBuyerIdentityUpdate" in query:
+            captured["bi"] = variables
+            return {
+                "cartBuyerIdentityUpdate": {
+                    "cart": {"id": "gid://shopify/Cart/c1-abc", "checkoutUrl": "https://checkout.test"},
+                    "userErrors": [],
+                }
+            }
+        raise AssertionError(f"unexpected query: {query[:80]}")
+
+    client = _new_client()
+    monkeypatch.setattr(client, "_storefront", fake_storefront)
+    async def fake_get_cart_id(session_id):
+        return "c1-abc"
+    monkeypatch.setattr(client, "_get_cart_id", fake_get_cart_id)
+    try:
+        result = asyncio.run(client.attach_buyer_identity(
+            session_id="s1",
+            email="a@b.co",
+            phone="9876543210",
+            address={"first_name": "Asha", "address_1": "MG Road", "city": "Kochi",
+                     "state": "Kerala", "state_code": "KL", "country_code": "IN", "postcode": "682015"},
+        ))
+    finally:
+        asyncio.run(client._http.aclose())
+
+    assert result.get("success") is False
+    assert result.get("checkout_url") == ""
 
 
 async def _noop():
