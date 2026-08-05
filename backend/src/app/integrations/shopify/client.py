@@ -9,7 +9,8 @@ Required env vars:
   SHOPIFY_STORE_DOMAIN       e.g.  "mystore.myshopify.com"
   SHOPIFY_STOREFRONT_TOKEN   Storefront API public access token
   SHOPIFY_ADMIN_TOKEN        Admin API access token  (starts with "shpat_")
-  SHOPIFY_API_VERSION        e.g.  "2024-01"  (optional, defaults to 2024-01)
+  SHOPIFY_API_VERSION        e.g.  "2026-07"  (optional; must be 2025-10+ for
+                                cartDeliveryAddressesReplace, defaults to 2026-07)
 """
 from __future__ import annotations
 
@@ -31,7 +32,7 @@ from ...agent.retrieval.attributes import canonical_color, canonical_size, extra
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_API_VERSION = "2024-01"
+_DEFAULT_API_VERSION = "2026-07"
 
 
 async def invalidate_shopify_cache(redis, store_domain: str) -> None:
@@ -1471,16 +1472,23 @@ class ShopifyClient(BaseStoreClient):
         ``cartDeliveryAddressesReplace`` mutation (replaces the deprecated
         ``deliveryAddressPreferences`` on ``cartBuyerIdentityUpdate``). Uses an
         ISO-2 province/country code where available so Shopify's hosted checkout
-        opens pre-filled. Returns the normalized cart with a live checkoutUrl,
-        or an empty cart dict when the mutation fails — callers fall back to the
-        cart's plain checkout redirect.
+        opens pre-filled. The address is marked ``selected`` so Shopify treats it
+        as the pre-selected delivery address and opens checkout pre-populated.
+        Returns the normalized cart with a live checkoutUrl, or an empty cart
+        dict when the mutation fails — callers fall back to the cart's plain
+        checkout redirect.
+
+        NOTE: ``cartDeliveryAddressesReplace`` is only available on the Storefront
+        API **2025-10** and newer (release notes: 2025-10). On older API versions
+        the mutation raises a schema error and we fall back to the deprecated
+        ``cartBuyerIdentityUpdate.deliveryAddressPreferences`` path.
         """
         gid = _ensure_cart_gid(cart_id)
         if not gid:
             return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
 
         addr = address or {}
-        # Legacy (pre-2025-04) CartBuyerIdentityUpdate.deliveryAddressPreferences
+        # Legacy (pre-2025-10) CartBuyerIdentityUpdate.deliveryAddressPreferences
         # expects a flat MailAddressInput — kept for the fallback path.
         mailing = {
             "firstName": (addr.get("first_name") or "").strip() or None,
@@ -1495,10 +1503,14 @@ class ShopifyClient(BaseStoreClient):
         # CartSelectableAddressInput rejects empty strings on required fields; strip nulls.
         mailing = {k: v for k, v in mailing.items() if v is not None and str(v).strip()}
 
-        # Modern (2025-04+) cartDeliveryAddressesReplace expects
-        # CartSelectableAddressInput { address: CartAddressInput, oneTimeUse } and
-        # CartAddressInput wraps a CartDeliveryAddressInput with countryCode /
-        # provinceCode (ISO codes) — NOT the flat MailAddressInput shape.
+        # Modern (2025-10+) cartDeliveryAddressesReplace expects
+        # CartSelectableAddressInput { address: CartAddressInput, oneTimeUse,
+        # selected } and CartAddressInput wraps a CartDeliveryAddressInput with
+        # countryCode / provinceCode (ISO codes) — NOT the flat MailAddressInput
+        # shape. `selected: true` is REQUIRED so the address is pre-selected as
+        # the buyer's delivery address and Shopify's hosted checkout opens
+        # pre-filled; without it the address is stored but not chosen and the
+        # checkout form stays blank.
         delivery = {
             "firstName": (addr.get("first_name") or "").strip() or None,
             "lastName": (addr.get("last_name") or "").strip() or None,
@@ -1529,7 +1541,11 @@ class ShopifyClient(BaseStoreClient):
                 {
                     "cartId": gid,
                     "addresses": [
-                        {"address": {"deliveryAddress": delivery}, "oneTimeUse": True}
+                        {
+                            "address": {"deliveryAddress": delivery},
+                            "oneTimeUse": True,
+                            "selected": True,
+                        }
                     ],
                 },
             )
@@ -1545,14 +1561,14 @@ class ShopifyClient(BaseStoreClient):
             return normalized
         except Exception as exc:
             logger.warning("Shopify cartDeliveryAddressesReplace failed: %s", exc)
-            # Storefront API versions before 2025-04 don't expose
+            # Storefront API versions before 2025-10 don't expose
             # cartDeliveryAddressesReplace → fall back to the deprecated (but
             # still functional) deliveryAddressPreferences binding so checkout
             # prefill keeps working on older API versions.
             return await self._bind_address_legacy(gid, mailing)
 
     async def _bind_address_legacy(self, gid: str, mailing: Dict[str, Any]) -> Dict[str, Any]:
-        """Bind a delivery address via the pre-2025-04 path (deprecated
+        """Bind a delivery address via the pre-2025-10 path (deprecated
         deliveryAddressPreferences on cartBuyerIdentityUpdate). Fallback used
         when the modern cartDeliveryAddressesReplace mutation isn't available."""
         GQL = """

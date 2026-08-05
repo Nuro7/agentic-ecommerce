@@ -254,6 +254,7 @@ def test_replace_cart_delivery_address_sends_modern_mutation(monkeypatch):
     assert "deliveryAddressPreferences" not in captured["query"]
     assert captured["variables"]["cartId"] == "gid://shopify/Cart/c1-abc"
     assert captured["variables"]["addresses"][0]["oneTimeUse"] is True
+    assert captured["variables"]["addresses"][0]["selected"] is True
     delivery = captured["variables"]["addresses"][0]["address"]["deliveryAddress"]
     assert delivery["provinceCode"] == "KL"
     assert delivery["countryCode"] == "IN"

@@ -22,7 +22,7 @@ Two bugs were reported:
    verification and jumped straight to checkout.
 2. **Checkout not auto-filled** — the production store pinned
    `SHOPIFY_API_VERSION=2025-01`, but the reliable prefill mutation
-   `cartDeliveryAddressesReplace` only exists in Storefront API **2025-04+**.
+   `cartDeliveryAddressesReplace` only exists in Storefront API **2025-10+**.
    The modern mutation failed silently and checkout opened empty.
 
 A **third bug** was reported from the cart page: typing *"proceed to checkout"*
@@ -94,9 +94,9 @@ itself except from the CONFIRMING "yes" branch.
 | `backend/src/app/api/v1/public.py` | `POST /api/v1/cart/checkout` (`prepare_checkout`) — server-side address bind + real `checkoutUrl`. |
 | `backend/static/wooagent-widget.js` | PDP/theme widget. Processes `ui_action`s and navigates. **DO NOT MODIFY WooCommerce paths.** |
 | `speako-checkout/extensions/ask-aria-checkout/src/Checkout.jsx` | Shopify checkout extension (block `purchase.checkout.block.render`). Real-time prefill via `useApplyShippingAddressChange`. |
-| `speako-checkout/extensions/ask-aria-checkout/shopify.extension.toml` | Extension config; `api_version = "2025-07"`. |
+| `speako-checkout/extensions/ask-aria-checkout/shopify.extension.toml` | Extension config; `api_version = "2026-07"`. |
 | `backend/tests/unit/test_address_prefill.py` | 19 unit tests covering the FSM, ISO-2 helpers, client binding + the brain live-nav guard + mid-flow routing. |
-| `backend/.env`, `backend/.env.worker` | `SHOPIFY_API_VERSION` — **bumped 2025-01 → 2025-07** so the modern mutation is reachable. |
+| `backend/.env`, `backend/.env.worker` | `SHOPIFY_API_VERSION` — **bumped 2025-01 → 2026-07** so the modern mutation is reachable. |
 
 ---
 
@@ -207,7 +207,7 @@ All addresses are normalized to ISO codes **before** they reach Shopify, because
 Prefixes short cart tokens (`c1-abc`) with `gid://shopify/Cart/`; full GIDs
 pass through.
 
-### 6.2 `replace_cart_delivery_address(...)` (`client.py:1424`) — modern path
+### 6.2 `replace_cart_delivery_address(...)` (`client.py:1464`) — modern path
 
 ```
 mutation CartDeliveryAddressesReplace($cartId: ID!, $addresses: [CartSelectableAddressInput!]!) {
@@ -217,17 +217,21 @@ mutation CartDeliveryAddressesReplace($cartId: ID!, $addresses: [CartSelectableA
   }
 }
 ```
-- Builds a `CartSelectableAddressInput` (`firstName, lastName, address1, city,
-  province, zip, phone, country`) using `state_code`/`country_code` when
-  present; strips empty/null fields.
-- Sends `[{"address": mailing, "oneTimeUse": true}]`.
+- Builds a `CartDeliveryAddressInput` (`firstName, lastName, address1, city,
+  provinceCode, zip, phone, countryCode`) using `state_code`/`country_code` when
+  present; strips empty/null fields. `provinceCode`/`countryCode` must be ISO-2.
+- Sends `[{"address": {"deliveryAddress": <input>}, "oneTimeUse": true,
+  "selected": true}]`. **`selected: true` is what makes Shopify pre-select the
+  address as the buyer's delivery address so the hosted checkout opens
+  pre-filled — without it the checkout form stays blank.**
 - Returns normalized cart with `checkout_url` + `success=True`, or an empty cart
   dict on failure.
 - **On exception → falls through to `_bind_address_legacy()`.**
-
+- Requires Storefront API **2025-10+** (the mutation was introduced in 2025-10;
+  on older versions the schema error triggers the legacy fallback).
 ### 6.3 `_bind_address_legacy(gid, mailing)` (`client.py:1487`) — THE FIX #2
 
-For Storefront API versions **before 2025-04** (`cartDeliveryAddressesReplace`
+For Storefront API versions **before 2025-10** (`cartDeliveryAddressesReplace`
 does not exist there), bind the same address via the deprecated but still
 functional field:
 
@@ -289,7 +293,7 @@ with `buyerIdentity.deliveryAddressPreferences = [{"deliveryAddress": mailing}]`
 
 ## 9. In-checkout extension (`Checkout.jsx`)
 
-- Extension block `purchase.checkout.block.render`, `api_version = "2025-07"`.
+- Extension block `purchase.checkout.block.render`, `api_version = "2026-07"`.
 - Real-time prefill path:
   - user chats → `POST {backendUrl}/api/v1/chat` with a session + shop domain.
   - response actions parsed defensively:
@@ -311,13 +315,20 @@ with `buyerIdentity.deliveryAddressPreferences = [{"deliveryAddress": mailing}]`
 
 ## 10. Env / API-version requirement
 
-- `cartDeliveryAddressesReplace` requires Storefront API **2025-04 or newer**.
-- `backend/.env:68` and `backend/.env.worker:41` are now
-  `SHOPIFY_API_VERSION=2025-07` (matches the extension) → modern path active.
+- `cartDeliveryAddressesReplace` requires Storefront API **2025-10 or newer**
+  (it was added in the 2025-10 release, effective 2025-10-01; `2025-07` predates
+  it and predates its own retirement).
+- The mutation must ALSO set `selected: true` on the
+  `CartSelectableAddressInput` — without it the address is stored on the cart but
+  not pre-selected as the buyer's delivery address, so the hosted checkout still
+  opens with a blank Delivery section.
+- `backend/.env` and `backend/.env.worker` are now
+  `SHOPIFY_API_VERSION=2026-07` (stable, supported, includes the mutation) →
+  modern path active.
 - The legacy fallback keeps prefill working on any store still pinned to an
   older version.
 - **Deployment note:** `.env` is gitignored; the production server's `.env`
-  must also be updated to `2025-07` and the app container recreated
+  must also be updated to `2026-07` and the app container recreated
   (`up -d app`; restart does NOT reload `.env`).
 
 ---
@@ -358,10 +369,10 @@ legacy fallback, `36c0126` extension, `b82f793` live-nav guard). What remains is
 **production deployment** — the running backend still has the old behaviour:
 
 1. Backend deploy: on the production host (`/home/ubuntu/agentic-ecommerce`),
-   pull the latest `main`, set production `.env` `SHOPIFY_API_VERSION=2025-07`,
+   pull the latest `main`, set production `.env` `SHOPIFY_API_VERSION=2026-07`,
    and recreate the app container (`up -d app`; restart does NOT reload `.env`).
-   This ships the fixes: confirm-first FSM, legacy address fallback, the
-   live-nav guard, and the mid-flow routing + PII-redaction fixes.
+   This ships the fixes: confirm-first FSM, address `selected:true` + legacy
+   fallback, the live-nav guard, and the mid-flow routing + PII-redaction fixes.
 2. Extension deploy: `cd speako-checkout && shopify app deploy` (registers the
    in-checkout block that was previously committed as files only).
 3. Widget: re-register the script tag after any JS change (Shopify caches it).
