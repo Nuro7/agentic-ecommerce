@@ -1570,7 +1570,7 @@ class ShopifyClient(BaseStoreClient):
                     "not falling back to legacy; reporting bind failure",
                     errors,
                 )
-                return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False}
+                return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False, "reason": f"userErrors={errors}"}
             normalized = self._normalize_cart(cart_node)
             normalized["success"] = True
             return normalized
@@ -1582,7 +1582,7 @@ class ShopifyClient(BaseStoreClient):
             # live store + Shopify docs: it returns a checkoutUrl yet the delivery
             # form opens blank), so a fallback would only fake success. Fail loud
             # so the widget never navigates to a blank checkout.
-            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False}
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False, "reason": f"cartDeliveryAddressesReplace exception: {exc}"}
 
     async def _bind_address_legacy(self, gid: str, mailing: Dict[str, Any]) -> Dict[str, Any]:
         """Bind a delivery address via the pre-2025-10 path (deprecated
@@ -1719,7 +1719,7 @@ class ShopifyClient(BaseStoreClient):
         # a hosted checkout opened from this cart would otherwise have blank
         # delivery fields while the response claims success.
         if addr and not address_ok:
-            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False}
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False, "reason": result.get("reason") or "address bind returned no success/checkout_url"}
 
         result["success"] = address_ok if addr else bool(result.get("success"))
         return result

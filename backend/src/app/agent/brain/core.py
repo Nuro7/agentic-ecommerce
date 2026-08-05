@@ -704,8 +704,19 @@ async def ask_brain(
                 "suggested_replies": [],
             }
             _addr_fsm_owned = True
+            _redir = next(
+                (a.get("payload", {}) for a in _addr_actions
+                 if isinstance(a, dict) and a.get("type") == "redirect_checkout_with_address"),
+                {},
+            )
             logger.info(
-                "[FLOW] brain address4-step EXIT next_state=%s actions=%d session=%s",
+                "[FLOW] ADDRESS-COLLECTED session=%s state=%s->%s input=%s "
+                "collected=%s actions=%d redirect=%s",
+                session_id, _addr_state, _addr_next, _addr_input[:40],
+                _addr_dict, len(_addr_actions), bool(_redir),
+            )
+            logger.info(
+                "[FLOW] address4-step EXIT next_state=%s actions=%d session=%s",
                 _addr_next, len(_addr_actions), session_id,
             )
         except Exception as _addr_exc:

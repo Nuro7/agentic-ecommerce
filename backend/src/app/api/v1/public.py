@@ -569,9 +569,27 @@ async def prepare_checkout(
     bound_ok = bool(bound) and bool(bound.get("success"))
     checkout_url = bound.get("checkout_url", "") if bound_ok else ""
 
+    # One-line summary so operators can trace the whole address-collection →
+    # bind flow straight from the prod logs (docker compose logs web).
+    _addr_snap = dict(payload.address or {})
+    logger.info(
+        "cart/checkout COLLECTED session=%s email=%s phone=%s line_count=%d failed_lines=%d | "
+        "addr=%s | BIND=%s checkout_url=%s reason=%s",
+        payload.session_id,
+        payload.email or "-",
+        payload.phone or "-",
+        len(payload.lines or []),
+        failed_lines,
+        _addr_snap,
+        "OK" if bound_ok else "FAILED",
+        checkout_url or "-",
+        (bound or {}).get("reason") or "-",
+    )
+
     return {
         "ok": bound_ok,
         "checkout_url": checkout_url,
         "cart": bound if bound else cart,
         "bound": bound_ok,
+        "reason": (bound or {}).get("reason") or "",
     }
