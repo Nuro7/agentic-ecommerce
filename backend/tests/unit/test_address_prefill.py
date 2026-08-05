@@ -768,5 +768,31 @@ def test_attach_buyer_identity_fails_when_address_bind_fails_even_if_email_ok(mo
     assert result.get("checkout_url") == ""
 
 
+def test_get_cart_id_handles_redis_decode_responses():
+    """Regression: redis configured with decode_responses=True returns a str (not
+    bytes) from .get(). The old `raw.decode()` raised AttributeError → every cart
+    id read returned None → the checkout bind failed silently BEFORE the address
+    mutation ran (BIND=FAILED reason=- in prod, cart never bound)."""
+    class FakeRedis:
+        def __init__(self, value):
+            self._value = value
+        async def get(self, key):
+            return self._value
+
+    client = _new_client()
+    client.redis = FakeRedis("gid://shopify/Cart/c1-abc")  # str (decode_responses=True)
+    result_str = asyncio.run(client._get_cart_id("s1"))
+    assert result_str == "gid://shopify/Cart/c1-abc"
+
+    client.redis = FakeRedis(b"gid://shopify/Cart/c1-xyz")  # bytes (decode_responses=False)
+    result_bytes = asyncio.run(client._get_cart_id("s1"))
+    assert result_bytes == "gid://shopify/Cart/c1-xyz"
+
+    client.redis = FakeRedis(None)
+    assert asyncio.run(client._get_cart_id("s1")) is None
+
+    asyncio.run(client._http.aclose())
+
+
 async def _noop():
     return None

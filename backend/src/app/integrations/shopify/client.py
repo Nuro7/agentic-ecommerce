@@ -406,7 +406,15 @@ class ShopifyClient(BaseStoreClient):
             raw = await asyncio.wait_for(
                 self.redis.get(self._cache_prefix + "cart:" + session_id), timeout=1.0
             )
-            return raw.decode() if raw else None
+            if not raw:
+                return None
+            # redis may be created with decode_responses=True (returns str) or
+            # False (returns bytes). Handle both — calling .decode() on a str
+            # raised AttributeError, which made EVERY cart-id read return None and
+            # the checkout bind silently fail before the address mutation ran.
+            if isinstance(raw, (bytes, bytearray)):
+                return raw.decode()
+            return str(raw)
         except Exception:
             return None
 
@@ -1642,7 +1650,12 @@ class ShopifyClient(BaseStoreClient):
         """
         cart_id = await self._get_cart_id(session_id)
         if not cart_id:
-            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
+            logger.warning(
+                "attach_buyer_identity: no Storefront cart id found for session=%s "
+                "(redis miss) — cannot bind address; checkout would open blank",
+                session_id,
+            )
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False, "reason": "no Storefront cart id for session (cart not created in redis)"}
 
         result: Dict[str, Any] = {}
         addr = address or {}
