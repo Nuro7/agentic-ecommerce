@@ -93,10 +93,15 @@ class VoiceTurnCoordinator:
                 logger.debug("Failed to send binary payload session=%s: %s", self.session_id, e)
 
     # ── Basic command patterns (skip brain, act directly) ───────────────────
+    # NOTE: checkout is deliberately NOT here — "go to checkout" must reach the
+    # brain so the address-collection FSM can start (phone → name → address →
+    # confirm → redirect_checkout_with_address). Skipping the brain here was the
+    # bug where voice users said "go to checkout", got navigated straight to a
+    # BLANK /checkout, and their mid-flow address answers ("New York 10001")
+    # fell through to product search (hallucinated product-name guardrail fires).
     _NAV_PATTERNS = [
         (re.compile(r'^(go\s+to\s+)?(home|homepage|home\s+page)$', re.I), '/'),
         (re.compile(r'^(go\s+to|show|view|open)\s+(my\s+)?cart$', re.I), '/cart'),
-        (re.compile(r'^(go\s+to\s+)?(checkout|check\s*out)$', re.I), '/checkout'),
     ]
     _SEARCH_PATTERN = re.compile(r'^(search|find|show|look)\s+(for\s+)?(.+)', re.I)
     _ADD_CART_PATTERN = re.compile(

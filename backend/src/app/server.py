@@ -120,10 +120,16 @@ async def _assert_rls_role_safe() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .core.logging import configure_logging
     from .core.database import init_db
     from .core.cache import init_cache
     from .agent.memory.session import SessionService
     from .agent.beta_logger import get_beta_logger
+
+    # Root logging must be configured at startup — otherwise app loggers have no
+    # handler and Python's last-resort handler only prints WARNING+ to stderr, so
+    # INFO traces (address collection / bind result) never reach the container log.
+    configure_logging()
 
     _assert_single_process_or_acked()
     await init_db()

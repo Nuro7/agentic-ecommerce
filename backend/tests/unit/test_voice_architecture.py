@@ -391,3 +391,21 @@ async def test_coordinator_barge_in_cancel(monkeypatch):
     ws.closed = True
     await provider.close()
     await run_task
+
+
+def test_checkout_phrase_must_reach_brain_not_skip():
+    """Regression: 'go to checkout' / 'checkout' must NOT be treated as a basic
+    nav command that skips the brain. Skipping it bypassed the address-collection
+    FSM, so voice users were navigated straight to a blank /checkout and their
+    mid-flow address answers ('New York 10001') fell through to product search
+    (hallucinated product-name guardrail)."""
+    ws = MockWebSocket([])
+    provider = MockVoiceProvider()
+    coordinator = VoiceTurnCoordinator(ws, provider, MockSessionService())
+
+    for phrase in ["go to checkout", "checkout", "check out", "go to cart"]:
+        if "cart" in phrase:
+            assert coordinator._is_basic_command(phrase) is True
+        else:
+            assert coordinator._is_basic_command(phrase) is False, phrase
+
