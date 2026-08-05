@@ -64,7 +64,7 @@ def test_saved_address_confirm_then_checkout(monkeypatch):
     # pre-fills and asks to confirm (no redirect yet)...
     addr_data = {
         "first_name": "Asha", "last_name": "Nair", "address_line1": "Flat 12, MG Road",
-        "city": "Kochi", "state": "Kerala", "postcode": "682015",
+        "city": "Kochi", "state": "California", "postcode": "90001",
         "phone": "9876543210", "email": "asha@example.com", "_using_saved": "1",
     }
     resp, next_state, data, actions = call(
@@ -74,7 +74,7 @@ def test_saved_address_confirm_then_checkout(monkeypatch):
     assert next_state == S.COMPLETE
     redirect = next((a for a in actions if a.get("type") == "redirect_checkout_with_address"), None)
     assert redirect is not None
-    assert redirect["payload"]["shipping"]["state_code"] == "KL"
+    assert redirect["payload"]["shipping"]["state_code"] == "CA"
     assert saved.get("phone") == "9876543210"
 
 
@@ -126,6 +126,38 @@ def test_new_customer_saves_address_on_confirm(monkeypatch):
     assert any(a.get("type") == "redirect_checkout_with_address" for a in actions)
 
 
+def test_us_zip_five_digits_accept(monkeypatch):
+    """US ZIP codes are 5 digits (not 6 like India). A 5-digit ZIP must be
+    accepted and preserved through the flow."""
+    monkeypatch.setattr(
+        "src.app.modules.users.address_service.save_address",
+        lambda **kw: None,
+    )
+    resp, next_state, data, actions = call(
+        "90001", S.COLLECTING_PINCODE,
+        {"first_name": "Asha", "last_name": "Nair", "phone": "9876543210"},
+        {"page_type": "checkout", "url": "https://store/checkout"},
+    )
+    assert data["postcode"] == "90001"
+    assert next_state == S.COLLECTING_EMAIL
+
+
+def test_phone_optional_skip_proceeds(monkeypatch):
+    """Phone number is optional — saying 'skip' must not block the checkout
+    flow; the FSM proceeds to collect the name instead."""
+    monkeypatch.setattr(
+        "src.app.modules.users.address_service.get_address_by_phone",
+        lambda phone, tenant: None,
+    )
+    resp, next_state, addr, actions = call(
+        "skip", S.COLLECTING_PHONE, {},
+        {"page_type": "checkout", "url": "https://store/checkout"},
+    )
+    assert addr["phone"] == ""
+    assert next_state == S.COLLECTING_NAME
+    assert not any(a.get("type") == "redirect_checkout_with_address" for a in actions)
+
+
 def test_unknown_phone_keeps_manual_confirm_on_checkout(monkeypatch):
     monkeypatch.setattr(
         "src.app.modules.users.address_service.get_address_by_phone",
@@ -139,6 +171,25 @@ def test_unknown_phone_keeps_manual_confirm_on_checkout(monkeypatch):
     assert next_state == S.COLLECTING_NAME
     assert addr.get("_using_saved", "") != "1"
     assert not any(a.get("type") == "redirect_checkout_with_address" for a in actions)
+
+
+def test_complete_state_reissues_redirect_on_second_checkout():
+    """Regression: after the FSM COMPLETES, a second 'proceed to checkout' (e.g.
+    from the cart / product page) must RE-ISSUE the checkout redirect using the
+    stored address — NOT return an empty response, which made the voice model
+    hallucinate the navigation while nothing happened."""
+    addr = {
+        "first_name": "Asha", "last_name": "Nair", "address_line1": "Flat 12, MG Road",
+        "city": "Kochi", "state": "Kerala", "postcode": "682015", "phone": "9876543210",
+    }
+    resp, next_state, data, actions = call(
+        "proceed to checkout", S.COMPLETE, addr,
+        {"page_type": "cart", "url": "https://store/cart"},
+    )
+    redirect = next((a for a in actions if a.get("type") == "redirect_checkout_with_address"), None)
+    assert redirect is not None, "COMPLETE re-entry must re-emit the redirect"
+    assert redirect["payload"]["shipping"]["address_1"] == "Flat 12, MG Road"
+    assert resp  # non-empty spoken response so the voice model has real text
 
 
 # ── ISO-2 normalization helpers ────────────────────────────────────────────────
@@ -177,7 +228,7 @@ def test_normalize_country_code():
 def test_prefill_payload_emits_iso2_codes():
     addr = {
         "first_name": "Ravi", "last_name": "Kumar", "address_line1": "12 Park Road",
-        "city": "Chennai", "state": "Tamil Nadu", "postcode": "600001", "phone": "9876543210",
+        "city": "Los Angeles", "state": "California", "postcode": "90001", "phone": "9876543210",
     }
     resp, next_state, data, actions = call(
         "skip", S.COLLECTING_EMAIL, addr, {"page_type": "checkout", "url": "https://store/checkout"},
@@ -185,8 +236,8 @@ def test_prefill_payload_emits_iso2_codes():
     prefill = next((a for a in actions if a.get("type") == "prefill_address"), None)
     assert prefill is not None
     payload = prefill["payload"]
-    assert payload["state_code"] == "TN"
-    assert payload["country_code"] == "IN"
+    assert payload["state_code"] == "CA"
+    assert payload["country_code"] == "US"
 
 
 def test_redirect_payload_emits_iso2_codes(monkeypatch):
@@ -196,7 +247,7 @@ def test_redirect_payload_emits_iso2_codes(monkeypatch):
     )
     addr = {
         "first_name": "Asha", "last_name": "Nair", "address_line1": "Flat 12, MG Road",
-        "city": "Kochi", "state": "Kerala", "postcode": "682015", "phone": "9876543210",
+        "city": "Kochi", "state": "California", "postcode": "90001", "phone": "9876543210",
     }
     resp, next_state, data, actions = call(
         "yes", S.CONFIRMING, addr, {"page_type": "checkout", "url": "https://store/checkout"},
@@ -204,8 +255,8 @@ def test_redirect_payload_emits_iso2_codes(monkeypatch):
     redirect = next((a for a in actions if a.get("type") == "redirect_checkout_with_address"), None)
     assert redirect is not None
     shipping = redirect["payload"]["shipping"]
-    assert shipping["state_code"] == "KL"
-    assert shipping["country_code"] == "IN"
+    assert shipping["state_code"] == "CA"
+    assert shipping["country_code"] == "US"
 
 
 # ── cartDeliveryAddressesReplace client path ───────────────────────────────────

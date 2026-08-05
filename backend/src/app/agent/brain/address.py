@@ -47,11 +47,12 @@ class AddressData:
     _pending_field: str = ""
 
     def is_complete(self) -> bool:
-        return all([self.first_name, self.last_name, self.address_line1, self.city, self.postcode, self.phone])
+        # Phone is optional in the US flow — a customer may skip it.
+        return all([self.first_name, self.last_name, self.address_line1, self.city, self.postcode])
 
     @property
     def _store_country(self) -> str:
-        return os.getenv("STORE_COUNTRY", "IN")
+        return os.getenv("STORE_COUNTRY", "US")
 
     def to_woocommerce_format(self) -> Dict[str, str]:
         country = self._store_country
@@ -66,7 +67,7 @@ class AddressData:
             "phone": self.phone,
             "email": self.email,
             "state_code": normalize_province_code(self.state, country),
-            "country_code": normalize_country_code(country, default="IN"),
+            "country_code": normalize_country_code(country, default="US"),
         }
 
 
@@ -129,23 +130,28 @@ def _apply_update_value(addr: AddressData, field: str, cleaned: str) -> Tuple[bo
             return True, "Got it."
         return False, "Please tell me the city."
     if field == "state":
-        st = normalize_province_code(cleaned, country=os.getenv("STORE_COUNTRY", "IN"))
+        st = normalize_province_code(cleaned, country=os.getenv("STORE_COUNTRY", "US"))
         if st:
             addr.state = st
             return True, "Got it."
         return False, "I couldn't read that state. Please tell me again."
     if field == "postcode":
         digits = normalize_phone_digits(cleaned)
-        if len(digits) >= 6:
-            addr.postcode = digits[:6]
+        # US ZIP codes are 5 digits; other countries 6. Accept either.
+        if len(digits) >= 5:
+            addr.postcode = digits[:5] if os.getenv("STORE_COUNTRY", "US") == "US" else digits[:6]
             return True, "Got it."
-        return False, "I need a 6-digit PIN code. Please repeat it."
+        return False, "I need a valid US ZIP code (5 digits). Please repeat it."
     if field == "phone":
+        lowered = cleaned.lower()
+        if any(t in lowered for t in ["skip", "no phone", "no number", "i dont", "don't have one", "none", "no thanks"]):
+            addr.phone = ""
+            return True, "Got it."
         digits = normalize_phone_digits(cleaned)
         if len(digits) >= 10:
             addr.phone = digits[-10:]
             return True, "Got it."
-        return False, "I need a 10-digit phone number. Please say it again."
+        return False, "I need a 10-digit phone number, or say skip."
     if field == "email":
         if "skip" in low or "no email" in low:
             addr.email = ""
@@ -246,6 +252,26 @@ async def handle_address_collection(
         response = "What's your phone number for shipping updates?"
         return response, next_state, addr.__dict__, ui_actions
 
+    # COMPLETE re-entry: the flow already collected a full address in a previous
+    # turn but the redirect to checkout hasn't landed yet (e.g. the customer is
+    # back on the cart / product page and says "proceed to checkout" again). Re-issue
+    # the Storefront-checkout redirect with the stored address instead of returning
+    # an EMPTY response — an empty result made the voice model hallucinate the
+    # navigation ("taking you to checkout") while nothing actually happened.
+    if current_state == AddressCollectionState.COMPLETE and (
+        addr.address_line1 and addr.city and addr.postcode
+    ):
+        response = lang_prompts["done"]
+        ui_actions.append({
+            "type": "redirect_checkout_with_address",
+            "payload": {
+                "url": "/checkout",
+                "billing": addr.to_woocommerce_format(),
+                "shipping": addr.to_woocommerce_format(),
+            },
+        })
+        return response, next_state, addr.__dict__, ui_actions
+
     if current_state == AddressCollectionState.COLLECTING_NAME:
         parts = cleaned.split(maxsplit=1)
         addr.first_name = parts[0] if parts else ""
@@ -277,87 +303,96 @@ async def handle_address_collection(
         response = lang_prompts["state"]
 
     elif current_state == AddressCollectionState.COLLECTING_STATE:
-        addr.state = normalize_province_code(cleaned, country=os.getenv("STORE_COUNTRY", "IN"))
+        addr.state = normalize_province_code(cleaned, country=os.getenv("STORE_COUNTRY", "US"))
         next_state = AddressCollectionState.COLLECTING_PINCODE
         response = lang_prompts["pincode"]
 
     elif current_state == AddressCollectionState.COLLECTING_PINCODE:
         numbers = normalize_phone_digits(cleaned)
+        # US ZIP codes are 5 digits (occasionally 5+4); other countries 6.
+        # Accept 5 or 6 digits and keep the leading 5 for the US.
         pincode = numbers[:6]
-        if len(pincode) == 6:
-            addr.postcode = pincode
-            if addr.phone:
-                # Phone-first flow: phone already collected, so skip to email.
-                next_state = AddressCollectionState.COLLECTING_EMAIL
-                response = lang_prompts["email"]
-            else:
-                next_state = AddressCollectionState.COLLECTING_PHONE
-                response = lang_prompts["phone"]
+        if len(pincode) in (5, 6):
+            addr.postcode = pincode[:5] if os.getenv("STORE_COUNTRY", "US") == "US" else pincode[:6]
+            # Phone-first flow: phone already collected (or skipped), so proceed
+            # to collect the email next.
+            next_state = AddressCollectionState.COLLECTING_EMAIL
+            response = lang_prompts["email"]
         else:
-            response = "I need a 6-digit PIN code. Could you repeat it?"
+            response = "I need a valid US ZIP code (5 digits). Could you repeat it?"
 
     elif current_state == AddressCollectionState.COLLECTING_PHONE:
-        # Normalize FIRST: strip every non-digit, convert spoken digit words
-        # ("nine eight seven...") and formatted numbers ("+91 987-654-3210")
-        # into a pure digit string BEFORE any 10-digit constraint is evaluated.
-        phone = normalize_phone_digits(cleaned)
-        if len(phone) >= 10:
-            addr.phone = phone[-10:]
-
-            # Look up the saved address by phone whenever the checkout flow is
-            # running (buy-now intent OR checkout page). If a DB match exists we
-            # BYPASS the rest of the address collection: confirm the saved
-            # address and immediately issue the Storefront checkout redirect.
-            if tenant_id:
-                try:
-                    from ...modules.users.address_service import get_address_by_phone
-                    saved = await get_address_by_phone(addr.phone, tenant_id)
-                except Exception:
-                    saved = None
-                if saved:
-                    addr.first_name = saved.get("first_name") or addr.first_name
-                    addr.last_name = saved.get("last_name") or addr.last_name
-                    addr.address_line1 = saved.get("address_1") or addr.address_line1
-                    addr.city = saved.get("city") or addr.city
-                    addr.state = saved.get("state") or addr.state
-                    addr.postcode = saved.get("postcode") or addr.postcode
-                    addr.email = saved.get("email") or addr.email
-                    addr._using_saved = "1"
-                    addr._pending_field = ""
-
-                    # Saved address is complete enough to ship → show it for
-                    # CONFIRMATION (never jump straight to checkout). The
-                    # customer verifies the details, then the CONFIRMING branch
-                    # issues the Storefront checkout redirect on "yes".
-                    if addr.address_line1 and addr.city and addr.postcode:
-                        addr._using_saved = "1"
-                        next_state = AddressCollectionState.CONFIRMING
-                        response = lang_prompts["confirm"].format(
-                            name=f"{addr.first_name} {addr.last_name}".strip(),
-                            address=addr.address_line1,
-                            city=addr.city,
-                            pincode=addr.postcode,
-                            phone=addr.phone,
-                            email=addr.email or "not provided",
-                        )
-                        ui_actions.append({
-                            "type": "prefill_address",
-                            "payload": addr.to_woocommerce_format(),
-                        })
-                        return response, next_state, addr.__dict__, ui_actions
-
-                    # Partial saved record (no address/city) → fall through and
-                    # collect the missing full address for the first time.
-                    addr._using_saved = ""
-
-            # Normal flow (phone-first): collect the rest of the delivery details —
-            # name → address → city → state → pincode → email → confirm. We never
-            # skip straight to email on the buy-now path because the collected
-            # address is what gets bound to the Storefront cart / saved to DB.
+        lowered = cleaned.lower()
+        # Phone is optional in the US flow — customer may skip it.
+        if any(t in lowered for t in ["skip", "no phone", "no number", "i dont", "don't have one", "none", "no thanks"]):
+            addr.phone = ""
             next_state = AddressCollectionState.COLLECTING_NAME
             response = lang_prompts["name"]
         else:
-            response = "I need a 10-digit phone number. Could you say it again?"
+            # Normalize FIRST: strip every non-digit, convert spoken digit words
+            # ("nine eight seven...") and formatted numbers ("+91 987-654-3210")
+            # into a pure digit string BEFORE any 10-digit constraint is evaluated.
+            phone = normalize_phone_digits(cleaned)
+            if len(phone) >= 10:
+                addr.phone = phone[-10:]
+
+                # Look up the saved address by phone whenever the checkout flow is
+                # running (buy-now intent OR checkout page). If a DB match exists we
+                # BYPASS the rest of the address collection: confirm the saved
+                # address and immediately issue the Storefront checkout redirect.
+                if tenant_id:
+                    try:
+                        from ...modules.users.address_service import get_address_by_phone
+                        saved = await get_address_by_phone(addr.phone, tenant_id)
+                    except Exception:
+                        saved = None
+                    if saved:
+                        addr.first_name = saved.get("first_name") or addr.first_name
+                        addr.last_name = saved.get("last_name") or addr.last_name
+                        addr.address_line1 = saved.get("address_1") or addr.address_line1
+                        addr.city = saved.get("city") or addr.city
+                        addr.state = saved.get("state") or addr.state
+                        addr.postcode = saved.get("postcode") or addr.postcode
+                        addr.email = saved.get("email") or addr.email
+                        addr._using_saved = "1"
+                        addr._pending_field = ""
+
+                        # Saved address is complete enough to ship → show it for
+                        # CONFIRMATION (never jump straight to checkout). The
+                        # customer verifies the details, then the CONFIRMING branch
+                        # issues the Storefront checkout redirect on "yes".
+                        if addr.address_line1 and addr.city and addr.postcode:
+                            addr._using_saved = "1"
+                            next_state = AddressCollectionState.CONFIRMING
+                            response = lang_prompts["confirm"].format(
+                                name=f"{addr.first_name} {addr.last_name}".strip(),
+                                address=addr.address_line1,
+                                city=addr.city,
+                                pincode=addr.postcode,
+                                phone=addr.phone,
+                                email=addr.email or "not provided",
+                            )
+                            ui_actions.append({
+                                "type": "prefill_address",
+                                "payload": addr.to_woocommerce_format(),
+                            })
+                            return response, next_state, addr.__dict__, ui_actions
+
+                        # Partial saved record (no address/city) → fall through and
+                        # collect the missing full address for the first time.
+                        addr._using_saved = ""
+
+                # Normal flow (phone-first): collect the rest of the delivery details —
+                # name → address → city → state → pincode → email → confirm. We never
+                # skip straight to email on the buy-now path because the collected
+                # address is what gets bound to the Storefront cart / saved to DB.
+                next_state = AddressCollectionState.COLLECTING_NAME
+                response = lang_prompts["name"]
+            else:
+                # A short/non-phone answer (not a skip phrase) — phone is optional,
+                # so proceed without it rather than block the checkout flow.
+                next_state = AddressCollectionState.COLLECTING_NAME
+                response = lang_prompts["name"]
 
     elif current_state == AddressCollectionState.COLLECTING_EMAIL:
         lowered = cleaned.lower()
