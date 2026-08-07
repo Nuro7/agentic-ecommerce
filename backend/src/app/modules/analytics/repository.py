@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from .models import ConversationMetric
 from ..conversations.models import Conversation
-from ..orders.models import Order
+from ..orders.models import Order, OrderItem
 
 
 class AnalyticsRepository:
@@ -113,3 +113,104 @@ class AnalyticsRepository:
             )
         )
         return row_result.scalar_one()
+
+    async def get_agent_sales(
+        self,
+        tenant_id: str,
+        from_date: datetime,
+        to_date: datetime,
+    ) -> dict:
+        """Agent-attributed sales for [from_date, to_date) plus period-over-period
+        growth vs. the immediately preceding window of equal length."""
+        window = to_date - from_date
+        prior_from = from_date - window
+        prior_to = from_date
+
+        async def _agg(start, end) -> dict:
+            result = await self.db.execute(
+                select(
+                    func.count(Order.id),
+                    func.coalesce(func.sum(Order.total), 0),
+                ).where(
+                    and_(
+                        Order.tenant_id == tenant_id,
+                        Order.status == "completed",
+                        Order.source == "agent",
+                        Order.created_at >= start,
+                        Order.created_at < end,
+                    )
+                )
+            )
+            row = result.one()
+            return {"count": row[0] or 0, "revenue": float(row[1] or 0)}
+
+        # All completed orders in the window → share-of-revenue denominator.
+        total_result = await self.db.execute(
+            select(
+                func.count(Order.id),
+                func.coalesce(func.sum(Order.total), 0),
+            ).where(
+                and_(
+                    Order.tenant_id == tenant_id,
+                    Order.status == "completed",
+                    Order.created_at >= from_date,
+                    Order.created_at < to_date,
+                )
+            )
+        )
+        trow = total_result.one()
+        total_count = trow[0] or 0
+        total_revenue = float(trow[1] or 0)
+
+        current = _agg(from_date, to_date)
+        prior = _agg(prior_from, prior_to)
+        return {
+            "agent_revenue": current["revenue"],
+            "agent_order_count": current["count"],
+            "total_revenue": total_revenue,
+            "total_order_count": total_count,
+            "agent_aov": round(current["revenue"] / current["count"], 2) if current["count"] else 0.0,
+            "share_of_revenue": round(current["revenue"] / total_revenue * 100, 2) if total_revenue else 0.0,
+            "boost_percent": round(
+                (current["revenue"] - prior["revenue"]) / prior["revenue"] * 100, 2
+            ) if prior["revenue"] else 0.0,
+        }
+
+    async def get_agent_products(
+        self,
+        tenant_id: str,
+        from_date: datetime,
+        to_date: datetime,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Top products sold via Speako, ranked by revenue."""
+        result = await self.db.execute(
+            select(
+                OrderItem.product_id,
+                OrderItem.name,
+                func.sum(OrderItem.quantity),
+                func.sum(OrderItem.total),
+            )
+            .join(Order, Order.id == OrderItem.order_id)
+            .where(
+                and_(
+                    Order.tenant_id == tenant_id,
+                    Order.status == "completed",
+                    Order.source == "agent",
+                    Order.created_at >= from_date,
+                    Order.created_at < to_date,
+                )
+            )
+            .group_by(OrderItem.product_id, OrderItem.name)
+            .order_by(func.sum(OrderItem.total).desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "product_id": row[0],
+                "name": row[1],
+                "quantity": int(row[2] or 0),
+                "revenue": float(row[3] or 0),
+            }
+            for row in result.all()
+        ]

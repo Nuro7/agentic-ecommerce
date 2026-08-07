@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, DateTime, func, ForeignKey, Numeric, Text
+from sqlalchemy import String, Integer, DateTime, func, ForeignKey, Numeric, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from ...core.database import Base
 
@@ -12,6 +12,7 @@ class Order(Base):
     tenant_id: Mapped[str] = mapped_column(String, ForeignKey("tenants.id", ondelete="CASCADE"))
     session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     platform_order_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(20), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending")
     total: Mapped[float] = mapped_column(Numeric(10, 2), default=0)
     currency: Mapped[str] = mapped_column(String(10), default="USD")
@@ -19,3 +20,18 @@ class Order(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class OrderItem(Base):
+    __tablename__ = "order_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id: Mapped[str] = mapped_column(String, ForeignKey("tenants.id", ondelete="CASCADE"))
+    order_id: Mapped[str] = mapped_column(String, ForeignKey("orders.id", ondelete="CASCADE"))
+    product_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sku: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str] = mapped_column(String(255))
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    unit_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    total: Mapped[float] = mapped_column(Numeric(12, 2), default=0)
+    currency: Mapped[str | None] = mapped_column(String(10), nullable=True)

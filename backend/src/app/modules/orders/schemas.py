@@ -4,8 +4,9 @@ from datetime import datetime
 
 class OrderOut(BaseModel):
     id: str
-    session_id: str
+    session_id: str | None
     platform_order_id: str | None
+    source: str | None
     status: str
     total: float
     currency: str

@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from .service import AnalyticsService
-from .schemas import AnalyticsSummary, MetricOut
+from .schemas import AnalyticsSummary, MetricOut, AgentSalesSummary, AgentProductOut
 from ...core.database import get_db
 from ..tenants.dependencies import get_authenticated_tenant
 
@@ -22,3 +22,24 @@ async def get_metrics(
     db: AsyncSession = Depends(get_db),
 ):
     return await AnalyticsService(db).get_metrics(tenant.id, from_date, to_date)
+
+
+@router.get("/agent-sold", response_model=AgentSalesSummary)
+async def get_agent_sold(
+    from_date: datetime = Query(default_factory=lambda: datetime.now(timezone.utc) - timedelta(days=30)),
+    to_date: datetime = Query(default_factory=lambda: datetime.now(timezone.utc)),
+    tenant=Depends(get_authenticated_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    return await AnalyticsService(db).get_agent_sales(tenant.id, from_date, to_date)
+
+
+@router.get("/agent-products", response_model=list[AgentProductOut])
+async def get_agent_products(
+    from_date: datetime = Query(default_factory=lambda: datetime.now(timezone.utc) - timedelta(days=30)),
+    to_date: datetime = Query(default_factory=lambda: datetime.now(timezone.utc)),
+    limit: int = Query(20, ge=1, le=100),
+    tenant=Depends(get_authenticated_tenant),
+    db: AsyncSession = Depends(get_db),
+):
+    return await AnalyticsService(db).get_agent_products(tenant.id, from_date, to_date, limit=limit)

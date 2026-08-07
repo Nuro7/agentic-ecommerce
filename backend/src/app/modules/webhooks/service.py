@@ -138,6 +138,77 @@ def _map_order_status(payload: dict) -> str:
     return "pending"
 
 
+# ── Order attribution ────────────────────────────────────────────────────────
+# Speako stamps the cart with a `_speako_session` attribute at add-time. Shopify
+# carries cart attributes through checkout into the order's `note_attributes`, so
+# the order webhook can recover which chat session (if any) drove the sale.
+_SPEAKO_SESSION_ATTR = "_speako_session"
+
+
+def _order_attribution(payload: dict) -> dict:
+    """Return {session_id, source} for a captured order payload.
+
+    Reads the Speako marker from `note_attributes` (Shopify order attributes)
+    or the order `note` (bare key). When absent, the order was a normal store
+    checkout → source stays None (never counted as an AI sale).
+    """
+    session_id: str | None = None
+    attrs = payload.get("note_attributes") or []
+    if isinstance(attrs, list):
+        for a in attrs:
+            if isinstance(a, dict) and a.get("name") == _SPEKO_SESSION_ATTR:
+                session_id = str(a.get("value") or "").strip() or None
+                break
+    if not session_id:
+        note = payload.get("note")
+        if isinstance(note, str) and _SPEKO_SESSION_ATTR in note:
+            import re as _re
+            m = _re.search(_SPEKO_SESSION_ATTR + r"[=:\s]+([A-Za-z0-9_\-]+)", note)
+            if m:
+                session_id = m.group(1)
+    return {
+        "session_id": session_id,
+        "source": "agent" if session_id else None,
+    }
+
+
+def _order_line_items(payload: dict) -> list[dict]:
+    """Normalise the order's line items into order_items rows (store-agnostic)."""
+    raw = payload.get("line_items") or payload.get("items") or []
+    if not isinstance(raw, list):
+        return []
+    rows = []
+    for li in raw:
+        if not isinstance(li, dict):
+            continue
+        product_id = (
+            li.get("product_id")
+            or li.get("productId")
+            or li.get("item_id")
+            or li.get("id")
+        )
+        name = (
+            li.get("title")
+            or li.get("name")
+            or li.get("product_name")
+            or "Unknown item"
+        )
+        qty = int(li.get("quantity") or 1)
+        unit_price = _parse_price(li.get("price") or li.get("unit_price"))
+        total = _parse_price(li.get("line_price") or li.get("total") or li.get("total_price"))
+        if total is None and unit_price is not None:
+            total = unit_price * qty
+        rows.append({
+            "product_id": str(product_id).strip() if product_id is not None else None,
+            "sku": str(li.get("sku") or "").strip() or None,
+            "name": str(name)[:255],
+            "quantity": qty,
+            "unit_price": unit_price,
+            "total": total if total is not None else 0.0,
+        })
+    return rows
+
+
 def _parse_order_ts(raw) -> datetime:
     """Parse a Shopify ISO timestamp; fall back to now() so a bad value never
     blocks capture. Analytics windows revenue on orders.created_at, so we keep
@@ -172,24 +243,29 @@ async def _upsert_order(tenant_id: str, payload: dict, *, status_override: "str 
     )
     status = status_override or _map_order_status(payload)
     created_at = _parse_order_ts(payload.get("created_at"))
+    attribution = _order_attribution(payload)
+    line_items = _order_line_items(payload)
 
     from ...core.database import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         await set_tenant_guc(db, tenant_id)
-        await db.execute(text("""
+        res = await db.execute(text("""
             INSERT INTO orders (
                 id, tenant_id, platform_order_id, status, total, currency,
-                customer_email, created_at, updated_at
+                customer_email, session_id, source, created_at, updated_at
             ) VALUES (
                 :id, :tenant_id, :platform_order_id, :status, :total, :currency,
-                :customer_email, :created_at, now()
+                :customer_email, :session_id, :source, :created_at, now()
             )
             ON CONFLICT (tenant_id, platform_order_id) DO UPDATE SET
                 status         = EXCLUDED.status,
                 total          = EXCLUDED.total,
                 currency       = EXCLUDED.currency,
                 customer_email = EXCLUDED.customer_email,
+                session_id     = COALESCE(EXCLUDED.session_id, orders.session_id),
+                source         = COALESCE(EXCLUDED.source, orders.source),
                 updated_at     = now()
+            RETURNING id
         """), {
             "id":                str(uuid.uuid4()),
             "tenant_id":         tenant_id,
@@ -198,8 +274,40 @@ async def _upsert_order(tenant_id: str, payload: dict, *, status_override: "str 
             "total":             total,
             "currency":          currency,
             "customer_email":    email,
+            "session_id":        attribution["session_id"],
+            "source":            attribution["source"],
             "created_at":        created_at,
         })
+        order_db_id = res.scalar_one_or_none()
+        if order_db_id and line_items:
+            for item in line_items:
+                key = "|".join([
+                    order_db_id, item["product_id"] or "", item["sku"] or "", str(item["name"]),
+                ])
+                item_id = str(uuid.uuid5(uuid.NAMESPACE_URL, key))
+                await db.execute(text("""
+                    INSERT INTO order_items (
+                        id, tenant_id, order_id, product_id, sku, name,
+                        quantity, unit_price, total
+                    ) VALUES (
+                        :id, :tenant_id, :order_id, :product_id, :sku, :name,
+                        :quantity, :unit_price, :total
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        quantity   = EXCLUDED.quantity,
+                        unit_price = EXCLUDED.unit_price,
+                        total      = EXCLUDED.total
+                """), {
+                    "id": item_id,
+                    "tenant_id": tenant_id,
+                    "order_id": order_db_id,
+                    "product_id": item["product_id"],
+                    "sku": item["sku"],
+                    "name": item["name"],
+                    "quantity": item["quantity"],
+                    "unit_price": item["unit_price"],
+                    "total": item["total"],
+                })
         await db.commit()
 
 

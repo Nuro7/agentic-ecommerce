@@ -1375,8 +1375,8 @@ class ShopifyClient(BaseStoreClient):
             }
         else:
             GQL = """
-            mutation CartCreate($lines: [CartLineInput!]!) {
-              cartCreate(input: { lines: $lines }) {
+            mutation CartCreate($lines: [CartLineInput!]!, $attrs: [AttributeInput!]!) {
+              cartCreate(input: { lines: $lines, attributes: $attrs }) {
                 cart { id checkoutUrl
                   cost { totalAmount { amount currencyCode } }
                   lines(first: 50) { edges { node {
@@ -1391,6 +1391,7 @@ class ShopifyClient(BaseStoreClient):
             """
             variables = {
                 "lines": [{"merchandiseId": variant_gid, "quantity": qty}],
+                "attrs": [{"key": "_speako_session", "value": session_id}],
             }
 
         try:
