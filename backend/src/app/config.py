@@ -44,6 +44,24 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8080"]
 
+    # Public URL of this API (used to build magic-link / webhook URLs). Falls back
+    # to an env-derived value when empty.
+    backend_url: str = ""
+    # Merchant dashboard origin. Magic-login links are built against this so the
+    # merchant lands on the dashboard (separate platform), not the API.
+    dashboard_url: str = ""
+
+    # ── SMTP email (optional) ─────────────────────────────────────────────────
+    # Magic-login links are emailed when an SMTP server is configured. When it's
+    # not, the link is returned in the API response (dev fallback) so the flow
+    # still works end-to-end without a mail server.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
+
     platform: str = "woocommerce"
 
     woocommerce_store_url: str = ""

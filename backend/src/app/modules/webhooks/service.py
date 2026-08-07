@@ -156,14 +156,14 @@ def _order_attribution(payload: dict) -> dict:
     attrs = payload.get("note_attributes") or []
     if isinstance(attrs, list):
         for a in attrs:
-            if isinstance(a, dict) and a.get("name") == _SPEKO_SESSION_ATTR:
+            if isinstance(a, dict) and a.get("name") == _SPEAKO_SESSION_ATTR:
                 session_id = str(a.get("value") or "").strip() or None
                 break
     if not session_id:
         note = payload.get("note")
-        if isinstance(note, str) and _SPEKO_SESSION_ATTR in note:
+        if isinstance(note, str) and _SPEAKO_SESSION_ATTR in note:
             import re as _re
-            m = _re.search(_SPEKO_SESSION_ATTR + r"[=:\s]+([A-Za-z0-9_\-]+)", note)
+            m = _re.search(_SPEAKO_SESSION_ATTR + r"[=:\s]+([A-Za-z0-9_\-]+)", note)
             if m:
                 session_id = m.group(1)
     return {

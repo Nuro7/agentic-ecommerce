@@ -8,6 +8,20 @@ from src.app.core.database import Base, get_db
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
+# ── SQLite test compatibility ────────────────────────────────────────────────
+# The app uses Postgres-native columns that SQLite can't materialise (e.g.
+# product_cache.colors/sizes are postgresql.ARRAY). This harness compiles them to
+# plain TEXT only for the SQLite dialect so Base.metadata.create_all works in the
+# in-memory test DB. Production DDL is unchanged (Alembic → Postgres).
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.ext.compiler import compiles
+
+
+@compiles(ARRAY, "sqlite")
+def _compile_array_as_text(element, compiler, **kw):
+    return "TEXT"
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     loop = asyncio.new_event_loop()
