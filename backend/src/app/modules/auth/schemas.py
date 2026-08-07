@@ -6,6 +6,10 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class EmailLoginRequest(BaseModel):
+    email: EmailStr
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str

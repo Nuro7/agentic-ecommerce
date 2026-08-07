@@ -7,6 +7,7 @@ from .repository import RefreshTokenRepository, MagicTokenRepository
 from .models import RefreshToken, MagicToken
 from .schemas import (
     LoginRequest, TokenResponse, RefreshRequest,
+    EmailLoginRequest,
     AuthStatusRequest, AuthStatusResponse,
     MagicRequest, MagicResponse, MagicVerifyRequest, MagicVerifyResponse,
     SetPasswordRequest,
@@ -57,6 +58,18 @@ class AuthService:
     async def logout(self, refresh_token: str) -> None:
         token_hash = hashlib.sha256(refresh_token.encode()).hexdigest()
         await self.token_repo.revoke(token_hash)
+
+    # ── Email-only login (MVP) ──────────────────────────────────────────────
+    # Interim auth for the merchant dashboard: no password yet. Entering an
+    # existing active tenant's email issues tokens directly; the JWT carries
+    # sub = tenant_id so every merchant call resolves + RLS-scopes to that
+    # tenant. Replace with magic-link/password verification before production.
+
+    async def email_login(self, data: EmailLoginRequest) -> TokenResponse:
+        tenant = await self.tenant_repo.get_by_email(str(data.email).lower())
+        if not tenant or not tenant.is_active:
+            raise UnauthorizedError()
+        return await self._issue_tokens(tenant.id, tenant.email)
 
     # ── Dashboard adaptive login: status + magic link + set password ────────
 

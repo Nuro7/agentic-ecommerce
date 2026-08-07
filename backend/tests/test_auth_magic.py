@@ -148,6 +148,31 @@ async def test_set_password_mismatch_rejected(client, db):
     assert resp.status_code == 422
 
 
+# ── Email-only login (MVP) ───────────────────────────────────────────────────
+
+async def test_email_login_existing_tenant_issues_token(client, db):
+    tenant = await _make_tenant(db, email="mailonly@example.com", password=None)
+    resp = await client.post("/api/v1/auth/email-login", json={"email": "mailonly@example.com"})
+    assert resp.status_code == 200
+    assert resp.json().get("access_token")
+
+
+async def test_email_login_unknown_email_401(client):
+    resp = await client.post("/api/v1/auth/email-login", json={"email": "ghost@example.com"})
+    assert resp.status_code == 401
+
+
+async def test_email_login_token_scopes_to_that_tenant(client, db):
+    tenant = await _make_tenant(db, email="scoped@example.com", password=None)
+    tokens = (await client.post(
+        "/api/v1/auth/email-login", json={"email": "scoped@example.com"}
+    )).json()
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+    me = await client.get("/api/v1/tenants/me", headers=headers)
+    assert me.status_code == 200
+    assert me.json()["id"] == tenant.id
+
+
 # ── Refresh token rotation ───────────────────────────────────────────────────
 
 async def test_refresh_rotates_and_old_token_retired(client, db):

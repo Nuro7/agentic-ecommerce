@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .service import AuthService
 from .schemas import (
     LoginRequest, TokenResponse, RefreshRequest,
+    EmailLoginRequest,
     AuthStatusRequest, AuthStatusResponse,
     MagicRequest, MagicResponse, MagicVerifyRequest, MagicVerifyResponse,
     SetPasswordRequest,
@@ -16,6 +17,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 @router.post("/login", response_model=TokenResponse)
 async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     return await AuthService(db).login(data)
+
+
+@router.post("/email-login", response_model=TokenResponse)
+async def email_login(data: EmailLoginRequest, db: AsyncSession = Depends(get_db)):
+    """MVP auth: email only → issues a token scoped to that merchant (no password)."""
+    return await AuthService(db).email_login(data)
 
 
 @router.post("/logout", status_code=204)
