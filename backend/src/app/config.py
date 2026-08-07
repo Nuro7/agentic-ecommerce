@@ -42,7 +42,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
 
-    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:8080"]
+    # Origins allowed by CORS (CORS_ORIGINS env var, JSON list). "*" keeps the
+    # widget working on arbitrary merchant storefront domains; add merchant/admin
+    # dashboard origins here explicitly so they stay allowed (and so a future
+    # allow_credentials=True switch can drop the wildcard without losing them).
+    cors_origins: list[str] = ["*"]
 
     # Public URL of this API (used to build magic-link / webhook URLs). Falls back
     # to an env-derived value when empty.
