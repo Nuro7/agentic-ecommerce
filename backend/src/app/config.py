@@ -1,6 +1,9 @@
+import json
 from functools import lru_cache
-from pydantic import model_validator
-from pydantic_settings import BaseSettings
+from typing import Annotated
+
+from pydantic import field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode
 
 # Secret values that must never reach production (placeholders shipped in .env.example).
 _WEAK_SECRETS = {
@@ -42,11 +45,30 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
 
-    # Origins allowed by CORS (CORS_ORIGINS env var, JSON list). "*" keeps the
-    # widget working on arbitrary merchant storefront domains; add merchant/admin
+    # Origins allowed by CORS (CORS_ORIGINS env var). "*" keeps the widget
+    # working on arbitrary merchant storefront domains; add merchant/admin
     # dashboard origins here explicitly so they stay allowed (and so a future
     # allow_credentials=True switch can drop the wildcard without losing them).
-    cors_origins: list[str] = ["*"]
+    # Parsed defensively (JSON array / comma-separated / single origin) so a
+    # malformed env value can never take the app down at boot.
+    cors_origins: Annotated[list[str], NoDecode] = ["*"]
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def _parse_cors_origins(cls, v):
+        if isinstance(v, list):
+            return v
+        s = str(v).strip()
+        if not s or s == "*":
+            return ["*"]
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                return parsed if isinstance(parsed, list) else [s]
+            except ValueError:
+                return ["*"]
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        return parts or ["*"]
 
     # Public URL of this API (used to build magic-link / webhook URLs). Falls back
     # to an env-derived value when empty.
