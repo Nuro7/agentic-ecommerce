@@ -162,8 +162,8 @@ class AnalyticsRepository:
         total_count = trow[0] or 0
         total_revenue = float(trow[1] or 0)
 
-        current = _agg(from_date, to_date)
-        prior = _agg(prior_from, prior_to)
+        current = await _agg(from_date, to_date)
+        prior = await _agg(prior_from, prior_to)
         return {
             "agent_revenue": current["revenue"],
             "agent_order_count": current["count"],
