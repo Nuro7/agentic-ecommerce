@@ -114,7 +114,7 @@ async def dashboard_metrics(
 
     # ── KPIs: plan + credit usage ────────────────────────────────────────────
     sub = await billing.get_subscription(tenant_id)
-    plan = await billing.get_plan(sub.plan_id) if sub else None
+    plan = await billing.get_plan_by_id(sub.plan_id) if sub else None
     period_start = sub.current_period_start if sub else start
     credits_total = int(plan.max_conversations) if plan else 0
     text_credits = (
