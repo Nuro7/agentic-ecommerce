@@ -50,6 +50,16 @@ _VOICE_MAX_CONCURRENT = int(os.getenv("VOICE_MAX_CONCURRENT", "40"))
 _voice_active = 0
 
 
+def active_voice_streams() -> int:
+    """Live count of in-flight voice (Gemini Live / Realtime) WebSockets.
+
+    In-process counter only (per-process); single-replica is the supported
+    topology (see _assert_single_process_or_acked). Used by the merchant
+    dashboard /merchant/dashboard/metrics live_pulse.
+    """
+    return _voice_active
+
+
 def _get_pipeline_router(app_state) -> PipelineRouter:
     global _pipeline_router
     if _pipeline_router is None:

@@ -7,8 +7,10 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.dialects.postgresql import insert
 
 from .models import ConversationMetric
-from ..conversations.models import Conversation
+from ..conversations.models import Conversation, Message
+from ..offers.models import ProductOffer
 from ..orders.models import Order, OrderItem
+from ..tickets.models import VoiceTicket
 
 
 class AnalyticsRepository:
@@ -175,6 +177,104 @@ class AnalyticsRepository:
                 (current["revenue"] - prior["revenue"]) / prior["revenue"] * 100, 2
             ) if prior["revenue"] else 0.0,
         }
+
+    # ── Merchant dashboard support queries (all tenant-scoped) ────────────────
+
+    async def get_conversation_totals(self, tenant_id: str, start: datetime, end: datetime) -> dict:
+        """Aggregate conversation_metrics rows in [start, end]."""
+        result = await self.db.execute(
+            select(
+                func.coalesce(func.sum(ConversationMetric.total_conversations), 0),
+                func.coalesce(func.sum(ConversationMetric.completed_purchases), 0),
+                func.coalesce(func.avg(ConversationMetric.avg_session_seconds), 0),
+            ).where(
+                ConversationMetric.tenant_id == tenant_id,
+                ConversationMetric.date >= start,
+                ConversationMetric.date <= end,
+            )
+        )
+        row = result.one()
+        return {
+            "conversations": int(row[0]),
+            "purchases": int(row[1]),
+            "avg_session_seconds": int(row[2]),
+        }
+
+    async def get_revenue_timeseries(self, tenant_id: str, start: datetime, end: datetime) -> dict:
+        """Per-day maps of {date_str: value} for store revenue, Aria revenue, and turns."""
+        total = await self.db.execute(
+            select(func.date(Order.created_at), func.coalesce(func.sum(Order.total), 0))
+            .where(
+                Order.tenant_id == tenant_id,
+                Order.status == "completed",
+                Order.created_at >= start,
+                Order.created_at < end,
+            )
+            .group_by(func.date(Order.created_at))
+        )
+        total_map = {str(d): float(v) for d, v in total.all()}
+        agent = await self.db.execute(
+            select(func.date(Order.created_at), func.coalesce(func.sum(Order.total), 0))
+            .where(
+                Order.tenant_id == tenant_id,
+                Order.status == "completed",
+                Order.source == "agent",
+                Order.created_at >= start,
+                Order.created_at < end,
+            )
+            .group_by(func.date(Order.created_at))
+        )
+        agent_map = {str(d): float(v) for d, v in agent.all()}
+        turns = await self.db.execute(
+            select(func.date(Message.created_at), func.count(Message.id))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(
+                Conversation.tenant_id == tenant_id,
+                Message.created_at >= start,
+                Message.created_at < end,
+            )
+            .group_by(func.date(Message.created_at))
+        )
+        turns_map = {str(d): int(v) for d, v in turns.all()}
+        return {"total": total_map, "agent": agent_map, "turns": turns_map}
+
+    async def count_pending_checkouts(self, tenant_id: str) -> int:
+        result = await self.db.execute(
+            select(func.count(Order.id)).where(
+                Order.tenant_id == tenant_id,
+                Order.status == "pending",
+            )
+        )
+        return int(result.scalar() or 0)
+
+    async def get_offer_badge_map(self, tenant_id: str) -> dict:
+        """{platform_id: offer title} for active offers so top-products can badge promos."""
+        result = await self.db.execute(
+            select(ProductOffer.platform_id, ProductOffer.title).where(
+                ProductOffer.tenant_id == tenant_id,
+                ProductOffer.is_active.is_(True),
+            )
+        )
+        return {str(pid): title for pid, title in result.all()}
+
+    async def list_recent_tickets(self, tenant_id: str, limit: int = 5) -> list[VoiceTicket]:
+        result = await self.db.execute(
+            select(VoiceTicket)
+            .where(VoiceTicket.tenant_id == tenant_id)
+            .order_by(VoiceTicket.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def count_tickets_in_window(self, tenant_id: str, start: datetime, end: datetime) -> int:
+        result = await self.db.execute(
+            select(func.count(VoiceTicket.id)).where(
+                VoiceTicket.tenant_id == tenant_id,
+                VoiceTicket.created_at >= start,
+                VoiceTicket.created_at < end,
+            )
+        )
+        return int(result.scalar() or 0)
 
     async def get_agent_products(
         self,

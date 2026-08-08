@@ -211,6 +211,22 @@ class VoiceTurnCoordinator:
                 query[:60],
             )
 
+            # ── Voice-turn usage metering (merchant billing) ──────────────────
+            # One completed brain turn = one voice turn. Feeds the dashboard
+            # engagement voice_split (voice credits = turns x 3). Best-effort;
+            # a DB hiccup must never break the live voice turn.
+            if self.tenant_id and str(self.tenant_id) != "_dev":
+                try:
+                    from ...modules.billing.service import BillingService
+                    from ...core.database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as _db:
+                        await BillingService(_db).record_usage(self.tenant_id, "voice_turns", 1)
+                except Exception as _exc:
+                    logger.warning(
+                        "Failed to record voice_turn usage tenant=%s: %s",
+                        self.tenant_id, _exc,
+                    )
+
             response_text = (
                 result.get("speech_text")
                 or result.get("text")
