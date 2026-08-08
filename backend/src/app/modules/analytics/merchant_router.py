@@ -110,7 +110,8 @@ async def dashboard_metrics(
     # ── KPIs: revenue / conversions (reuses the existing agent-sales query) ──
     agent = await repo.get_agent_sales(tenant_id, start, end)
     conv = await repo.get_conversation_totals(tenant_id, start, end)
-    conversion_lift = round(conv["purchases"] / conv["conversations"] * 100, 1) if conv["conversations"] else 0.0
+    live_conversations = await repo.count_conversations(tenant_id, start, end)
+    conversion_lift = round(agent["total_order_count"] / live_conversations * 100, 1) if live_conversations else 0.0
 
     # ── KPIs: plan + credit usage ────────────────────────────────────────────
     sub = await billing.get_subscription(tenant_id)
@@ -195,10 +196,9 @@ async def dashboard_metrics(
 
     # ── Support escalations desk ─────────────────────────────────────────────
     total_tickets = await repo.count_tickets_in_window(tenant_id, start, end)
-    total_conversations = conv["conversations"]
-    auto_resolved_count = max(0, total_conversations - total_tickets)
+    auto_resolved_count = max(0, live_conversations - total_tickets)
     auto_resolved_pct = (
-        round(auto_resolved_count / total_conversations * 100, 1) if total_conversations else 0.0
+        round(auto_resolved_count / live_conversations * 100, 1) if live_conversations else 0.0
     )
     recent_tickets = []
     for t in await repo.list_recent_tickets(tenant_id, limit=5):

@@ -276,6 +276,20 @@ class AnalyticsRepository:
         )
         return int(result.scalar() or 0)
 
+    async def count_conversations(self, tenant_id: str, start: datetime, end: datetime) -> int:
+        """Live conversation count for [start, end) — avoids relying on the
+        nightly conversation_metrics aggregate for dashboard KPIs."""
+        result = await self.db.execute(
+            select(func.count(Conversation.id)).where(
+                and_(
+                    Conversation.tenant_id == tenant_id,
+                    Conversation.created_at >= start,
+                    Conversation.created_at < end,
+                )
+            )
+        )
+        return int(result.scalar() or 0)
+
     async def get_agent_products(
         self,
         tenant_id: str,
