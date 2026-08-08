@@ -74,7 +74,7 @@ async def seed(tenant_id: str, order_count: int, days: int, force: bool):
     tenant_id = tenant_id or ""
 
     async with AsyncSessionLocal() as session:
-        await set_request_tenant(tenant_id)
+        set_request_tenant(tenant_id)
         await set_tenant_guc(session, tenant_id)
 
         if not force:
