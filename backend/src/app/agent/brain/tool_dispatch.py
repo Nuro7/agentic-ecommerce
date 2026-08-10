@@ -415,6 +415,16 @@ async def execute_tool_call(
             actions=actions,
         )
 
+    if tool_name == "apply_offer":
+        offer_id = str(tool_args.get("offer_id") or "")
+        return await _apply_offer(
+            tenant_id=tenant_id,
+            offer_id=offer_id,
+            store_client=store_client,
+            session_id=session_id,
+            actions=actions,
+        )
+
     if tool_name == "request_human_support":
         customer_email = str(tool_args.get("customer_email", "")).strip().lower()
         return await _request_human_support(
@@ -552,6 +562,59 @@ async def _apply_conversational_discount(
             },
         })
     return result, actions, [], None
+
+
+async def _apply_offer(
+    *,
+    tenant_id: str,
+    offer_id: str,
+    store_client: Any,
+    session_id: str,
+    actions: List[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Any], Optional[str]]:
+    """Apply a merchant-defined offer to the customer's cart.
+
+    Uses the offer's pre-created discount_code (bound at checkout) and
+    increments its redemption counter. Never raises — returns a failure dict.
+    """
+    from ...modules.offers.repository import OfferRepository
+
+    if not offer_id:
+        return {"success": False, "message": "Missing offer_id."}, actions, [], None
+    try:
+        async with AsyncSessionLocal() as db:
+            offer = await OfferRepository(db).get_by_id(offer_id, tenant_id)
+            if not offer:
+                return {"success": False, "message": "Offer not found."}, actions, [], None
+            if not offer.is_active:
+                message = "That offer is no longer active."
+                return {"success": False, "message": message}, actions, [], None
+            code = offer.discount_code
+            if not code:
+                return {
+                    "success": False,
+                    "message": "This offer has no checkout code bound yet. Apply at checkout.",
+                }, actions, [], None
+
+            cart_id = await store_client._get_cart_id(session_id)
+            if not cart_id:
+                return {
+                    "success": False,
+                    "message": "No active cart found to apply the offer to.",
+                }, actions, [], None
+
+            result = await store_client.apply_discount_to_cart(cart_id, code)
+            if result.get("success"):
+                await OfferRepository(db).increment_redemptions(offer_id, tenant_id)
+                actions.append({
+                    "type": "coupon_applied",
+                    "payload": {"code": code, "discount": offer.title or "Offer applied"},
+                })
+                return result, actions, [], None
+            return result, actions, [], None
+    except Exception as exc:
+        logger.warning("apply_offer failed: %s", exc)
+        return {"success": False, "message": f"Could not apply the offer: {exc}"}, actions, [], None
 
 
 async def _request_human_support(
@@ -872,6 +935,29 @@ def tool_schema() -> List[Dict[str, Any]]:
                         },
                     },
                     "required": ["campaign_id", "discount_percentage"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "apply_offer",
+                "description": (
+                    "Apply a merchant-defined offer (combo bundle, bulk quantity discount, "
+                    "or dead-stock clearance) to the customer's cart using its pre-created "
+                    "Shopify discount code. Call this only after the customer explicitly "
+                    "agrees to an offer in the AVAILABLE OFFERS section and the cart already "
+                    "contains the required items."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "offer_id": {
+                            "type": "string",
+                            "description": "The offer id from the AVAILABLE OFFERS directive.",
+                        },
+                    },
+                    "required": ["offer_id"],
                 },
             },
         },

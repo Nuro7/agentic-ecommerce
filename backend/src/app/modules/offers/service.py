@@ -2,6 +2,8 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from .repository import OfferRepository
 from .models import ProductOffer
+from .from_text import parse_offer_from_text
+from .schemas import ProductOfferCreate
 
 
 class OfferService:
@@ -35,3 +37,18 @@ class OfferService:
         self, tenant_id: str, limit: int = 5
     ) -> List[ProductOffer]:
         return await self.repo.get_active_promotions(tenant_id, limit)
+
+    async def get_active_offers(
+        self, tenant_id: str, kinds: Optional[List[str]] = None
+    ) -> List[ProductOffer]:
+        """Active, non-exhausted offers for the rule engine / cart evaluation."""
+        return await self.repo.get_active_offers(tenant_id, kinds)
+
+    async def create_from_text(self, tenant_id: str, text: str) -> ProductOffer:
+        """Parse a merchant's plain-English offer and persist it.
+
+        Raises ValueError when the text cannot be parsed into a valid offer.
+        """
+        data = await parse_offer_from_text(text)
+        valid = ProductOfferCreate.model_validate(data)
+        return await self.repo.create(tenant_id, valid.model_dump())

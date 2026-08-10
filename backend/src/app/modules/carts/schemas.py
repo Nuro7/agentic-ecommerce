@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
+from typing import List, Optional
 
 
 class AddToCartRequest(BaseModel):
@@ -23,6 +24,17 @@ class CartItemOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class CartDiscountOut(BaseModel):
+    title: str
+    kind: str
+    discount: float
+    savings: float
+    offer_id: Optional[str] = None
+
+
 class CartOut(BaseModel):
     items: list[CartItemOut]
+    subtotal: float
+    discounts: list[CartDiscountOut] = []
+    savings: float = 0
     total: float

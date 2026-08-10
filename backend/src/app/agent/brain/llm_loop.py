@@ -79,6 +79,65 @@ async def run_llm_agent(
     except Exception:
         promoted_products = None
 
+    # ── Cart-aware offer suggestions ──
+    # Deterministic combo / bulk / dead-stock recommendations computed from the
+    # customer's actual cart lines. Injected as exact-product directives so Aria
+    # can pitch a concrete offer (add item X, bundle price Y) with zero math.
+    cart_offer_directives: List[str] = []
+    try:
+        from ...modules.offers.recommendations import get_recommendations_for_cart
+        from ...core.database import AsyncSessionLocal
+        cart_lines = [
+            {
+                "platform_product_id": (
+                    i.get("platform_product_id") or i.get("product_id") or ""
+                ),
+                "quantity": int(i.get("quantity", 0) or 0),
+                "unit_price": float(i.get("unit_price") or i.get("price") or 0),
+                "name": i.get("name", ""),
+            }
+            for i in (cart.get("items") or []) if isinstance(i, dict)
+        ]
+        if cart_lines:
+            suggestions = await get_recommendations_for_cart(
+                tenant_id=tenant_id,
+                cart_items=cart_lines,
+                store_client=store_client,
+                db_session_factory=lambda: AsyncSessionLocal(),
+                limit=4,
+            )
+            for s in suggestions or []:
+                if s.get("kind") == "combo" and not s.get("satisfied") and s.get("missing_items"):
+                    missing = ", ".join(
+                        f"{m.get('quantity', 1)}x {m.get('name') or m.get('platform_id')}"
+                        for m in s.get("missing_items", [])
+                    )
+                    cart_offer_directives.append(
+                        f"The customer's cart qualifies for a COMBO offer "
+                        f"'{s.get('title', '')}': add {missing} to unlock the bundle "
+                        f"price {s.get('bundle_price')} instead of the full price. "
+                        f"Pitch this only if the items fit their needs."
+                    )
+                elif s.get("kind") == "bulk" and s.get("next_tier"):
+                    tier = s.get("next_tier")
+                    pct = tier.get("discount_percent")
+                    amt = tier.get("discount_amount")
+                    dsc = f"{pct}%" if pct is not None else f"₹{amt}"
+                    cart_offer_directives.append(
+                        f"The customer has {s.get('current_qty', 0)}x of "
+                        f"{s.get('name') or s.get('platform_id')}: adding "
+                        f"{s.get('add_quantity', 1)} more unlocks a BULK discount of {dsc} "
+                        f"({s.get('title', '')}). Pitch this if it fits their needs."
+                    )
+                elif s.get("kind") == "dead_stock" and not s.get("in_cart"):
+                    cart_offer_directives.append(
+                        f"There is a DEAD-STOCK clearance offer on "
+                        f"{s.get('name') or s.get('platform_id')} "
+                        f"({s.get('title', '')}). Pitch it only if it fits the customer's needs."
+                    )
+    except Exception as exc:
+        logger.debug("get_recommendations_for_cart failed (non-fatal): %s", exc)
+
     # ── Promotional dynamic injection ──
     # Scan last_products for promo-flagged items and inject pitch directives
     # so the LLM proactively offers discounts to the customer.
@@ -112,6 +171,10 @@ async def run_llm_agent(
     )
     if promo_directives:
         system_prompt += "\n\n" + "\n\n".join(promo_directives)
+    if cart_offer_directives:
+        offers_block = "\n\n[AVAILABLE OFFERS FOR THIS CART]\n"
+        offers_block += "\n\n".join(cart_offer_directives)
+        system_prompt += offers_block
 
     try:
         facts = await get_session_facts_service().get(tenant_id, session_id)

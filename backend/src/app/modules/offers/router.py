@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from ...core.database import get_db
 from ..auth.dependencies import get_current_tenant_id
-from .schemas import ProductOfferCreate, ProductOfferUpdate, ProductOfferOut
+from .schemas import ProductOfferCreate, ProductOfferUpdate, ProductOfferOut, OfferFromTextCreate
 from .dependencies import get_offer_service
 from .service import OfferService
 
@@ -25,6 +25,22 @@ async def create_offer(
     service: OfferService = Depends(get_offer_service),
 ):
     return await service.create_offer(tenant_id, body.model_dump())
+
+
+@router.post("/from-text", response_model=ProductOfferOut, status_code=status.HTTP_201_CREATED)
+async def create_offer_from_text(
+    body: OfferFromTextCreate,
+    tenant_id: str = Depends(get_current_tenant_id),
+    service: OfferService = Depends(get_offer_service),
+):
+    """Create an offer from plain-English merchant text (LLM + heuristic parsing)."""
+    try:
+        return await service.create_from_text(tenant_id, body.text)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Could not parse offer from text: {exc}",
+        )
 
 
 @router.put("/{offer_id}", response_model=ProductOfferOut)
