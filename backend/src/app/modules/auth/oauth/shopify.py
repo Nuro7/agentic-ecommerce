@@ -600,6 +600,12 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
         "enable_text": os.getenv("SHOPIFY_ENABLE_TEXT", "true").lower() != "false",
         # Live Shopping Navigator: agent drives the storefront (search/product/cart)
         "live_navigation": os.getenv("SHOPIFY_LIVE_NAV", "true").lower() != "false",
+        # Fullscreen Shopping Overlay (testing phase): 'on' renders store-nav
+        # actions inside the overlay SPA. Off by default → zero behaviour change.
+        "overlay_mode": os.getenv("SHOPIFY_OVERLAY_MODE", "off").lower(),
+        # Native PDP: overlay embeds the theme's real product-page section from
+        # {shop}/products/{handle} (same-origin) instead of a rebuilt mini PDP.
+        "native_pdp": os.getenv("SHOPIFY_NATIVE_PDP", "on").lower(),
         "language": os.getenv("SHOPIFY_LANGUAGE", "en"),
         "platform": "shopify",
         "shop": shop or "",
@@ -618,10 +624,40 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
         except FileNotFoundError:
             continue
 
+    # Fullscreen Shopping Overlay (testing phase): inline overlay CSS + JS right
+    # BEFORE the widget so window.__SPEAKO_OVERLAY__ exists when the widget boots
+    # and can push its authoritative config (overlayEnabled, shop, api base).
+    overlay_css = ""
+    overlay_js = ""
+    if config.get("overlay_mode") == "on":
+        for candidate in ["/app/static/speako-overlay.css", "static/speako-overlay.css"]:
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    overlay_css = f.read()
+                break
+            except FileNotFoundError:
+                continue
+        for candidate in ["/app/static/speako-overlay.js", "static/speako-overlay.js"]:
+            try:
+                with open(candidate, "r", encoding="utf-8") as f:
+                    overlay_js = f.read()
+                break
+            except FileNotFoundError:
+                continue
+
+    overlay_block = ""
+    if overlay_js:
+        overlay_block = f"""
+  // Fullscreen shopping overlay — inlined before the widget boot sequence.
+  window.__SPEAKO_OVERLAY_CSS__ = {json.dumps(overlay_css, ensure_ascii=False)};
+  {overlay_js}
+"""
+
     js = f"""/* Aria Shopping Assistant — inlined loader */
 if (!window.__aria_loaded) {{
   window.__aria_loaded = true;
   window.wooagent_config = {config_json};
+  {overlay_block}
   {widget_js}
 }}
 """

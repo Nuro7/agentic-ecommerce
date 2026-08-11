@@ -1,0 +1,490 @@
+/* Speako Fullscreen Overlay — scoped styles injected into the overlay shadow root.
+   Theme-leak-proof by construction: every selector is relative to the host container. */
+
+.speako-root,
+.speako-root * {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+.speako-root {
+  --sp-bg: #ffffff;
+  --sp-fg: #111827;
+  --sp-muted: #6b7280;
+  --sp-border: #e5e7eb;
+  --sp-brand: #6366f1;
+  --sp-brand-2: #4f46e5;
+  --sp-ok: #16a34a;
+  --sp-warn: #f59e0b;
+  --sp-err: #dc2626;
+  --sp-card: #f9fafb;
+  --sp-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  --sp-radius: 12px;
+
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  height: 100dvh; /* modern viewport */
+  background: var(--sp-bg);
+  color: var(--sp-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+@supports not (height: 100dvh) {
+  .speako-root { height: 100vh; }
+}
+
+.speako-root[data-theme="dark"] {
+  --sp-bg: #0f172a;
+  --sp-fg: #f1f5f9;
+  --sp-muted: #94a3b8;
+  --sp-border: #1e293b;
+  --sp-card: #1e293b;
+  --sp-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Header bar ── */
+.speako-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--sp-border);
+  background: var(--sp-bg);
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 3;
+}
+.speako-header .sp-btn {
+  background: transparent;
+  border: 0;
+  color: var(--sp-fg);
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 18px;
+}
+.speako-header .sp-btn:hover { background: var(--sp-border); }
+.speako-header .sp-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.speako-cart-badge {
+  position: relative;
+  display: inline-flex;
+}
+.speako-cart-badge .sp-badge {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  background: var(--sp-brand);
+  color: #fff;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 10px;
+  min-width: 16px;
+  text-align: center;
+}
+
+/* ── Scrollable content area ── */
+.speako-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px;
+  position: relative;
+}
+
+/* ── Home view ── */
+.speako-home {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 24px;
+  max-width: 640px;
+  margin: 0 auto;
+}
+.speako-hello {
+  font-size: 22px;
+  font-weight: 700;
+  text-align: center;
+}
+.speako-hint { color: var(--sp-muted); text-align: center; font-size: 13px; }
+
+.sp-searchbar {
+  display: flex;
+  gap: 8px;
+}
+.sp-searchbar input {
+  flex: 1;
+  height: 46px;
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  padding: 0 14px;
+  font-size: 15px;
+  background: var(--sp-bg);
+  color: var(--sp-fg);
+  outline: none;
+}
+.sp-searchbar input:focus { border-color: var(--sp-brand); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2); }
+.sp-searchbar button {
+  height: 46px;
+  padding: 0 18px;
+  background: var(--sp-brand);
+  color: #fff;
+  border: 0;
+  border-radius: var(--sp-radius);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sp-searchbar button:hover { background: var(--sp-brand-2); }
+
+/* ── Ambient voice canvas ── */
+.speako-ambient {
+  margin-top: 8px;
+  border: 1px dashed var(--sp-border);
+  border-radius: var(--sp-radius);
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--sp-card);
+  min-height: 48px;
+}
+.speako-ambient .sp-voice-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--sp-ok);
+  animation: sp-pulse 1.6s ease-in-out infinite;
+}
+.speako-ambient .sp-transcript {
+  flex: 1;
+  font-size: 13px;
+  color: var(--sp-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@keyframes sp-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.25); }
+}
+
+/* ── Filter chips ── */
+.sp-facets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.sp-chip {
+  border: 1px solid var(--sp-border);
+  background: var(--sp-bg);
+  color: var(--sp-fg);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.sp-chip.active { background: var(--sp-brand); border-color: var(--sp-brand); color: #fff; }
+.sp-chip[data-kind="group"] { border-style: dashed; }
+
+/* ── Product grid ── */
+.sp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+.sp-card {
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  overflow: hidden;
+  background: var(--sp-bg);
+  transition: box-shadow 0.15s ease;
+  cursor: pointer;
+}
+.sp-card:hover { box-shadow: var(--sp-shadow); }
+.sp-card.sp-highlight { outline: 3px solid var(--sp-brand); }
+.sp-card img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  display: block;
+  background: var(--sp-card);
+}
+.sp-card .sp-card-body { padding: 10px; }
+.sp-card .sp-card-title { font-size: 13px; font-weight: 600; line-height: 1.3; height: 34px; overflow: hidden; }
+.sp-card .sp-card-price { font-size: 14px; font-weight: 700; margin-top: 6px; color: var(--sp-brand); }
+.sp-card .sp-card-vendor { font-size: 11px; color: var(--sp-muted); margin-top: 2px; }
+.sp-card .sp-card-empty {
+  display: flex; align-items: center; justify-content: center; aspect-ratio: 1/1;
+  background: var(--sp-card); color: var(--sp-muted); font-size: 12px;
+}
+
+/* ── Product detail view ── */
+.sp-carousel { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
+.sp-carousel::-webkit-scrollbar { display: none; }
+.sp-carousel img {
+  width: 100%;
+  flex: 0 0 92%;
+  border-radius: var(--sp-radius);
+  aspect-ratio: 1/1;
+  object-fit: cover;
+}
+.sp-pdp-title { font-size: 20px; font-weight: 700; margin-top: 12px; }
+.sp-pdp-price { font-size: 18px; font-weight: 700; color: var(--sp-brand); margin-top: 6px; }
+.sp-pdp-desc { margin-top: 10px; font-size: 13px; color: var(--sp-muted); line-height: 1.6; }
+.sp-pdp-desc img, .sp-pdp-desc video { max-width: 100%; border-radius: 8px; }
+
+.sp-option-group { margin-top: 12px; }
+.sp-option-label { font-size: 12px; font-weight: 600; text-transform: uppercase; color: var(--sp-muted); margin-bottom: 6px; }
+.sp-swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.sp-swatch {
+  border: 1px solid var(--sp-border);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  background: var(--sp-bg);
+  color: var(--sp-fg);
+}
+.sp-swatch.active { border-color: var(--sp-brand); background: var(--sp-brand); color: #fff; }
+.sp-option-select {
+  width: 100%;
+  height: 42px;
+  border: 1px solid var(--sp-border);
+  border-radius: 8px;
+  padding: 0 10px;
+  font-size: 14px;
+  background: var(--sp-bg);
+  color: var(--sp-fg);
+}
+
+.sp-stock { display: inline-block; margin-top: 10px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.sp-stock.in { background: rgba(22, 163, 74, 0.12); color: var(--sp-ok); }
+.sp-stock.out { background: rgba(220, 38, 38, 0.12); color: var(--sp-err); }
+
+.sp-qty-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+.sp-qty-btn {
+  width: 38px; height: 38px;
+  border: 1px solid var(--sp-border);
+  background: var(--sp-bg);
+  color: var(--sp-fg);
+  border-radius: 8px;
+  font-size: 18px;
+  cursor: pointer;
+}
+.sp-qty-val { font-size: 15px; font-weight: 600; min-width: 28px; text-align: center; }
+
+.sp-add {
+  margin-top: 14px;
+  width: 100%;
+  height: 48px;
+  border: 0;
+  border-radius: var(--sp-radius);
+  background: var(--sp-brand);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sp-add:disabled { background: var(--sp-muted); cursor: not-allowed; }
+.sp-add:hover:not(:disabled) { background: var(--sp-brand-2); }
+
+/* ── Cart view ── */
+.sp-cart-line {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  padding: 10px;
+  margin-bottom: 10px;
+  background: var(--sp-bg);
+}
+.sp-cart-line img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--sp-card);
+}
+.sp-cart-line .sp-cl-body { flex: 1; min-width: 0; }
+.sp-cart-line .sp-cl-title { font-size: 13px; font-weight: 600; line-height: 1.3; }
+.sp-cart-line .sp-cl-meta { font-size: 11px; color: var(--sp-muted); margin-top: 2px; }
+.sp-cart-line .sp-cl-qty { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.sp-cart-line .sp-cl-qty button {
+  width: 26px; height: 26px;
+  border: 1px solid var(--sp-border);
+  background: var(--sp-bg);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--sp-fg);
+}
+.sp-cart-line .sp-cl-price { font-size: 14px; font-weight: 700; }
+.sp-cart-line .sp-cl-remove { color: var(--sp-err); font-size: 12px; cursor: pointer; background: none; border: 0; }
+
+.sp-cart-summary {
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  background: var(--sp-card);
+}
+.sp-cart-summary .sp-row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
+.sp-cart-summary .sp-row.total { font-weight: 700; font-size: 15px; margin-top: 8px; border-top: 1px solid var(--sp-border); padding-top: 8px; }
+
+.sp-discount-row { display: flex; gap: 8px; margin-top: 10px; }
+.sp-discount-row input {
+  flex: 1; height: 42px; border: 1px solid var(--sp-border); border-radius: 8px; padding: 0 10px;
+  font-size: 13px; background: var(--sp-bg); color: var(--sp-fg); text-transform: uppercase;
+}
+.sp-discount-row button {
+  height: 42px; padding: 0 14px; border: 0; border-radius: 8px;
+  background: var(--sp-brand); color: #fff; font-weight: 600; cursor: pointer; font-size: 13px;
+}
+
+.sp-checkout {
+  margin-top: 14px;
+  width: 100%;
+  height: 48px;
+  border: 0;
+  border-radius: var(--sp-radius);
+  background: var(--sp-ok);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sp-checkout:disabled { background: var(--sp-muted); cursor: not-allowed; }
+.sp-email-row { margin-top: 10px; }
+.sp-email-row input {
+  width: 100%; height: 44px; border: 1px solid var(--sp-border); border-radius: 8px; padding: 0 12px;
+  font-size: 14px; background: var(--sp-bg); color: var(--sp-fg);
+}
+
+.sp-empty {
+  text-align: center;
+  color: var(--sp-muted);
+  padding: 60px 20px;
+  font-size: 14px;
+}
+
+/* ── Generic bits ── */
+.sp-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  background: var(--sp-fg);
+  color: var(--sp-bg);
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: var(--sp-shadow);
+  z-index: 5;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  pointer-events: none;
+}
+.sp-toast.show { opacity: 1; }
+.sp-toast.err { background: var(--sp-err); color: #fff; }
+
+.sp-spinner {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 3px solid var(--sp-border);
+  border-top-color: var(--sp-brand);
+  animation: sp-spin 0.8s linear infinite;
+  margin: 30px auto;
+}
+@keyframes sp-spin { to { transform: rotate(360deg); } }
+
+.sp-section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sp-muted); margin: 14px 0 8px; }
+
+.speako-root ::placeholder { color: var(--sp-muted); opacity: 0.7; }
+
+/* ══ NATIVE PRODUCT PAGE LAYER (light DOM → theme CSS applies) ══ */
+#speako-native-pdp {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  color: #111;
+  font-family: inherit;
+}
+#speako-native-pdp .spnp-bar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 12px;
+  background: #fff;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  z-index: 2;
+  flex: 0 0 auto;
+}
+#speako-native-pdp .spnp-bar button {
+  background: none;
+  border: 0;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 6px 8px;
+  color: #111;
+  line-height: 1;
+}
+#speako-native-pdp .spnp-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+}
+#speako-native-pdp .spnp-bar .sp-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--sp-brand, #6366f1);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  padding: 0 4px;
+}
+#speako-native-pdp .spnp-bar [data-np="cart"] { position: relative; }
+#speako-native-pdp .spnp-scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+#speako-native-pdp .spnp-scroll > * {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 8px 16px 64px;
+}
+#speako-native-pdp .spnp-scroll > style, #speako-native-pdp .spnp-scroll > script { display: none; }

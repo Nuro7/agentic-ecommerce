@@ -21,9 +21,38 @@
   // Enabled unless the merchant config explicitly sets live_navigation: false.
   const LIVE_NAV = CFG.live_navigation !== false;
 
+  // Fullscreen Shopping Overlay — see OVERLAY_ENABLED below (defined after the
+  // platform flags it depends on).
+
   // Platform flags — widget behaviour adapts based on this, never on hardcoded checks
   const IS_SHOPIFY = String(CFG.platform || '').toLowerCase() === 'shopify';
   const IS_WOOCOMMERCE = !IS_SHOPIFY;
+
+  // Fullscreen Shopping Overlay — when 'on' (Shopify only), store-navigation
+  // actions (search / product / cart) render inside the overlay SPA instead of
+  // hard page navigation. Off by default; the Shopify loader opts in during
+  // the testing phase. Zero behaviour change when absent/off.
+  const OVERLAY_ENABLED = CFG.overlay_mode === 'on' && IS_SHOPIFY;
+
+  // Push widget config into the overlay bridge so it targets the right API
+  // base + shop, and is fully disabled on WooCommerce/custom.
+  if (OVERLAY_ENABLED && typeof window !== 'undefined') {
+    try {
+      const _bridge = window.__SPEAKO_OVERLAY__;
+      if (_bridge && _bridge.setConfig) {
+        _bridge.setConfig({
+          overlayEnabled: true,
+          platform: CFG.platform,
+          agent_api_url: CFG.agent_api_url,
+          shop: CFG.shop || CFG.tenant_id || '',
+          store_name: CFG.store_name,
+          currency: CFG.currency,
+          nativePdp: CFG.native_pdp || 'on',
+          primary_color: CFG.primary_color || '#6366f1'
+        });
+      }
+    } catch (e) {}
+  }
 
   // Tenant identifier appended to EVERY direct call to the Speako backend. Shopify
   // identifies by shop domain (CFG.shop); WooCommerce/custom by CFG.tenant_id. In
@@ -2509,6 +2538,16 @@ try {
   }
 
   async function processAction(act) {
+    // ── Fullscreen overlay bridge ──────────────────────────────────────────
+    // Eager, cheap claim: when the overlay is enabled and this action belongs
+    // to it (store-nav search/product/cart/redirects — but NEVER a real checkout
+    // redirect), hand the whole action to the overlay SPA and stop here. The
+    // existing path below is untouched for every other case, so behaviour is
+    // identical when the overlay is off/absent.
+    const __overlay = window.__SPEAKO_OVERLAY__;
+    if (__overlay && __overlay.claim && __overlay.claim(act)) {
+      return __overlay.handle(act);
+    }
     // In voice-nav mode with panel closed, skip DOM-rendering actions
     const isHidden = S.mode === 'voice_nav' && !S.open;
     const _isSearchPage = /\/search\b/.test(location.pathname);
@@ -5524,6 +5563,10 @@ try {
             // User is speaking — silence the search-glow TTS first so it never
             // talks over them or the transcript (and is picked up by the mic).
             _stopSearchGlow();
+            try {
+              const _ovFeed = window.__SPEAKO_OVERLAY__;
+              if (_ovFeed && _ovFeed.emit) _ovFeed.emit('transcript', { text: msg.text });
+            } catch (e) {}
             if (handleLocalVoiceCommand(msg.text, { live: true })) return;
           }
 
@@ -5531,6 +5574,10 @@ try {
           // Accumulate text; render DOM bubble inside chatbox only when chatbox panel is open (S.open)
           if (msg.type === 'transcript' && msg.text) {
             _a2aStreamText += msg.text;
+            try {
+              const _ovFeed = window.__SPEAKO_OVERLAY__;
+              if (_ovFeed && _ovFeed.emit) _ovFeed.emit('transcript', { text: msg.text });
+            } catch (e) {}
             if (S.open) {
               if (!_a2aStreamBubble) {
                 // Create the bubble once; subsequent chunks update it in-place
@@ -6386,10 +6433,13 @@ try {
   }
 
   function setStatus(text) {
-    if (statusTxt) statusTxt.textContent = text;
+if (statusTxt) statusTxt.textContent = text;
     const dot = $('wa-header-status');
-    if (!dot) return;
     dot.className = 'wa-header-status';
+    try {
+      const _ovSt = window.__SPEAKO_OVERLAY__;
+      if (_ovSt && _ovSt.emit) _ovSt.emit('status', state);
+    } catch (e) {}
     if (text && (text.includes('Thinking') || text.includes('Processing'))) {
       dot.classList.add('thinking');
     }

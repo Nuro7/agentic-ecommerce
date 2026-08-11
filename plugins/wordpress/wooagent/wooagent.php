@@ -189,6 +189,8 @@ class WooAgent_Plugin
                 'greeting_message'=> isset($options['greeting_message']) ? sanitize_text_field($options['greeting_message']) : __('Hi! I\'m your shopping assistant. Ask me anything.', 'wooagent'),
                 'enable_voice'    => isset($options['enable_voice']) ? (bool) $options['enable_voice'] : true,
                 'enable_text'     => isset($options['enable_text']) ? (bool) $options['enable_text'] : true,
+                'platform'        => 'woocommerce',
+                'overlay_mode'    => 'off',
                 'auto_open_mobile'=> isset($options['auto_open_mobile']) ? (bool) $options['auto_open_mobile'] : false,
                 'excluded_pages'  => isset($options['excluded_pages']) ? sanitize_textarea_field($options['excluded_pages']) : '',
             )

@@ -374,12 +374,79 @@ class TestPromotedProductsForPrompt:
     async def test_repo_error_returns_empty(self):
         repo = AsyncMock()
         repo.get_active_promotions = AsyncMock(side_effect=RuntimeError("db down"))
+        db = FakeDB()
         with patch("src.app.modules.offers.recommendations.OfferRepository",
                    return_value=repo):
             out = await get_promoted_products_for_prompt(
-                "t1", FakeStore(), lambda: FakeDB(), limit=5
+                "t1", FakeStore(), lambda: db, limit=5
             )
         assert out == []
+        assert db.closed is True
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_platform_id_falls_back_but_others_resolve(self):
+        repo = AsyncMock()
+        bad = _orm_offer(id="bad", platform_id="abc", product_name="No pid",
+                         title="Broken offer")
+        good = _orm_offer(id="good", platform_id="9", product_name="Fallback",
+                          title="Good offer", discount_percent=10)
+        repo.get_active_promotions = AsyncMock(return_value=[bad, good])
+        store = FakeStore(details={"name": "Live name", "price": 199.0})
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_promoted_products_for_prompt(
+                "t1", store, lambda: FakeDB(), limit=5
+            )
+        # int("abc") raises → per-offer fallback; the next offer still resolves live.
+        assert out[0]["name"] == "No pid"
+        assert out[0]["price"] == ""
+        assert out[1]["name"] == "Live name"
+        assert out[1]["price"] == "₹199.0"
+
+    @pytest.mark.asyncio
+    async def test_store_client_none_with_active_offers(self):
+        repo = AsyncMock()
+        offer = _orm_offer(id="p1", platform_id="7", product_name="Static name",
+                           title="Sale", discount_percent=20)
+        repo.get_active_promotions = AsyncMock(return_value=[offer])
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_promoted_products_for_prompt(
+                "t1", None, lambda: FakeDB(), limit=5
+            )
+        assert out[0]["name"] == "Static name"
+        assert out[0]["price"] == ""
+
+    @pytest.mark.asyncio
+    async def test_zero_price_renders_as_empty_string(self):
+        repo = AsyncMock()
+        offer = _orm_offer(id="p1", platform_id="7", product_name="Free-ish")
+        repo.get_active_promotions = AsyncMock(return_value=[offer])
+        store = FakeStore(details={"name": "Live", "price": 0.0})
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_promoted_products_for_prompt(
+                "t1", store, lambda: FakeDB(), limit=5
+            )
+        # price 0.0 is falsy → rendered as "" (Aria never quotes a bare 0)
+        assert out[0]["price"] == ""
+
+    @pytest.mark.asyncio
+    async def test_limit_zero_returns_empty_and_closes_db(self):
+        repo = AsyncMock()
+        offer = _orm_offer(platform_id="1")
+        repo.get_active_promotions = AsyncMock(
+            side_effect=lambda tenant_id, limit=5: [] if limit == 0 else [offer]
+        )
+        db = FakeDB()
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_promoted_products_for_prompt(
+                "t1", FakeStore(), lambda: db, limit=0
+            )
+        repo.get_active_promotions.assert_awaited_once_with("t1", limit=0)
+        assert out == []
+        assert db.closed is True
 
 
 # ── get_recommendations_for_cart ──────────────────────────────────────────────
@@ -543,3 +610,143 @@ class TestRecommendationsForCart:
             )
         assert out == []
         assert db.closed is True
+
+    @pytest.mark.asyncio
+    async def test_store_error_mid_enrichment_keeps_other_items(self):
+        def flaky_store(pid):
+            if pid == 10:
+                raise RuntimeError("store down for pid 10")
+            return {"name": "Live Shirt", "price": 500.0}
+        combo = _offer(
+            id="c1", offer_kind="combo", platform_id="10",
+            combo_items=[
+                {"platform_id": "10", "quantity": 1, "name": "Bag"},
+                {"platform_id": "11", "quantity": 1, "name": "Shirt"},
+            ],
+        )
+        repo = AsyncMock()
+        repo.get_active_offers = AsyncMock(return_value=[combo])
+        store = SimpleNamespace(
+            get_product_details=AsyncMock(side_effect=flaky_store)
+        )
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_recommendations_for_cart(
+                "t1", [_line(10, 1), _line(11, 1)],
+                store_client=store, db_session_factory=lambda: FakeDB()
+            )
+        assert len(out) == 1
+        items = out[0]["combo_items"]
+        names = {i["platform_id"]: i["name"] for i in items}
+        prices = {i["platform_id"]: i["price"] for i in items}
+        # failed pid falls back to offer name + empty price; the other stays live
+        assert names["10"] == "Bag"
+        assert prices["10"] == ""
+        assert names["11"] == "Live Shirt"
+        assert prices["11"] == 500.0
+
+    @pytest.mark.asyncio
+    async def test_store_failing_all_still_returns_suggestions(self):
+        dead = _offer(id="d1", offer_kind="dead_stock", platform_id="6",
+                      product_name="Old Stock")
+        repo = AsyncMock()
+        repo.get_active_offers = AsyncMock(return_value=[dead])
+        store = FakeStore(error=RuntimeError("store down"))
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_recommendations_for_cart(
+                "t1", [], store_client=store, db_session_factory=lambda: FakeDB()
+            )
+        # not an empty list — suggestions survive with empty prices
+        assert len(out) == 1
+        assert out[0]["kind"] == "dead_stock"
+        assert out[0]["price"] == ""
+
+    @pytest.mark.asyncio
+    async def test_dead_stock_store_error_falls_back_to_product_name(self):
+        dead = _offer(id="d1", offer_kind="dead_stock", platform_id="6",
+                      product_name="Old Stock")
+        repo = AsyncMock()
+        repo.get_active_offers = AsyncMock(return_value=[dead])
+        store = FakeStore(error=RuntimeError("store down"))
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_recommendations_for_cart(
+                "t1", [], store_client=store, db_session_factory=lambda: FakeDB()
+            )
+        assert out[0]["name"] == "Old Stock"
+
+    @pytest.mark.asyncio
+    async def test_string_quantity_in_cart_line(self):
+        combo = _offer(
+            id="c1", offer_kind="combo", platform_id="10",
+            combo_items=[{"platform_id": "10", "quantity": 3, "name": "Bag"}],
+        )
+        repo = AsyncMock()
+        repo.get_active_offers = AsyncMock(return_value=[combo])
+        cart = [{"platform_product_id": "10", "quantity": "2", "unit_price": 10.0}]
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_recommendations_for_cart(
+                "t1", cart, db_session_factory=lambda: FakeDB()
+            )
+        # "2" coerces to 2 → still short of 3 → partial combo
+        assert out[0]["satisfied"] is False
+        assert out[0]["missing_items"][0]["quantity"] == 1
+
+    @pytest.mark.asyncio
+    async def test_cart_line_missing_platform_product_id_no_crash(self):
+        dead = _offer(id="d1", offer_kind="dead_stock", platform_id="6")
+        repo = AsyncMock()
+        repo.get_active_offers = AsyncMock(return_value=[dead])
+        cart = [{"quantity": 2, "unit_price": 5.0}]  # no platform_product_id key
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_recommendations_for_cart(
+                "t1", cart, db_session_factory=lambda: FakeDB()
+            )
+        assert len(out) == 1
+        assert out[0]["in_cart"] is False
+
+    @pytest.mark.asyncio
+    async def test_limit_zero_returns_empty_and_closes_db(self):
+        dead = _offer(id="d1", offer_kind="dead_stock", platform_id="6")
+        repo = AsyncMock()
+        repo.get_active_offers = AsyncMock(return_value=[dead])
+        db = FakeDB()
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_recommendations_for_cart(
+                "t1", [], db_session_factory=lambda: db, limit=0
+            )
+        assert out == []
+        assert db.closed is True
+
+    @pytest.mark.asyncio
+    async def test_discount_kind_offer_not_suggested(self):
+        plain = _offer(id="ds", offer_kind="discount", platform_id="4",
+                       discount_percent=10)
+        repo = AsyncMock()
+        repo.get_active_offers = AsyncMock(return_value=[plain])
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_recommendations_for_cart(
+                "t1", [_line(4, 1)], db_session_factory=lambda: FakeDB()
+            )
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_deterministic_ranking_for_equal_kinds(self):
+        # Two identical-tier dead-stock offers — repo order must be preserved
+        # (stable sort, no shuffling), so the same cart always ranks identically.
+        dead_a = _offer(id="a", offer_kind="dead_stock", platform_id="1")
+        dead_b = _offer(id="b", offer_kind="dead_stock", platform_id="2")
+        repo = AsyncMock()
+        repo.get_active_offers = AsyncMock(return_value=[dead_a, dead_b])
+        store = FakeStore(details={"name": "X", "price": 1.0})
+        with patch("src.app.modules.offers.recommendations.OfferRepository",
+                   return_value=repo):
+            out = await get_recommendations_for_cart(
+                "t1", [], store_client=store, db_session_factory=lambda: FakeDB()
+            )
+        assert [s["offer_id"] for s in out] == ["a", "b"]

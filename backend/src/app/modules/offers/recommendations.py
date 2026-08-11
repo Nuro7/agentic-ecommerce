@@ -252,7 +252,7 @@ async def get_recommendations_for_cart(
                 s["unit_price"] = brief["price"]
             elif s["kind"] == "dead_stock" and s.get("platform_id"):
                 brief = await _product_brief(store_client, s["platform_id"])
-                s["name"] = brief["name"]
+                s["name"] = brief["name"] or s.get("name", "")
                 s["price"] = brief["price"]
             enriched.append(s)
         return enriched
