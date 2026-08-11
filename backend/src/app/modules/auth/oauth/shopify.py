@@ -583,7 +583,7 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
         except Exception:
             pass
 
-    primary_color = os.getenv("SHOPIFY_WIDGET_COLOR", "#6366f1")
+    primary_color = os.getenv("SHOPIFY_WIDGET_COLOR", "#7c3aed")
     # Merchant-customized greeting (tenant column) → env → default.
     greeting = tenant_greeting or os.getenv(
         "SHOPIFY_GREETING", "Hi! I'm Aria, your AI shopping assistant. Ask me anything!"

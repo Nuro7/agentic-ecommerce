@@ -6,7 +6,7 @@
     rest_url: '',
     nonce: '',
     store_name: 'Store',
-    primary_color: '#6366f1',
+    primary_color: '#7c3aed',
     widget_position: 'bottom-right',
     enable_voice: true,
     language: 'en',
@@ -65,7 +65,7 @@
           store_name: CFG.store_name,
           currency: CFG.currency,
           nativePdp: CFG.native_pdp || 'on',
-          primary_color: CFG.primary_color || '#6366f1'
+          primary_color: CFG.primary_color || '#7c3aed'
         });
         console.log('[WooAgent Overlay] bridge.setConfig() called OK');
       } else {
@@ -215,7 +215,7 @@
     const m = (x, y) => Math.round(x * f + y * (1 - f));
     return `rgb(${m(ca.r, cb.r)},${m(ca.g, cb.g)},${m(ca.b, cb.b)})`;
   }
-  const PC = CFG.primary_color || '#6366f1';
+  const PC = CFG.primary_color || '#7c3aed';
 
   const host = document.createElement('div');
   host.id = '_wooagent_root';
@@ -293,56 +293,63 @@
       --bot-bubble-border: rgba(0,0,0,0.08);
     }
 
-    /* ── FAB ──────────────────────────────────────────────── */
+    /* ── FAB (compact glassmorphic voice launcher) ───────────── */
     .wa-fab {
       position: fixed;
-      ${CFG.widget_position === 'bottom-left' ? 'left:24px' : 'right:24px'};
-      bottom: 26px;
-      width: 60px; height: 60px;
+      ${CFG.widget_position === 'bottom-left' ? 'left:20px' : 'right:20px'};
+      bottom: 20px;
+      width: 56px; height: 56px;
       border-radius: 50%;
       border: none;
-      background: linear-gradient(140deg, var(--p, #6366f1) 0%, var(--p2, #4f46e5) 100%);
+      background: linear-gradient(135deg, var(--p, #7c3aed) 0%, var(--p2, #6d28d9) 100%);
       cursor: pointer;
       display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 0 0 0 var(--p-md), 0 8px 28px rgba(0,0,0,0.5);
+      color: #fff;
+      box-shadow: 0 0 0 0 var(--p-md), 0 8px 24px rgba(109,40,217,0.35);
       transition: transform .22s cubic-bezier(.34,1.56,.64,1), box-shadow .22s ease;
       z-index: 2147483646;
       outline: none;
+      -webkit-backdrop-filter: blur(6px);
+      backdrop-filter: blur(6px);
     }
     .wa-fab:hover {
-      transform: scale(1.08);
-      box-shadow: 0 0 0 10px var(--p-lo), 0 10px 36px rgba(0,0,0,0.55);
+      transform: scale(1.07);
+      box-shadow: 0 0 0 8px var(--p-lo), 0 12px 32px rgba(109,40,217,0.45);
     }
     .wa-fab:active { transform: scale(0.93); }
-    .wa-fab.open { box-shadow: 0 0 0 0 transparent, 0 6px 24px rgba(0,0,0,0.4); }
+    .wa-fab.open { box-shadow: 0 0 0 0 transparent, 0 6px 20px rgba(109,40,217,0.4); }
 
+    /* Ambient pulsing ring — subtle at idle, energetic while listening. */
     .wa-fab::before {
-      content:''; position: absolute; inset: -8px;
-      border-radius: 50%; border: 1.5px solid var(--p);
+      content:''; position: absolute; inset: -6px;
+      border-radius: 50%; border: 1.5px solid var(--p, #7c3aed);
       opacity: 0; animation: wa-ripple 3.5s ease-out infinite;
+      pointer-events: none;
     }
     .wa-fab.speaking::before {
       animation: wa-ripple-fast 1.1s ease-out infinite;
-      border-color: var(--ok);
+      border-color: var(--p, #7c3aed);
+      border-width: 2px;
     }
+    .wa-fab.speaking { box-shadow: 0 0 0 6px var(--p-lo), 0 8px 24px rgba(109,40,217,0.5); }
     @keyframes wa-ripple {
-      0%   { opacity:0.5; transform:scale(0.82); }
+      0%   { opacity:0.45; transform:scale(0.82); }
       100% { opacity:0;   transform:scale(1.35); }
     }
     @keyframes wa-ripple-fast {
       0%,100% { opacity:0.7; transform:scale(0.86); }
-      50%     { opacity:0.2; transform:scale(1.18); }
+      50%     { opacity:0.15; transform:scale(1.22); }
     }
 
-    .wa-fab-icon { transition: all .3s cubic-bezier(.34,1.56,.64,1); }
+    .wa-fab-icon { transition: all .3s cubic-bezier(.34,1.56,.64,1); display:flex; }
     .wa-fab.open .wa-fab-icon { transform: rotate(45deg) scale(0.88); }
 
     .wa-badge {
       position: absolute; top: -3px; right: -3px;
-      min-width: 19px; height: 19px;
+      min-width: 18px; height: 18px;
       background: var(--err); color: #fff;
-      font-size: 10px; font-weight: 700; border-radius: 10px;
-      border: 2px solid #080810;
+      font-size: 10px; font-weight: 700; border-radius: 9px;
+      border: 2px solid var(--bg0, #0f172a);
       display: flex; align-items: center; justify-content: center;
       padding: 0 4px;
       transform: scale(0); transition: transform .2s cubic-bezier(.34,1.56,.64,1);
@@ -1365,10 +1372,11 @@
     </div>
 
     <button class="wa-fab" id="wa-fab" aria-label="Open AI Shopping Assistant" aria-expanded="false">
-      <svg class="wa-fab-icon" width="26" height="26" viewBox="0 0 24 24" fill="none">
-        <path d="M12 3L14.2 9.8L21 12L14.2 14.2L12 21L9.8 14.2L3 12L9.8 9.8L12 3Z" fill="white" opacity="0.95"/>
-        <circle cx="19" cy="5" r="1.5" fill="white" opacity="0.6"/>
-        <circle cx="5" cy="19" r="1" fill="white" opacity="0.4"/>
+      <svg class="wa-fab-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="9" y="2.5" width="6" height="11" rx="3" fill="white"/>
+        <path d="M5.5 11a6.5 6.5 0 0 0 13 0" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="12" y1="17.5" x2="12" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="8.5" y1="21" x2="15.5" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
       </svg>
       <span class="wa-badge" id="wa-badge">0</span>
     </button>

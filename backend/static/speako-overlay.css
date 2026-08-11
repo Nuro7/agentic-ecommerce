@@ -1,5 +1,6 @@
 /* Speako Fullscreen Overlay — scoped styles injected into the overlay shadow root.
-   Theme-leak-proof by construction: every selector is relative to the host container. */
+   Theme-leak-proof by construction: every selector is relative to the host container.
+   Purple brand system: primary #7C3AED / #6D28D9, accent #8B5CF6 / #DDD6FE. */
 
 .speako-root,
 .speako-root * {
@@ -9,21 +10,36 @@
 }
 
 .speako-root {
+  /* Brand palette (overridable at runtime via setConfig → --sp-brand). */
+  --sp-brand: #7c3aed;
+  --sp-brand-2: #6d28d9;
+  --sp-brand-lite: #8b5cf6;
+  --sp-brand-soft: #ddd6fe;
+  --sp-brand-glow: rgba(124, 58, 237, 0.35);
+  --sp-grad: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+
+  /* Light surface system. */
   --sp-bg: #ffffff;
-  --sp-fg: #111827;
-  --sp-muted: #6b7280;
+  --sp-bg-2: #f8fafc;
+  --sp-fg: #0f172a;
+  --sp-muted: #64748b;
   --sp-border: #e5e7eb;
-  --sp-brand: #6366f1;
-  --sp-brand-2: #4f46e5;
+  --sp-card: #f8fafc;
   --sp-ok: #16a34a;
   --sp-warn: #f59e0b;
   --sp-err: #dc2626;
-  --sp-card: #f9fafb;
-  --sp-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+  --sp-star: #f59e0b;
+  --sp-shadow: 0 8px 30px rgba(15, 23, 42, 0.12);
+  --sp-shadow-lg: 0 20px 50px rgba(15, 23, 42, 0.22);
+
+  /* Radii per spec: 12px cards, 8px buttons, 9999px pills. */
   --sp-radius: 12px;
+  --sp-radius-btn: 8px;
+  --sp-radius-pill: 9999px;
 
   position: fixed;
   inset: 0;
+  width: 100vw;
   z-index: 2147483647;
   height: 100dvh; /* modern viewport */
   background: var(--sp-bg);
@@ -41,17 +57,20 @@
 
 /* Visibility gate — the overlay must stay HIDDEN until open() adds
    .sp-visible, otherwise the full-screen root covers the store the moment
-   it mounts. (Was missing — that's why the overlay showed never/always.) */
-.speako-root { visibility: hidden; }
-.speako-root.sp-visible { visibility: visible; }
+   it mounts. */
+.speako-root { visibility: hidden; opacity: 0; transition: opacity 0.22s ease; }
+.speako-root.sp-visible { visibility: visible; opacity: 1; }
 
 .speako-root[data-theme="dark"] {
   --sp-bg: #0f172a;
+  --sp-bg-2: #1e1b4b;
   --sp-fg: #f1f5f9;
   --sp-muted: #94a3b8;
   --sp-border: #1e293b;
-  --sp-card: #1e293b;
+  --sp-card: #1e1b4b;
+  --sp-brand-soft: rgba(139, 92, 246, 0.18);
   --sp-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  --sp-shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.6);
 }
 
 /* ── Header bar ── */
@@ -78,6 +97,7 @@
   justify-content: center;
   cursor: pointer;
   font-size: 18px;
+  transition: background 0.15s ease;
 }
 .speako-header .sp-btn:hover { background: var(--sp-border); }
 .speako-header .sp-title {
@@ -96,14 +116,15 @@
   position: absolute;
   top: -4px;
   right: -6px;
-  background: var(--sp-brand);
+  background: var(--sp-grad);
   color: #fff;
   font-size: 10px;
   line-height: 1;
   padding: 3px 5px;
-  border-radius: 10px;
+  border-radius: var(--sp-radius-pill);
   min-width: 16px;
   text-align: center;
+  font-weight: 700;
 }
 
 /* ── Scrollable content area ── */
@@ -122,15 +143,35 @@
   flex-direction: column;
   gap: 18px;
   padding-top: 24px;
-  max-width: 640px;
+  max-width: 680px;
   margin: 0 auto;
+  width: 100%;
 }
 .speako-hello {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   text-align: center;
+  background: var(--sp-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 .speako-hint { color: var(--sp-muted); text-align: center; font-size: 13px; }
+
+/* Suggestion chips (Help me choose / Track my order …). */
+.sp-suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.sp-suggest {
+  border: 1px solid var(--sp-border);
+  background: var(--sp-bg);
+  color: var(--sp-fg);
+  border-radius: var(--sp-radius-pill);
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.sp-suggest:hover { border-color: var(--sp-brand); color: var(--sp-brand); background: var(--sp-brand-soft); }
 
 .sp-searchbar {
   display: flex;
@@ -138,47 +179,49 @@
 }
 .sp-searchbar input {
   flex: 1;
-  height: 46px;
+  height: 48px;
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius);
-  padding: 0 14px;
+  padding: 0 16px;
   font-size: 15px;
   background: var(--sp-bg);
   color: var(--sp-fg);
   outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.sp-searchbar input:focus { border-color: var(--sp-brand); box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2); }
+.sp-searchbar input:focus { border-color: var(--sp-brand); box-shadow: 0 0 0 3px var(--sp-brand-glow); }
 .sp-searchbar button {
-  height: 46px;
-  padding: 0 18px;
-  background: var(--sp-brand);
+  height: 48px;
+  padding: 0 20px;
+  background: var(--sp-grad);
   color: #fff;
   border: 0;
   border-radius: var(--sp-radius);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
+  transition: filter 0.15s ease;
 }
-.sp-searchbar button:hover { background: var(--sp-brand-2); }
+.sp-searchbar button:hover { filter: brightness(1.08); }
 
-/* ── Ambient voice canvas ── */
+/* ── Ambient voice canvas + waveform visualizer ── */
 .speako-ambient {
   margin-top: 8px;
-  border: 1px dashed var(--sp-border);
+  border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius);
-  padding: 10px 12px;
+  padding: 12px 14px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   background: var(--sp-card);
-  min-height: 48px;
+  min-height: 56px;
 }
 .speako-ambient .sp-voice-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
   flex: 0 0 auto;
-  background: var(--sp-ok);
+  background: var(--sp-brand);
   animation: sp-pulse 1.6s ease-in-out infinite;
 }
 .speako-ambient .sp-transcript {
@@ -194,36 +237,77 @@
   50% { opacity: 1; transform: scale(1.25); }
 }
 
-/* ── Filter chips ── */
-.sp-facets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+/* Waveform bars — driven by .sp-wave.active toggling animation-play-state. */
+.sp-wave {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+.sp-wave span {
+  display: block;
+  width: 3px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--sp-brand);
+  animation: sp-wave-bounce 1s ease-in-out infinite;
+  animation-play-state: paused;
+  opacity: 0.55;
+}
+.sp-wave.active span { animation-play-state: running; opacity: 1; }
+.sp-wave span:nth-child(1) { animation-delay: 0s; }
+.sp-wave span:nth-child(2) { animation-delay: 0.12s; }
+.sp-wave span:nth-child(3) { animation-delay: 0.24s; }
+.sp-wave span:nth-child(4) { animation-delay: 0.36s; }
+.sp-wave span:nth-child(5) { animation-delay: 0.48s; }
+.sp-wave span:nth-child(6) { animation-delay: 0.6s; }
+.sp-wave span:nth-child(7) { animation-delay: 0.72s; }
+@keyframes sp-wave-bounce {
+  0%, 100% { height: 6px; }
+  50% { height: 22px; }
+}
+
+/* ── Filter chips / facets ── */
+.sp-facets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center; }
 .sp-chip {
   border: 1px solid var(--sp-border);
   background: var(--sp-bg);
   color: var(--sp-fg);
-  border-radius: 999px;
-  padding: 5px 12px;
+  border-radius: var(--sp-radius-pill);
+  padding: 6px 14px;
   font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
+  transition: all 0.12s ease;
+  white-space: nowrap;
 }
-.sp-chip.active { background: var(--sp-brand); border-color: var(--sp-brand); color: #fff; }
+.sp-chip:hover { border-color: var(--sp-brand-lite); }
+.sp-chip.active { background: var(--sp-grad); border-color: transparent; color: #fff; }
 .sp-chip[data-kind="group"] { border-style: dashed; }
+.sp-facet-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sp-muted); margin-right: 4px; }
+.sp-facet-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; margin-bottom: 6px; }
 
 /* ── Product grid ── */
 .sp-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 14px;
 }
 .sp-card {
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius);
   overflow: hidden;
   background: var(--sp-bg);
-  transition: box-shadow 0.15s ease;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
   cursor: pointer;
+  position: relative;
+  display: flex;
+  flex-direction: column;
 }
-.sp-card:hover { box-shadow: var(--sp-shadow); }
+.sp-card:hover { box-shadow: var(--sp-shadow); transform: translateY(-2px); }
 .sp-card.sp-highlight { outline: 3px solid var(--sp-brand); }
+.sp-card .sp-card-media { position: relative; }
 .sp-card img {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -231,16 +315,128 @@
   display: block;
   background: var(--sp-card);
 }
-.sp-card .sp-card-body { padding: 10px; }
-.sp-card .sp-card-title { font-size: 13px; font-weight: 600; line-height: 1.3; height: 34px; overflow: hidden; }
-.sp-card .sp-card-price { font-size: 14px; font-weight: 700; margin-top: 6px; color: var(--sp-brand); }
+.sp-card .sp-card-body { padding: 10px 12px 12px; flex: 1; display: flex; flex-direction: column; }
+.sp-card .sp-card-title { font-size: 13px; font-weight: 600; line-height: 1.3; max-height: 34px; overflow: hidden; }
 .sp-card .sp-card-vendor { font-size: 11px; color: var(--sp-muted); margin-top: 2px; }
+.sp-card .sp-card-rating { display: flex; align-items: center; gap: 4px; margin-top: 6px; font-size: 11px; color: var(--sp-muted); }
+.sp-card .sp-card-rating .sp-stars { font-size: 12px; }
+.sp-card .sp-card-pricerow { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.sp-card .sp-card-price { font-size: 15px; font-weight: 800; color: var(--sp-fg); }
+.sp-card .sp-card-compare { font-size: 12px; color: var(--sp-muted); text-decoration: line-through; }
 .sp-card .sp-card-empty {
   display: flex; align-items: center; justify-content: center; aspect-ratio: 1/1;
   background: var(--sp-card); color: var(--sp-muted); font-size: 12px;
 }
+/* Sale / % OFF badge on card media. */
+.sp-badge-sale {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  background: var(--sp-grad);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 9px;
+  border-radius: var(--sp-radius-pill);
+  box-shadow: 0 3px 10px var(--sp-brand-glow);
+  letter-spacing: 0.02em;
+}
+/* Quick compare toggle on card. */
+.sp-card-compare-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--sp-brand);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+.sp-card-compare-toggle.active { background: var(--sp-grad); color: #fff; }
 
-/* ── Product detail view ── */
+/* Grouped collection rows (carousel-per-theme, like the reference UI). */
+.sp-collection { margin-bottom: 22px; }
+.sp-collection-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.sp-collection-title { font-size: 16px; font-weight: 700; }
+.sp-collection-title small { display: block; font-size: 12px; font-weight: 500; color: var(--sp-muted); margin-top: 2px; }
+.sp-hrow {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x mandatory;
+  padding-bottom: 4px;
+}
+.sp-hrow::-webkit-scrollbar { display: none; }
+.sp-hrow .sp-card { flex: 0 0 165px; scroll-snap-align: start; }
+
+/* ── Product detail view (rich PDP) ── */
+.sp-pdp { max-width: 720px; margin: 0 auto; width: 100%; }
+
+/* Swipeable gallery with zoom. */
+.sp-gallery { position: relative; }
+.sp-gallery-main {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--sp-radius);
+  overflow: hidden;
+  background: var(--sp-card);
+  display: flex;
+  scroll-snap-type: x mandatory;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.sp-gallery-main::-webkit-scrollbar { display: none; }
+.sp-gallery-main img {
+  width: 100%;
+  height: 100%;
+  flex: 0 0 100%;
+  object-fit: contain;
+  scroll-snap-align: center;
+  cursor: zoom-in;
+  background: var(--sp-card);
+}
+.sp-gallery-dots { display: flex; gap: 6px; justify-content: center; margin-top: 10px; }
+.sp-gallery-dots .sp-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--sp-border); cursor: pointer; transition: all 0.15s ease;
+}
+.sp-gallery-dots .sp-dot.active { background: var(--sp-brand); width: 20px; border-radius: 4px; }
+.sp-gallery-thumbs { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; scrollbar-width: none; }
+.sp-gallery-thumbs::-webkit-scrollbar { display: none; }
+.sp-gallery-thumbs img {
+  width: 56px; height: 56px; flex: 0 0 56px; border-radius: var(--sp-radius-btn);
+  object-fit: cover; cursor: pointer; border: 2px solid transparent; background: var(--sp-card);
+}
+.sp-gallery-thumbs img.active { border-color: var(--sp-brand); }
+
+/* Fullscreen zoom lightbox. */
+.sp-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  background: rgba(0, 0, 0, 0.92);
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.sp-zoom.show { display: flex; }
+.sp-zoom img { max-width: 96vw; max-height: 90vh; object-fit: contain; }
+.sp-zoom .sp-zoom-close {
+  position: absolute; top: 16px; right: 16px; width: 40px; height: 40px;
+  border-radius: 50%; border: 0; background: rgba(255, 255, 255, 0.16); color: #fff;
+  font-size: 20px; cursor: pointer;
+}
+
+/* Legacy carousel (kept for back-compat). */
 .sp-carousel { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; }
 .sp-carousel::-webkit-scrollbar { display: none; }
 .sp-carousel img {
@@ -250,65 +446,222 @@
   aspect-ratio: 1/1;
   object-fit: cover;
 }
-.sp-pdp-title { font-size: 20px; font-weight: 700; margin-top: 12px; }
-.sp-pdp-price { font-size: 18px; font-weight: 700; color: var(--sp-brand); margin-top: 6px; }
-.sp-pdp-desc { margin-top: 10px; font-size: 13px; color: var(--sp-muted); line-height: 1.6; }
-.sp-pdp-desc img, .sp-pdp-desc video { max-width: 100%; border-radius: 8px; }
 
-.sp-option-group { margin-top: 12px; }
-.sp-option-label { font-size: 12px; font-weight: 600; text-transform: uppercase; color: var(--sp-muted); margin-bottom: 6px; }
-.sp-swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+.sp-pdp-vendor {
+  display: inline-block;
+  margin-top: 14px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--sp-brand);
+  background: var(--sp-brand-soft);
+  padding: 3px 10px;
+  border-radius: var(--sp-radius-pill);
+}
+.sp-pdp-title { font-size: 23px; font-weight: 800; margin-top: 10px; line-height: 1.25; }
+
+/* Star rating block. */
+.sp-rating { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.sp-stars { position: relative; display: inline-block; font-size: 16px; line-height: 1; letter-spacing: 1px; }
+.sp-stars .sp-stars-bg { color: var(--sp-border); }
+.sp-stars .sp-stars-fg {
+  position: absolute; top: 0; left: 0; overflow: hidden; white-space: nowrap;
+  color: var(--sp-star);
+}
+.sp-rating-score { font-size: 14px; font-weight: 700; }
+.sp-rating-count { font-size: 13px; color: var(--sp-muted); }
+.sp-rating-count a { color: var(--sp-brand); text-decoration: none; }
+
+/* Pricing block with struck compare + Save badge. */
+.sp-pdp-pricing { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.sp-pdp-price { font-size: 26px; font-weight: 800; color: var(--sp-fg); }
+.sp-pdp-compare { font-size: 17px; color: var(--sp-muted); text-decoration: line-through; }
+.sp-save-badge {
+  background: rgba(22, 163, 74, 0.12);
+  color: var(--sp-ok);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 10px;
+  border-radius: var(--sp-radius-pill);
+}
+
+/* Variant selection groups. */
+.sp-option-group { margin-top: 18px; }
+.sp-option-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sp-muted); margin-bottom: 8px; }
+.sp-option-label .sp-option-value { color: var(--sp-fg); margin-left: 6px; text-transform: none; letter-spacing: 0; }
+.sp-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
 .sp-swatch {
-  border: 1px solid var(--sp-border);
-  border-radius: 8px;
-  padding: 6px 12px;
+  border: 1.5px solid var(--sp-border);
+  border-radius: var(--sp-radius-btn);
+  padding: 8px 14px;
   font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
   background: var(--sp-bg);
   color: var(--sp-fg);
+  transition: all 0.12s ease;
+  position: relative;
 }
-.sp-swatch.active { border-color: var(--sp-brand); background: var(--sp-brand); color: #fff; }
+.sp-swatch:hover:not(.disabled) { border-color: var(--sp-brand-lite); }
+.sp-swatch.active { border-color: var(--sp-brand); background: var(--sp-brand-soft); color: var(--sp-brand-2); }
+.sp-swatch.disabled { opacity: 0.4; cursor: not-allowed; text-decoration: line-through; }
+/* Color swatch pills (round). */
+.sp-swatch.sp-swatch-color {
+  width: 34px; height: 34px; padding: 0; border-radius: 50%;
+  overflow: hidden; text-indent: -9999px;
+}
+.sp-swatch.sp-swatch-color.active { box-shadow: 0 0 0 2px var(--sp-bg), 0 0 0 4px var(--sp-brand); border-color: transparent; }
+/* Size pills (rounded). */
+.sp-swatch.sp-swatch-size { min-width: 44px; text-align: center; border-radius: var(--sp-radius-pill); }
 .sp-option-select {
   width: 100%;
-  height: 42px;
-  border: 1px solid var(--sp-border);
-  border-radius: 8px;
-  padding: 0 10px;
+  height: 44px;
+  border: 1.5px solid var(--sp-border);
+  border-radius: var(--sp-radius-btn);
+  padding: 0 12px;
   font-size: 14px;
   background: var(--sp-bg);
   color: var(--sp-fg);
 }
 
-.sp-stock { display: inline-block; margin-top: 10px; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+/* Stock pill. */
+.sp-stock { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; padding: 4px 12px; border-radius: var(--sp-radius-pill); font-size: 12px; font-weight: 700; }
 .sp-stock.in { background: rgba(22, 163, 74, 0.12); color: var(--sp-ok); }
+.sp-stock.low { background: rgba(245, 158, 11, 0.14); color: var(--sp-warn); }
 .sp-stock.out { background: rgba(220, 38, 38, 0.12); color: var(--sp-err); }
 
-.sp-qty-row { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
+/* Quantity stepper. */
+.sp-qty-row { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+.sp-qty-label { font-size: 13px; font-weight: 600; color: var(--sp-muted); }
+.sp-qty-stepper { display: inline-flex; align-items: center; border: 1.5px solid var(--sp-border); border-radius: var(--sp-radius-pill); overflow: hidden; }
 .sp-qty-btn {
-  width: 38px; height: 38px;
-  border: 1px solid var(--sp-border);
+  width: 40px; height: 40px;
+  border: 0;
   background: var(--sp-bg);
   color: var(--sp-fg);
-  border-radius: 8px;
-  font-size: 18px;
+  font-size: 20px;
   cursor: pointer;
+  transition: background 0.12s ease;
 }
-.sp-qty-val { font-size: 15px; font-weight: 600; min-width: 28px; text-align: center; }
+.sp-qty-btn:hover { background: var(--sp-brand-soft); color: var(--sp-brand); }
+.sp-qty-val { font-size: 15px; font-weight: 700; min-width: 36px; text-align: center; }
 
+/* Action buttons — Add to cart + Buy It Now. */
+.sp-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
 .sp-add {
-  margin-top: 14px;
   width: 100%;
-  height: 48px;
-  border: 0;
-  border-radius: var(--sp-radius);
-  background: var(--sp-brand);
-  color: #fff;
+  height: 52px;
+  border: 1.5px solid var(--sp-brand);
+  border-radius: var(--sp-radius-btn);
+  background: var(--sp-bg);
+  color: var(--sp-brand);
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
-.sp-add:disabled { background: var(--sp-muted); cursor: not-allowed; }
-.sp-add:hover:not(:disabled) { background: var(--sp-brand-2); }
+.sp-add:disabled { border-color: var(--sp-border); background: var(--sp-card); color: var(--sp-muted); cursor: not-allowed; }
+.sp-add:hover:not(:disabled) { background: var(--sp-brand-soft); }
+.sp-buy-now {
+  width: 100%;
+  height: 52px;
+  border: 0;
+  border-radius: var(--sp-radius-btn);
+  background: var(--sp-grad);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 8px 24px var(--sp-brand-glow);
+  transition: filter 0.15s ease, transform 0.1s ease;
+}
+.sp-buy-now:hover:not(:disabled) { filter: brightness(1.08); }
+.sp-buy-now:active:not(:disabled) { transform: translateY(1px); }
+.sp-buy-now:disabled { background: var(--sp-muted); box-shadow: none; cursor: not-allowed; }
+
+/* Accordion tabs (Description / Shipping / Returns / Specifications). */
+.sp-accordions { margin-top: 24px; border-top: 1px solid var(--sp-border); }
+.sp-accordion { border-bottom: 1px solid var(--sp-border); }
+.sp-accordion-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 2px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--sp-fg);
+  text-align: left;
+}
+.sp-accordion-head .sp-acc-icon { transition: transform 0.2s ease; color: var(--sp-brand); font-size: 18px; }
+.sp-accordion.open .sp-acc-icon { transform: rotate(45deg); }
+.sp-accordion-body {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.28s ease;
+  font-size: 14px;
+  color: var(--sp-muted);
+  line-height: 1.7;
+}
+.sp-accordion.open .sp-accordion-body { max-height: 1600px; }
+.sp-accordion-body-inner { padding: 0 2px 18px; }
+.sp-accordion-body img, .sp-accordion-body video { max-width: 100%; border-radius: 8px; }
+.sp-specs { width: 100%; border-collapse: collapse; }
+.sp-specs tr { border-bottom: 1px solid var(--sp-border); }
+.sp-specs td { padding: 8px 4px; font-size: 13px; }
+.sp-specs td:first-child { font-weight: 600; color: var(--sp-fg); width: 40%; }
+
+/* Legacy PDP fields kept for back-compat. */
+.sp-pdp-desc { margin-top: 10px; font-size: 13px; color: var(--sp-muted); line-height: 1.6; }
+.sp-pdp-desc img, .sp-pdp-desc video { max-width: 100%; border-radius: 8px; }
+
+/* ── Compare view ── */
+.sp-compare-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.sp-compare {
+  display: grid;
+  gap: 12px;
+  min-width: min-content;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(200px, 1fr);
+}
+.sp-compare-col {
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  overflow: hidden;
+  background: var(--sp-bg);
+  display: flex;
+  flex-direction: column;
+}
+.sp-compare-col img { width: 100%; aspect-ratio: 1/1; object-fit: cover; background: var(--sp-card); }
+.sp-compare-col .sp-cmp-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
+.sp-cmp-title { font-size: 14px; font-weight: 700; line-height: 1.3; }
+.sp-cmp-price { font-size: 16px; font-weight: 800; }
+.sp-cmp-price .sp-card-compare { font-size: 12px; margin-left: 6px; }
+.sp-cmp-attr { font-size: 12px; color: var(--sp-muted); display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px dashed var(--sp-border); }
+.sp-cmp-attr b { color: var(--sp-fg); font-weight: 600; text-align: right; }
+.sp-cmp-view {
+  margin-top: auto;
+  border: 0; border-radius: var(--sp-radius-btn); background: var(--sp-grad); color: #fff;
+  padding: 10px; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.sp-compare-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 10px 0; margin-bottom: 8px;
+}
+.sp-compare-bar .sp-cmp-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--sp-brand-soft); color: var(--sp-brand-2);
+  border-radius: var(--sp-radius-pill); padding: 5px 6px 5px 12px; font-size: 12px; font-weight: 600;
+}
+.sp-compare-bar .sp-cmp-chip button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; }
+.sp-compare-bar .sp-cmp-go {
+  border: 0; border-radius: var(--sp-radius-pill); background: var(--sp-grad); color: #fff;
+  padding: 6px 16px; font-size: 12px; font-weight: 700; cursor: pointer;
+}
 
 /* ── Cart view ── */
 .sp-cart-line {
@@ -325,7 +678,7 @@
   width: 64px;
   height: 64px;
   object-fit: cover;
-  border-radius: 8px;
+  border-radius: var(--sp-radius-btn);
   background: var(--sp-card);
 }
 .sp-cart-line .sp-cl-body { flex: 1; min-width: 0; }
@@ -346,40 +699,41 @@
 
 .sp-cart-summary {
   margin-top: 8px;
-  padding: 12px;
+  padding: 14px;
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius);
   background: var(--sp-card);
 }
 .sp-cart-summary .sp-row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
-.sp-cart-summary .sp-row.total { font-weight: 700; font-size: 15px; margin-top: 8px; border-top: 1px solid var(--sp-border); padding-top: 8px; }
+.sp-cart-summary .sp-row.total { font-weight: 800; font-size: 16px; margin-top: 8px; border-top: 1px solid var(--sp-border); padding-top: 8px; }
 
-.sp-discount-row { display: flex; gap: 8px; margin-top: 10px; }
+.sp-discount-row { display: flex; gap: 8px; margin-top: 12px; }
 .sp-discount-row input {
-  flex: 1; height: 42px; border: 1px solid var(--sp-border); border-radius: 8px; padding: 0 10px;
+  flex: 1; height: 44px; border: 1px solid var(--sp-border); border-radius: var(--sp-radius-btn); padding: 0 12px;
   font-size: 13px; background: var(--sp-bg); color: var(--sp-fg); text-transform: uppercase;
 }
 .sp-discount-row button {
-  height: 42px; padding: 0 14px; border: 0; border-radius: 8px;
+  height: 44px; padding: 0 16px; border: 0; border-radius: var(--sp-radius-btn);
   background: var(--sp-brand); color: #fff; font-weight: 600; cursor: pointer; font-size: 13px;
 }
 
 .sp-checkout {
   margin-top: 14px;
   width: 100%;
-  height: 48px;
+  height: 52px;
   border: 0;
-  border-radius: var(--sp-radius);
-  background: var(--sp-ok);
+  border-radius: var(--sp-radius-btn);
+  background: var(--sp-grad);
   color: #fff;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 800;
   cursor: pointer;
+  box-shadow: 0 8px 24px var(--sp-brand-glow);
 }
-.sp-checkout:disabled { background: var(--sp-muted); cursor: not-allowed; }
+.sp-checkout:disabled { background: var(--sp-muted); box-shadow: none; cursor: not-allowed; }
 .sp-email-row { margin-top: 10px; }
 .sp-email-row input {
-  width: 100%; height: 44px; border: 1px solid var(--sp-border); border-radius: 8px; padding: 0 12px;
+  width: 100%; height: 44px; border: 1px solid var(--sp-border); border-radius: var(--sp-radius-btn); padding: 0 12px;
   font-size: 14px; background: var(--sp-bg); color: var(--sp-fg);
 }
 
@@ -398,27 +752,28 @@
   transform: translateX(-50%);
   background: var(--sp-fg);
   color: var(--sp-bg);
-  padding: 10px 18px;
-  border-radius: 999px;
+  padding: 12px 20px;
+  border-radius: var(--sp-radius-pill);
   font-size: 13px;
   font-weight: 600;
-  box-shadow: var(--sp-shadow);
-  z-index: 5;
+  box-shadow: var(--sp-shadow-lg);
+  z-index: 7;
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s ease, transform 0.2s ease;
   pointer-events: none;
 }
-.sp-toast.show { opacity: 1; }
+.sp-toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
 .sp-toast.err { background: var(--sp-err); color: #fff; }
+.sp-toast.ok { background: var(--sp-ok); color: #fff; }
 
 .sp-spinner {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   border: 3px solid var(--sp-border);
   border-top-color: var(--sp-brand);
   animation: sp-spin 0.8s linear infinite;
-  margin: 30px auto;
+  margin: 40px auto;
 }
 @keyframes sp-spin { to { transform: rotate(360deg); } }
 
@@ -426,7 +781,7 @@
 
 .speako-root ::placeholder { color: var(--sp-muted); opacity: 0.7; }
 
-/* ══ NATIVE PRODUCT PAGE LAYER (light DOM → theme CSS applies) ══ */
+/* ══ NATIVE PRODUCT PAGE LAYER (light DOM → theme CSS applies) — opt-in only ══ */
 #speako-native-pdp {
   position: fixed;
   inset: 0;
@@ -474,7 +829,7 @@
   min-width: 16px;
   height: 16px;
   border-radius: 8px;
-  background: var(--sp-brand, #6366f1);
+  background: var(--sp-brand, #7c3aed);
   color: #fff;
   font-size: 10px;
   font-weight: 700;

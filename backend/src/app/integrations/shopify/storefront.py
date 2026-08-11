@@ -72,43 +72,74 @@ query StorefrontSearchProducts($query: String!, $first: Int!, $sortKey: ProductS
           minVariantPrice { amount currencyCode }
           maxVariantPrice { amount currencyCode }
         }
+        compareAtPriceRange {
+          minVariantPrice { amount currencyCode }
+          maxVariantPrice { amount currencyCode }
+        }
       }
     }
   }
 }
 """
 
-_PRODUCT_QUERY = """
-query StorefrontGetProduct($handle: String!) {
-  product(handle: $handle) {
+# Review metafield identifiers — probes the common review apps (Shopify native
+# rating, Judge.me, Loox, Okendo, Yotpo). Missing ones come back as null and are
+# skipped by :func:`_extract_reviews`.
+_REVIEW_METAFIELDS = """
+    metafields(identifiers: [
+      {namespace: "reviews", key: "rating"},
+      {namespace: "reviews", key: "rating_count"},
+      {namespace: "loox", key: "avg_rating"},
+      {namespace: "loox", key: "num_reviews"},
+      {namespace: "okendo", key: "summaryData"},
+      {namespace: "judgeme", key: "badge"},
+      {namespace: "yotpo", key: "reviews_average"},
+      {namespace: "yotpo", key: "reviews_count"}
+    ]) { namespace key value type }
+"""
+
+_PRODUCT_QUERY = f"""
+query StorefrontGetProduct($handle: String!) {{
+  product(handle: $handle) {{
     id
     handle
     title
     descriptionHtml
+    description
     vendor
     productType
     tags
     availableForSale
-    featuredImage { url altText }
-    images(first: 10) { edges { node { url altText } } }
-    priceRange {
-      minVariantPrice { amount currencyCode }
-      maxVariantPrice { amount currencyCode }
-    }
-    options { name values }
-    variants(first: 250) {
-      edges {
-        node {
+    featuredImage {{ url altText }}
+    images(first: 12) {{ edges {{ node {{ url altText }} }} }}
+    priceRange {{
+      minVariantPrice {{ amount currencyCode }}
+      maxVariantPrice {{ amount currencyCode }}
+    }}
+    compareAtPriceRange {{
+      minVariantPrice {{ amount currencyCode }}
+      maxVariantPrice {{ amount currencyCode }}
+    }}
+    options {{ name values }}
+{_REVIEW_METAFIELDS}
+    variants(first: 250) {{
+      edges {{
+        node {{
           id
           title
+          sku
           availableForSale
-          price { amount currencyCode }
-          selectedOptions { name value }
-        }
-      }
-    }
-  }
-}
+          quantityAvailable
+          currentlyNotInStock
+          image {{ url altText }}
+          price {{ amount currencyCode }}
+          compareAtPrice {{ amount currencyCode }}
+          selectedOptions {{ name value }}
+        }}
+      }}
+    }}
+  }}
+}}
 """
 
 _CART_QUERY = (
@@ -188,10 +219,19 @@ def _node(edge: Dict[str, Any]) -> Dict[str, Any]:
 def _normalize_product(node: Dict[str, Any]) -> Dict[str, Any]:
     price_range = node.get("priceRange") or {}
     min_v = price_range.get("minVariantPrice") or {}
-    max_v = price_range.get("maxVariantPrice") or {}
     image = node.get("featuredImage") or (node.get("images") or {}).get("edges") or []
     if image and isinstance(image, list):
         image = image[0].get("node") or {}
+
+    # Real compare-at = the compare-at price of the cheapest variant (falls back to
+    # the top of the compare-at range). Only a *higher* compare-at means "on sale".
+    compare_range = node.get("compareAtPriceRange") or {}
+    cmp_min = compare_range.get("minVariantPrice") or {}
+    cmp_max = compare_range.get("maxVariantPrice") or {}
+    price_amt = float(min_v.get("amount") or 0)
+    compare_amt = float(cmp_min.get("amount") or 0) or float(cmp_max.get("amount") or 0)
+    on_sale = compare_amt > price_amt > 0
+
     return {
         "id": node.get("id"),
         "handle": node.get("handle"),
@@ -202,9 +242,70 @@ def _normalize_product(node: Dict[str, Any]) -> Dict[str, Any]:
         "available_for_sale": node.get("availableForSale"),
         "image": (image or {}).get("url"),
         "price": _money(min_v.get("amount"), min_v.get("currencyCode")),
-        "compare_at_price": _money(max_v.get("amount"), max_v.get("currencyCode")),
+        "compare_at_price": _money(
+            compare_amt if on_sale else None,
+            cmp_min.get("currencyCode") or min_v.get("currencyCode"),
+        ),
+        "on_sale": on_sale,
         "currency_code": (min_v.get("currencyCode") or ""),
     }
+
+
+def _extract_reviews(node: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull an aggregate ``{rating, review_count}`` from whichever review app's
+    metafields are present. Returns zeros when the store has no review data."""
+    import json as _json
+
+    rating: Optional[float] = None
+    count: int = 0
+    by_key: Dict[str, Any] = {}
+    for mf in node.get("metafields") or []:
+        if mf and mf.get("value") is not None:
+            by_key[f"{mf.get('namespace')}/{mf.get('key')}"] = mf.get("value")
+
+    def _f(v: Any) -> Optional[float]:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    # Shopify native rating metafield stores JSON: {"value": "4.4", ...}
+    native = by_key.get("reviews/rating")
+    if native:
+        try:
+            parsed = _json.loads(native) if isinstance(native, str) and native.strip().startswith("{") else None
+            rating = _f(parsed.get("value")) if parsed else _f(native)
+        except (ValueError, AttributeError):
+            rating = _f(native)
+    count = int(_f(by_key.get("reviews/rating_count")) or 0)
+
+    # Loox
+    if rating is None:
+        rating = _f(by_key.get("loox/avg_rating"))
+    if not count:
+        count = int(_f(by_key.get("loox/num_reviews")) or 0)
+
+    # Yotpo
+    if rating is None:
+        rating = _f(by_key.get("yotpo/reviews_average"))
+    if not count:
+        count = int(_f(by_key.get("yotpo/reviews_count")) or 0)
+
+    # Okendo summary JSON
+    okendo = by_key.get("okendo/summaryData")
+    if okendo and (rating is None or not count):
+        try:
+            data = _json.loads(okendo) if isinstance(okendo, str) else okendo
+            if rating is None:
+                rating = _f(data.get("averageRating") or data.get("rating"))
+            if not count:
+                count = int(_f(data.get("reviewCount") or data.get("count")) or 0)
+        except (ValueError, AttributeError):
+            pass
+
+    if rating is not None:
+        rating = round(max(0.0, min(rating, 5.0)), 1)
+    return {"rating": rating, "review_count": max(0, count)}
 
 
 class StorefrontServiceError(RuntimeError):
@@ -307,21 +408,35 @@ class StorefrontService:
         variants = []
         for edge in (product.get("variants") or {}).get("edges") or []:
             variant = _node(edge)
+            v_price = variant.get("price") or {}
+            v_compare = variant.get("compareAtPrice") or {}
+            v_img = variant.get("image") or {}
+            compare_amt = float(v_compare.get("amount") or 0)
+            price_amt = float(v_price.get("amount") or 0)
             variants.append({
                 "id": variant.get("id"),
                 "title": variant.get("title"),
+                "sku": variant.get("sku"),
                 "available_for_sale": variant.get("availableForSale"),
-                "price": _money(
-                    (variant.get("price") or {}).get("amount"),
-                    (variant.get("price") or {}).get("currencyCode"),
+                "quantity_available": variant.get("quantityAvailable"),
+                "image": v_img.get("url"),
+                "price": _money(v_price.get("amount"), v_price.get("currencyCode")),
+                "compare_at_price": _money(
+                    compare_amt if compare_amt > price_amt else None,
+                    v_compare.get("currencyCode") or v_price.get("currencyCode"),
                 ),
+                "on_sale": compare_amt > price_amt > 0,
                 "selected_options": [
                     {"name": o.get("name"), "value": o.get("value")}
                     for o in (variant.get("selectedOptions") or [])
                 ],
             })
+        reviews = _extract_reviews(product)
         base.update({
             "description_html": product.get("descriptionHtml"),
+            "description": product.get("description"),
+            "rating": reviews["rating"],
+            "review_count": reviews["review_count"],
             "options": [
                 {"name": o.get("name"), "values": o.get("values") or []}
                 for o in (product.get("options") or [])

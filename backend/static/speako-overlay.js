@@ -20,6 +20,7 @@
     'show_products',
     'show_product_detail',
     'show_availability',
+    'compare_products',
     'show_cart',
     'cart_updated',
     'apply_discount_code',
@@ -158,6 +159,36 @@
     return Math.max(0, Math.round(total * 100) / 100);
   }
 
+  // Percent saved when a compare-at price is present and higher than the price.
+  // Returns an integer 0-100; 0 means "no genuine discount" (hide the badge).
+  function savePercent(price, compareAt) {
+    var p = Number(price || 0);
+    var c = Number(compareAt || 0);
+    if (!(c > p && p > 0)) return 0;
+    return Math.round((c - p) / c * 100);
+  }
+
+  // Star fill as a 0-100 width percentage for the gold overlay layer.
+  function starPercent(rating) {
+    var r = Number(rating || 0);
+    if (isNaN(r) || r < 0) r = 0;
+    if (r > 5) r = 5;
+    return Math.round(r / 5 * 1000) / 10;
+  }
+
+  // Normalize a compare list (handles or product objects) to unique handles,
+  // capped at 3 per the spec (2-3 products side-by-side).
+  function normalizeCompare(items) {
+    var seen = {};
+    var out = [];
+    (items || []).forEach(function (it) {
+      var h = typeof it === 'string' ? it : (it && (it.handle || (it.product && it.product.handle)));
+      h = h ? String(h) : '';
+      if (h && !seen[h]) { seen[h] = 1; out.push(h); }
+    });
+    return out.slice(0, 3);
+  }
+
   /* ════════════════════════════ SPA ════════════════════════════ */
 
   function Overlay() {
@@ -171,6 +202,8 @@
     this._discountCodes = [];
     this._currentVariant = null;
     this._pdpCache = {};
+    this._compare = [];        // handles selected for side-by-side compare
+    this._compareCache = {};   // handle → full product
     this._host = null;
     this._root = null;
     this._shadow = null;
@@ -309,6 +342,17 @@
         case 'cart_updated':
           _this.open('cart', {});
           return _this._loadCart();
+        case 'compare_products': {
+          // Accept handles from payload.handles, payload.products[].handle, or
+          // whatever is already staged in the compare tray.
+          var reqHandles = normalizeCompare(
+            (p.handles && p.handles.length ? p.handles : (p.products || _this._compare)) || []
+          );
+          if (!reqHandles.length) { _this._toast('Pick 2-3 products to compare.', true); return; }
+          _this._compare = reqHandles;
+          _this.open('compare', { handles: reqHandles });
+          return _this._loadCompare(reqHandles);
+        }
         case 'apply_discount_code':
           _this.open('cart', { applyCode: p.code || p.discount_code || '' });
           return _this._loadCart();
@@ -450,6 +494,13 @@
         else if (act === 'cart') { _this.open('cart', {}); _this._loadCart(); }
         return;
       }
+      // Compare toggle sits ON a card — intercept it before card navigation.
+      var cmpEl = e.target && e.target.closest ? e.target.closest('[data-compare-toggle]') : null;
+      if (cmpEl) {
+        e.stopPropagation();
+        _this._toggleCompare(cmpEl.getAttribute('data-compare-toggle'), cmpEl);
+        return;
+      }
       var card = e.target && e.target.closest ? e.target.closest('[data-handle]') : null;
       if (card && _this._open) {
         var handle = card.getAttribute('data-handle');
@@ -460,12 +511,25 @@
       }
     });
 
-    // Ambient voice events from the widget bridge
+    // Ambient voice events from the widget bridge → drive the transcript line
+    // and the waveform visualizer without any top-level reload.
     this.on('transcript', function (data) {
       var t = (data && (data.text || data.transcript)) || '';
-      if (t && _this._els.transcript) _this._els.transcript.textContent = t;
+      if (_this._els.transcript) _this._els.transcript.textContent = t || 'Aria is listening…';
+      _this._setWave(!!t);
     });
-    this.on('status', function (data) { /* reserved */ });
+    this.on('status', function (data) {
+      var s = (data && (data.state || data.status)) || '';
+      var speaking = /listen|speak|record|think|process|active/i.test(String(s));
+      _this._setWave(speaking);
+    });
+    this.on('suggestion', function () { /* forwarded to voice agent listeners */ });
+  };
+
+  proto._setWave = function (active) {
+    if (!this._els || !this._els.body) return;
+    var wave = this._els.body.querySelector('[data-wave]');
+    if (wave) wave.classList.toggle('active', !!active);
   };
 
   proto._handleBack = function () {
@@ -490,6 +554,10 @@
       if (!product && top.params.handle) this._loadProduct(top.params.handle);
     } else if (top.view === 'cart') {
       this._loadCart();
+    } else if (top.view === 'compare') {
+      var handles = top.params.handles || this._compare;
+      if (handles && handles.length) { this._render('compare', { handles: handles, loading: true }); this._loadCompare(handles); }
+      else this._render('compare', { handles: [] });
     } else {
       this._render(top.view, top.params);
     }
@@ -639,24 +707,48 @@
     if (view !== 'pdp') this._closeNativePdp();
     var body = this._els.body;
     this._els.back.style.visibility = this._stack.size() > 1 ? 'visible' : 'hidden';
+    var titleEl = this._refs && this._refs._root.querySelector('.sp-title');
+    if (titleEl) {
+      var t = this.cfg.storeName || 'Speako';
+      if (view === 'search') t = params.query ? ('Results: ' + params.query) : 'Search';
+      else if (view === 'pdp') t = (params.product && params.product.title) || 'Product';
+      else if (view === 'cart') t = 'Your cart';
+      else if (view === 'compare') t = 'Compare';
+      titleEl.textContent = t;
+    }
     if (view === 'home') this._renderHome(params);
     else if (view === 'search') this._renderSearch(params);
     else if (view === 'pdp') this._renderPdp(params);
     else if (view === 'cart') this._renderCart(params);
+    else if (view === 'compare') this._renderCompare(params);
     this._els.transcript = body.querySelector('[data-transcript]') || null;
   };
 
   proto._renderHome = function (params) {
     var _this = this;
+    var suggestions = [
+      { icon: '🎯', label: 'Help me choose', act: 'assist' },
+      { icon: '🔥', label: 'What’s trending', act: 'search', q: 'best sellers' },
+      { icon: '🏷️', label: 'Today’s deals', act: 'search', q: 'sale' },
+      { icon: '📦', label: 'Track my order', act: 'track' }
+    ];
+    var chips = suggestions.map(function (s) {
+      return '<button class="sp-suggest" data-suggest="' + s.act + '"' +
+        (s.q ? ' data-q="' + escapeAttr(s.q) + '"' : '') + '>' + s.icon + ' ' + escapeHtml(s.label) + '</button>';
+    }).join('');
+    var wave = '<span class="sp-wave" data-wave>' +
+      '<span></span><span></span><span></span><span></span><span></span><span></span><span></span></span>';
+
     this._els.body.innerHTML =
       '<div class="speako-home">' +
-        '<div class="speako-hello">' + escapeHtml(this.cfg.storeName || 'Speako') + '</div>' +
-        '<p class="speako-hint">Ask to search, or browse the store here while Aria stays on the line.</p>' +
+        '<div class="speako-hello">Hi, I’m Aria &#128075;</div>' +
+        '<p class="speako-hint">Shop ' + escapeHtml(this.cfg.storeName || 'the store') + ' here while I stay on the line — search, compare, and check out without leaving.</p>' +
+        '<div class="sp-suggestions">' + chips + '</div>' +
         '<div class="sp-searchbar">' +
           '<input data-search-input placeholder="Search products…" aria-label="Search products">' +
           '<button data-gone>Search</button>' +
         '</div>' +
-        '<div class="speako-ambient"><span class="sp-voice-dot"></span>' +
+        '<div class="speako-ambient">' + wave +
           '<div class="sp-transcript" data-transcript>Aria is listening…</div></div>' +
       '</div>';
     var input = this._els.body.querySelector('[data-search-input]');
@@ -666,6 +758,14 @@
     };
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter') cb(); });
     this._els.body.querySelector('[data-gone]').addEventListener('click', cb);
+    this._els.body.querySelectorAll('[data-suggest]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var act = btn.getAttribute('data-suggest');
+        if (act === 'search') { var q = btn.getAttribute('data-q') || ''; _this.pushView('search', { query: q }); _this._loadSearch(q); }
+        else if (act === 'assist') { _this.emit('suggestion', { intent: 'assist' }); _this._toast('Tell Aria what you’re looking for.'); }
+        else if (act === 'track') { _this.emit('suggestion', { intent: 'track_order' }); _this._toast('Ask Aria to track your order.'); }
+      });
+    });
     this._badge0Banner();
   };
 
@@ -729,54 +829,90 @@
         applyFacets();
       });
     });
+
+    this._syncCompareBar();
   };
 
   proto._buildFacets = function (products) {
+    var _this = this;
+    var cur = this.cfg.currency || '';
     var out = [];
-    out.push({
-      key: 'price1', label: 'Under ₹1,500',
-      match: function (p) { return (p.price && p.price.amount || 0) < 1500; }
-    });
-    out.push({
-      key: 'price2', label: '₹1,500 – ₹5,000',
-      match: function (p) { var a = (p.price && p.price.amount || 0); return a >= 1500 && a <= 5000; }
-    });
-    out.push({
-      key: 'price3', label: 'Above ₹5,000',
-      match: function (p) { return (p.price && p.price.amount || 0) > 5000; }
-    });
-    var vendors = {};
-    var tags = {};
+    var prices = (products || [])
+      .map(function (p) { return Number((p.price && p.price.amount) || 0); })
+      .filter(function (n) { return n > 0; })
+      .sort(function (a, b) { return a - b; });
+
+    // Data-driven price buckets from the observed distribution (tertiles), so
+    // the ranges are meaningful for THIS result set and the store's currency.
+    if (prices.length >= 3 && prices[prices.length - 1] > prices[0]) {
+      var lo = prices[Math.floor(prices.length / 3)];
+      var hi = prices[Math.floor(prices.length * 2 / 3)];
+      var round = function (n) { return n >= 100 ? Math.round(n / 10) * 10 : Math.round(n); };
+      lo = round(lo); hi = round(hi);
+      if (hi <= lo) hi = lo + 1;
+      out.push({ key: 'price:lo', label: 'Under ' + formatMoney(lo, cur), kind: 'Price',
+        match: function (p) { return ((p.price && p.price.amount) || 0) < lo; } });
+      out.push({ key: 'price:mid', label: formatMoney(lo, cur) + ' – ' + formatMoney(hi, cur), kind: 'Price',
+        match: function (p) { var a = (p.price && p.price.amount) || 0; return a >= lo && a <= hi; } });
+      out.push({ key: 'price:hi', label: 'Above ' + formatMoney(hi, cur), kind: 'Price',
+        match: function (p) { return ((p.price && p.price.amount) || 0) > hi; } });
+    }
+
+    // Availability + on-sale.
+    out.push({ key: 'avail', label: 'In stock', kind: 'Availability',
+      match: function (p) { return p.available_for_sale !== false; } });
+    var anySale = (products || []).some(function (p) { return p.on_sale || savePercent((p.price && p.price.amount) || 0, (p.compare_at_price && p.compare_at_price.amount) || 0) > 0; });
+    if (anySale) {
+      out.push({ key: 'sale', label: 'On sale', kind: 'Availability',
+        match: function (p) { return p.on_sale || savePercent((p.price && p.price.amount) || 0, (p.compare_at_price && p.compare_at_price.amount) || 0) > 0; } });
+    }
+
+    // Vendors + tags (from the observed set).
+    var vendors = {}, tags = {};
     (products || []).forEach(function (p) {
       if (p.vendor) vendors[p.vendor] = (vendors[p.vendor] || 0) + 1;
       (p.tags || []).forEach(function (t) { tags[t] = (tags[t] || 0) + 1; });
     });
     Object.keys(vendors).sort().forEach(function (v) {
-      out.push({ key: 'vendor:' + v, label: String(v), match: function (p) { return p.vendor === v; } });
+      out.push({ key: 'vendor:' + v, label: String(v), kind: 'Brand', match: function (p) { return p.vendor === v; } });
     });
-    out.push({
-      key: 'avail', label: 'In stock', match: function (p) { return p.available_for_sale !== false; }
-    });
-    Object.keys(tags).sort().forEach(function (t) {
-      out.push({ key: 'tag:' + t, label: '#' + String(t), match: function (p) { return (p.tags || []).indexOf(t) !== -1; } });
+    Object.keys(tags).sort().slice(0, 12).forEach(function (t) {
+      out.push({ key: 'tag:' + t, label: '#' + String(t), kind: 'Tags', match: function (p) { return (p.tags || []).indexOf(t) !== -1; } });
     });
     return out;
   };
 
   proto._gridHtml = function (products, all) {
     var _this = this;
+    var cur = this.cfg.currency || '';
     return (products || []).map(function (p) {
+      var priceAmt = (p.price && p.price.amount) || 0;
+      var compareAmt = (p.compare_at_price && Number(p.compare_at_price.amount)) || 0;
+      var pct = savePercent(priceAmt, compareAmt);
+      var handle = p.handle || '';
+      var inCompare = _this._compare.indexOf(handle) !== -1;
       var img = p.image
         ? '<img src="' + escapeAttr(p.image) + '" alt="' + escapeAttr(p.title || '') + '" loading="lazy">'
         : '<div class="sp-card-empty">No image</div>';
-      var price = formatMoney((p.price && p.price.amount) || 0, _this.cfg.currency || p.currency_code);
-      var vendor = (p.vendor && p.title) ? '<div class="sp-card-vendor">' + escapeHtml(p.vendor) + '</div>' : '';
-      return '<div class="sp-card" data-handle="' + escapeAttr(p.handle || '') + '">' +
-        img +
+      var price = formatMoney(priceAmt, cur || p.currency_code);
+      var vendor = p.vendor ? '<div class="sp-card-vendor">' + escapeHtml(p.vendor) + '</div>' : '';
+      var rating = (p.rating || p.review_count)
+        ? '<div class="sp-card-rating">' + _this._starsHtml(p.rating) +
+            '<span>' + (p.rating ? Number(p.rating).toFixed(1) : '') +
+            ' (' + (Number(p.review_count) || 0) + ')</span></div>'
+        : '';
+      return '<div class="sp-card" data-handle="' + escapeAttr(handle) + '">' +
+        '<div class="sp-card-media">' + img +
+          (pct ? '<span class="sp-badge-sale">' + pct + '% OFF</span>' : '') +
+          '<button class="sp-card-compare-toggle' + (inCompare ? ' active' : '') + '" data-compare-toggle="' + escapeAttr(handle) + '" title="Compare" aria-label="Add to compare">&#8646;</button>' +
+        '</div>' +
         '<div class="sp-card-body">' +
           '<div class="sp-card-title">' + escapeHtml(p.title || '') + '</div>' +
-          '<div class="sp-card-price">' + escapeHtml(price) + '</div>' +
-          vendor +
+          vendor + rating +
+          '<div class="sp-card-pricerow">' +
+            '<span class="sp-card-price">' + escapeHtml(price) + '</span>' +
+            (pct ? '<span class="sp-card-compare">' + escapeHtml(formatMoney(compareAmt, cur || p.currency_code)) + '</span>' : '') +
+          '</div>' +
         '</div></div>';
     }).join('');
   };
@@ -793,10 +929,11 @@
   };
 
   proto._renderPdp = function (params) {
-    // Product detail → embed the theme's REAL product section (fetched from the
-    // storefront) so the page matches the live web exactly. Falls back to the
-    // in-SPA mini PDP whenever native embedding is disabled or fails.
-    var nativeMode = (this.cfg.nativePdp || this.cfg.native_pdp || 'on') !== 'off';
+    // Rich, high-converting custom PDP is the DEFAULT (gallery, reviews, save %,
+    // variant engine, Add-to-Cart + Buy-It-Now, accordions). The theme-embed
+    // native page is opt-in only via native_pdp="embed" for merchants who
+    // require pixel-parity with their live product template.
+    var nativeMode = (this.cfg.nativePdp || this.cfg.native_pdp || '') === 'embed';
     if (nativeMode && params && params.handle) {
       this._renderPdpNative(params);
       return;
@@ -804,6 +941,7 @@
     this._renderPdpMini(params);
   };
 
+  // Rich, conversion-focused custom PDP — the default product view.
   proto._renderPdpMini = function (params) {
     var _this = this;
     var product = params.product;
@@ -813,81 +951,195 @@
         : '<div class="sp-empty">Product not available.</div>';
       return;
     }
+    var cur = this.cfg.currency || product.currency_code || '';
     this._currentVariant = pickVariant(product, null);
-    var images = product.images && product.images.length
-      ? product.images
-      : (product.image ? [product.image] : []);
-    var carousel = '<div class="sp-carousel">' +
-      (images.length ? images.map(function (src) {
-        return '<img src="' + escapeAttr(src) + '" alt="' + escapeAttr(product.title || '') + '" loading="lazy">';
-      }).join('') : '<div class="sp-card-empty">No image</div>') +
+
+    // ── Gallery images (tolerate string[] or {url}[] shapes) ──
+    var imgs = [];
+    (product.images || []).forEach(function (im) { imgs.push(typeof im === 'string' ? im : (im && im.url)); });
+    if (!imgs.length && product.image) imgs = [product.image];
+    imgs = imgs.filter(Boolean);
+
+    var galleryMain = imgs.length
+      ? imgs.map(function (src, i) {
+          return '<img src="' + escapeAttr(src) + '" data-gimg="' + i + '" alt="' + escapeAttr(product.title || '') + '" loading="lazy">';
+        }).join('')
+      : '<div class="sp-card-empty">No image</div>';
+    var dots = imgs.length > 1
+      ? '<div class="sp-gallery-dots" data-dots>' + imgs.map(function (_, i) {
+          return '<span class="sp-dot' + (i === 0 ? ' active' : '') + '" data-dot="' + i + '"></span>';
+        }).join('') + '</div>'
+      : '';
+    var thumbs = imgs.length > 1
+      ? '<div class="sp-gallery-thumbs" data-thumbs>' + imgs.map(function (src, i) {
+          return '<img src="' + escapeAttr(src) + '" data-thumb="' + i + '" class="' + (i === 0 ? 'active' : '') + '" alt="">';
+        }).join('') + '</div>'
+      : '';
+    var gallery =
+      '<div class="sp-gallery">' +
+        '<div class="sp-gallery-main" data-gallery>' + galleryMain + '</div>' +
+        dots + thumbs +
       '</div>';
 
-    var stock = this._currentVariant && this._currentVariant.available_for_sale === false
-      ? '<span class="sp-stock out">Out of stock</span>'
-      : '<span class="sp-stock in">In stock</span>';
-
-    var optionsHtml = '';
-    (product.options || []).forEach(function (opt) {
-      optionsHtml += '<div class="sp-option-group">' +
-        '<div class="sp-option-label">' + escapeHtml(opt.name || '') + '</div>' +
-        (opt.values && opt.values.length <= 5
-          ? '<div class="sp-swatches" data-opt="' + escapeAttr(opt.name || '') + '">' +
-              (opt.values || []).map(function (v) {
-                return '<button class="sp-swatch" data-val="' + escapeAttr(v) + '">' + escapeHtml(v) + '</button>';
-              }).join('') + '</div>'
-          : '<select class="sp-option-select" data-opt="' + escapeAttr(opt.name || '') + '">' +
-              (opt.values || []).map(function (v) {
-                return '<option value="' + escapeAttr(v) + '">' + escapeHtml(v) + '</option>';
-              }).join('') + '</select>') +
+    // ── Rating block ──
+    var ratingHtml = '';
+    if (product.rating || product.review_count) {
+      ratingHtml =
+        '<div class="sp-rating">' +
+          this._starsHtml(product.rating) +
+          (product.rating ? '<span class="sp-rating-score">' + Number(product.rating).toFixed(1) + '</span>' : '') +
+          '<span class="sp-rating-count">(' + (Number(product.review_count) || 0) + ' review' + ((Number(product.review_count) || 0) === 1 ? '' : 's') + ')</span>' +
         '</div>';
-    });
+    }
 
-    var price = formatMoney(variantPrice(this._currentVariant), this.cfg.currency || product.currency_code || '');
+    // ── Options (color swatches / size pills / dropdown) ──
+    var optionsHtml = (product.options || []).map(function (opt) {
+      var name = opt.name || '';
+      var lname = name.toLowerCase();
+      var vals = opt.values || [];
+      var isColor = /colou?r/.test(lname);
+      var isSize = /size/.test(lname);
+      var body;
+      if (vals.length > 6 && !isColor) {
+        body = '<select class="sp-option-select" data-opt="' + escapeAttr(name) + '">' +
+          vals.map(function (v) { return '<option value="' + escapeAttr(v) + '">' + escapeHtml(v) + '</option>'; }).join('') +
+          '</select>';
+      } else {
+        var swClass = 'sp-swatch' + (isColor ? ' sp-swatch-color' : (isSize ? ' sp-swatch-size' : ''));
+        body = '<div class="sp-swatches" data-opt="' + escapeAttr(name) + '">' +
+          vals.map(function (v) {
+            var style = isColor ? ' style="background:' + escapeAttr(cssColor(v)) + '"' : '';
+            return '<button class="' + swClass + '" data-val="' + escapeAttr(v) + '"' + style + '>' + escapeHtml(v) + '</button>';
+          }).join('') + '</div>';
+      }
+      return '<div class="sp-option-group">' +
+        '<div class="sp-option-label">' + escapeHtml(name) + '<span class="sp-option-value" data-optval="' + escapeAttr(name) + '"></span></div>' +
+        body + '</div>';
+    }).join('');
+
+    // ── Accordions ──
+    var descBody = product.description_html || (product.description ? escapeHtml(product.description) : 'No description available.');
+    var specsRows = '';
+    (product.options || []).forEach(function (opt) {
+      if (opt.values && opt.values.length) specsRows += '<tr><td>' + escapeHtml(opt.name || '') + '</td><td>' + escapeHtml(opt.values.join(', ')) + '</td></tr>';
+    });
+    if (product.vendor) specsRows = '<tr><td>Brand</td><td>' + escapeHtml(product.vendor) + '</td></tr>' + specsRows;
+    if (this._currentVariant && this._currentVariant.sku) specsRows += '<tr><td>SKU</td><td>' + escapeHtml(this._currentVariant.sku) + '</td></tr>';
+    var accordions =
+      '<div class="sp-accordions">' +
+        this._accordion('Description', '<div class="sp-pdp-desc">' + descBody + '</div>', true) +
+        this._accordion('Shipping', 'Free standard shipping on eligible orders. Most orders dispatch within 1-2 business days; delivery estimates are shown at checkout.', false) +
+        this._accordion('Returns', 'Easy 30-day returns. Items must be unused and in original packaging. Start a return from your order confirmation email.', false) +
+        (specsRows ? this._accordion('Specifications', '<table class="sp-specs">' + specsRows + '</table>', false) : '') +
+      '</div>';
 
     this._els.body.innerHTML =
-      carousel +
-      '<div class="sp-pdp-title">' + escapeHtml(product.title || '') + '</div>' +
-      '<div class="sp-pdp-price" data-price>' + escapeHtml(price) + '</div>' +
-      stock +
-      optionsHtml +
-      '<div class="sp-qty-row">' +
-        '<button class="sp-qty-btn" data-qminus>&#8722;</button><span class="sp-qty-val" data-qty>1</span>' +
-        '<button class="sp-qty-btn" data-qplus>&#43;</button>' +
+      '<div class="sp-pdp">' +
+        gallery +
+        (product.vendor ? '<div class="sp-pdp-vendor">' + escapeHtml(product.vendor) + '</div>' : '') +
+        '<div class="sp-pdp-title">' + escapeHtml(product.title || '') + '</div>' +
+        ratingHtml +
+        '<div class="sp-pdp-pricing" data-pricing></div>' +
+        '<div data-stockwrap></div>' +
+        optionsHtml +
+        '<div class="sp-qty-row">' +
+          '<span class="sp-qty-label">Quantity</span>' +
+          '<div class="sp-qty-stepper">' +
+            '<button class="sp-qty-btn" data-qminus aria-label="Decrease">&#8722;</button>' +
+            '<span class="sp-qty-val" data-qty>1</span>' +
+            '<button class="sp-qty-btn" data-qplus aria-label="Increase">&#43;</button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="sp-actions">' +
+          '<button class="sp-add" id="sp-btn-add-cart" data-add>Add to Cart</button>' +
+          '<button class="sp-buy-now" id="sp-btn-buy-now" data-buynow>Buy It Now</button>' +
+        '</div>' +
+        accordions +
       '</div>' +
-      '<button class="sp-add" data-add>Add to cart</button>' +
-      (product.description_html ? '<div class="sp-pdp-desc">' + product.description_html + '</div>' : '');
+      '<div class="sp-zoom" data-zoom><button class="sp-zoom-close" data-zoomclose aria-label="Close">&#10005;</button><img data-zoomimg alt=""></div>';
 
     var qty = 1;
-    var updateVariant = function () {
+
+    // ── Pricing + stock repaint for the active variant ──
+    var paint = function () {
+      var v = _this._currentVariant;
+      var price = variantPrice(v);
+      var compareAmt = (v && v.compare_at_price && Number(v.compare_at_price.amount)) ||
+        (product.compare_at_price && Number(product.compare_at_price.amount)) || 0;
+      var pct = savePercent(price, compareAmt);
+      var priceEl = _this._els.body.querySelector('[data-pricing]');
+      if (priceEl) {
+        priceEl.innerHTML =
+          '<span class="sp-pdp-price">' + escapeHtml(formatMoney(price, cur)) + '</span>' +
+          (pct ? '<span class="sp-pdp-compare">' + escapeHtml(formatMoney(compareAmt, cur)) + '</span>' +
+                 '<span class="sp-save-badge">Save ' + pct + '%</span>' : '');
+      }
+      var oos = v && v.available_for_sale === false;
+      var qa = v && typeof v.quantity_available === 'number' ? v.quantity_available : null;
+      var stockCls = oos ? 'out' : (qa !== null && qa > 0 && qa <= 5 ? 'low' : 'in');
+      var stockTxt = oos ? 'Out of stock' : (stockCls === 'low' ? ('Only ' + qa + ' left') : 'In stock');
+      var sw = _this._els.body.querySelector('[data-stockwrap]');
+      if (sw) sw.innerHTML = '<span class="sp-stock ' + stockCls + '">' + stockTxt + '</span>';
+      var addBtn = _this._els.body.querySelector('[data-add]');
+      var buyBtn = _this._els.body.querySelector('[data-buynow]');
+      if (addBtn) { addBtn.disabled = !!oos; addBtn.textContent = oos ? 'Out of stock' : 'Add to Cart'; }
+      if (buyBtn) buyBtn.disabled = !!oos;
+    };
+
+    // ── Variant selection engine ──
+    var readSelected = function () {
       var selected = [];
       _this._els.body.querySelectorAll('[data-opt]').forEach(function (ctl) {
         var name = ctl.getAttribute('data-opt');
-        var value = ctl.tagName === 'SELECT' ? ctl.value : (ctl.querySelector('.sp-swatch.active') || {}).getAttribute ? ctl.querySelector('.sp-swatch.active').getAttribute('data-val') : '';
+        var value = '';
+        if (ctl.tagName === 'SELECT') value = ctl.value;
+        else { var act = ctl.querySelector('.sp-swatch.active'); value = act ? act.getAttribute('data-val') : ''; }
         if (value) selected.push({ name: name, value: value });
       });
+      return selected;
+    };
+    var refreshDisabled = function (selected) {
+      // For each option, disable values that yield no available variant given
+      // the OTHER currently-selected options.
+      _this._els.body.querySelectorAll('.sp-swatches[data-opt]').forEach(function (grp) {
+        var name = grp.getAttribute('data-opt');
+        var others = selected.filter(function (s) { return s.name !== name; });
+        grp.querySelectorAll('.sp-swatch').forEach(function (sw) {
+          var trial = others.concat([{ name: name, value: sw.getAttribute('data-val') }]);
+          var v = pickVariant(product, trial);
+          var ok = v && matchesAll(v, trial) && v.available_for_sale !== false;
+          sw.classList.toggle('disabled', !ok);
+        });
+      });
+    };
+    var matchesAll = function (variant, sel) {
+      var opts = variant.selected_options || [];
+      return sel.every(function (s) {
+        return opts.some(function (o) { return o.name === s.name && o.value === s.value; });
+      });
+    };
+    var updateVariant = function () {
+      var selected = readSelected();
+      selected.forEach(function (s) {
+        var lbl = _this._els.body.querySelector('[data-optval="' + cssEsc(s.name) + '"]');
+        if (lbl) lbl.textContent = s.value;
+      });
       var variant = pickVariant(product, selected);
-      if (variant) {
-        _this._currentVariant = variant;
-        _this._els.body.querySelector('[data-price]').textContent = formatMoney(variantPrice(variant), _this.cfg.currency || '');
-        var badge = _this._els.body.querySelector('.sp-stock');
-        if (badge) {
-          badge.className = variant.available_for_sale === false ? 'sp-stock out' : 'sp-stock in';
-          badge.textContent = variant.available_for_sale === false ? 'Out of stock' : 'In stock';
-        }
-        var add = _this._els.body.querySelector('[data-add]');
-        if (add) add.disabled = variant.available_for_sale === false;
-      }
+      if (variant) _this._currentVariant = variant;
+      refreshDisabled(selected);
+      paint();
     };
 
+    // Bind option controls.
     this._els.body.querySelectorAll('[data-opt]').forEach(function (ctl) {
       if (ctl.tagName === 'SELECT') {
         ctl.addEventListener('change', updateVariant);
       } else {
-        var defaultSwatch = ctl.querySelector('.sp-swatch');
-        if (defaultSwatch) defaultSwatch.classList.add('active');
+        var first = ctl.querySelector('.sp-swatch');
+        if (first) first.classList.add('active');
         ctl.querySelectorAll('.sp-swatch').forEach(function (sw) {
           sw.addEventListener('click', function () {
+            if (sw.classList.contains('disabled')) return;
             ctl.querySelectorAll('.sp-swatch').forEach(function (x) { x.classList.remove('active'); });
             sw.classList.add('active');
             updateVariant();
@@ -895,25 +1147,130 @@
         });
       }
     });
-
     updateVariant();
 
+    // ── Gallery interactions (dots, thumbs, swipe sync, zoom) ──
+    this._bindGallery();
+
+    // ── Quantity stepper ──
+    var qtyEl = this._els.body.querySelector('[data-qty]');
     this._els.body.querySelector('[data-qminus]').addEventListener('click', function () {
-      qty = Math.max(1, qty - 1);
-      _this._els.body.querySelector('[data-qty]').textContent = String(qty);
+      qty = Math.max(1, qty - 1); qtyEl.textContent = String(qty);
     });
     this._els.body.querySelector('[data-qplus]').addEventListener('click', function () {
-      qty += 1;
-      _this._els.body.querySelector('[data-qty]').textContent = String(qty);
+      qty += 1; qtyEl.textContent = String(qty);
     });
 
-    var add = this._els.body.querySelector('[data-add]');
-    if (this._currentVariant && this._currentVariant.available_for_sale === false) add.disabled = true;
-    add.addEventListener('click', function () {
+    // ── Accordions ──
+    this._els.body.querySelectorAll('.sp-accordion-head').forEach(function (head) {
+      head.addEventListener('click', function () { head.parentNode.classList.toggle('open'); });
+    });
+
+    // ── Add to Cart ──
+    this._els.body.querySelector('[data-add]').addEventListener('click', function () {
       var v = _this._currentVariant;
       if (!v) { _this._toast('Select a variant first.', true); return; }
       if (v.available_for_sale === false) { _this._toast('This variant is out of stock.', true); return; }
       _this._addLine(v.id, qty);
+    });
+
+    // ── Buy It Now → deferred single-transition checkout ──
+    this._els.body.querySelector('[data-buynow]').addEventListener('click', function () {
+      var v = _this._currentVariant;
+      if (!v) { _this._toast('Select a variant first.', true); return; }
+      if (v.available_for_sale === false) { _this._toast('This variant is out of stock.', true); return; }
+      _this._buyNow(v.id, qty);
+    });
+  };
+
+  // Star row: grey background + gold foreground clipped to the rating width.
+  proto._starsHtml = function (rating) {
+    var pct = starPercent(rating);
+    return '<span class="sp-stars" aria-label="' + (Number(rating) || 0).toFixed(1) + ' out of 5">' +
+      '<span class="sp-stars-bg">★★★★★</span>' +
+      '<span class="sp-stars-fg" style="width:' + pct + '%">★★★★★</span>' +
+    '</span>';
+  };
+
+  proto._accordion = function (title, bodyHtml, open) {
+    return '<div class="sp-accordion' + (open ? ' open' : '') + '">' +
+      '<button class="sp-accordion-head" type="button">' + escapeHtml(title) +
+        '<span class="sp-acc-icon">&#43;</span></button>' +
+      '<div class="sp-accordion-body"><div class="sp-accordion-body-inner">' + bodyHtml + '</div></div>' +
+    '</div>';
+  };
+
+  proto._bindGallery = function () {
+    var _this = this;
+    var main = this._els.body.querySelector('[data-gallery]');
+    if (!main) return;
+    var setActive = function (i) {
+      _this._els.body.querySelectorAll('[data-dot]').forEach(function (d) {
+        d.classList.toggle('active', +d.getAttribute('data-dot') === i);
+      });
+      _this._els.body.querySelectorAll('[data-thumb]').forEach(function (th) {
+        th.classList.toggle('active', +th.getAttribute('data-thumb') === i);
+      });
+    };
+    var scrollTo = function (i) {
+      var img = main.querySelector('[data-gimg="' + i + '"]');
+      if (img) main.scrollTo({ left: img.offsetLeft - main.offsetLeft, behavior: 'smooth' });
+      setActive(i);
+    };
+    this._els.body.querySelectorAll('[data-dot]').forEach(function (d) {
+      d.addEventListener('click', function () { scrollTo(+d.getAttribute('data-dot')); });
+    });
+    this._els.body.querySelectorAll('[data-thumb]').forEach(function (th) {
+      th.addEventListener('click', function () { scrollTo(+th.getAttribute('data-thumb')); });
+    });
+    // Sync dots to manual swipe.
+    var syncTimer;
+    main.addEventListener('scroll', function () {
+      clearTimeout(syncTimer);
+      syncTimer = setTimeout(function () {
+        var i = Math.round(main.scrollLeft / Math.max(1, main.clientWidth));
+        setActive(i);
+      }, 80);
+    });
+    // Zoom lightbox.
+    var zoom = this._els.body.querySelector('[data-zoom]');
+    var zoomImg = this._els.body.querySelector('[data-zoomimg]');
+    main.querySelectorAll('[data-gimg]').forEach(function (img) {
+      img.addEventListener('click', function () {
+        if (!zoom || !zoomImg) return;
+        zoomImg.src = img.getAttribute('src');
+        zoom.classList.add('show');
+      });
+    });
+    if (zoom) {
+      zoom.addEventListener('click', function (e) {
+        if (e.target === zoom || (e.target.closest && e.target.closest('[data-zoomclose]'))) zoom.classList.remove('show');
+      });
+    }
+  };
+
+  // Buy It Now — ensure the variant is in a cart, then perform the single
+  // deferred top-level navigation to checkout (the only allowed reload).
+  proto._buyNow = function (variantId, quantity) {
+    var _this = this;
+    var btn = this._els.body.querySelector('[data-buynow]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Preparing checkout…'; }
+    this._ensureCart(variantId, quantity).then(function () {
+      return _this._api('/cart/checkout', {
+        method: 'POST',
+        body: { cart_id: _this._cartId, discount_codes: _this._discountCodes || [] }
+      });
+    }).then(function (res) {
+      if (res.errors || !res.checkout_url) {
+        _this._toast((res.errors && res.errors[0] && res.errors[0].message) || 'Could not start checkout.', true);
+        if (btn) { btn.disabled = false; btn.textContent = 'Buy It Now'; }
+        return;
+      }
+      _this._publish('buy_now', { variant_id: variantId, quantity: quantity || 1 });
+      try { window.location.href = res.checkout_url; } catch (e) {}
+    }).catch(function (err) {
+      _this._toast(err.message || 'Could not start checkout.', true);
+      if (btn) { btn.disabled = false; btn.textContent = 'Buy It Now'; }
     });
   };
 
@@ -1148,6 +1505,131 @@
     apply();
   };
 
+  /* ── Compare view ─────────────────────────────────────────────────────── */
+
+  // Toggle a product into/out of the compare tray (max 3). Updates the toggle
+  // button and the floating compare bar in the search view.
+  proto._toggleCompare = function (handle, btnEl) {
+    if (!handle) return;
+    var i = this._compare.indexOf(handle);
+    if (i !== -1) {
+      this._compare.splice(i, 1);
+      if (btnEl) btnEl.classList.remove('active');
+    } else {
+      if (this._compare.length >= 3) { this._toast('Compare up to 3 products.', true); return; }
+      this._compare.push(handle);
+      if (btnEl) btnEl.classList.add('active');
+    }
+    // Keep any duplicate toggles (grid + hrow) in sync.
+    if (this._els && this._els.body) {
+      var active = this._compare;
+      this._els.body.querySelectorAll('[data-compare-toggle]').forEach(function (b) {
+        b.classList.toggle('active', active.indexOf(b.getAttribute('data-compare-toggle')) !== -1);
+      });
+    }
+    this._syncCompareBar();
+  };
+
+  proto._syncCompareBar = function () {
+    if (!this._els || !this._els.body) return;
+    var _this = this;
+    var host = this._els.body.querySelector('[data-compare-bar]');
+    if (!this._compare.length) { if (host) host.remove(); return; }
+    var chips = this._compare.map(function (h) {
+      var prod = _this._compareCache[h] || _this._pdpCache[h];
+      var label = (prod && prod.title) ? prod.title : h;
+      if (label.length > 22) label = label.slice(0, 21) + '…';
+      return '<span class="sp-cmp-chip">' + escapeHtml(label) +
+        '<button data-cmp-remove="' + escapeAttr(h) + '" aria-label="Remove">&#10005;</button></span>';
+    }).join('');
+    var html = chips +
+      '<button class="sp-cmp-go" data-cmp-go>Compare (' + this._compare.length + ')</button>';
+    if (!host) {
+      host = document.createElement('div');
+      host.className = 'sp-compare-bar';
+      host.setAttribute('data-compare-bar', '');
+      // Insert just under the facets / search bar.
+      this._els.body.insertBefore(host, this._els.body.firstChild);
+    }
+    host.innerHTML = html;
+    host.querySelector('[data-cmp-go]').addEventListener('click', function () {
+      if (_this._compare.length < 2) { _this._toast('Pick at least 2 products.', true); return; }
+      _this.pushView('compare', { handles: _this._compare.slice() });
+      _this._loadCompare(_this._compare.slice());
+    });
+    host.querySelectorAll('[data-cmp-remove]').forEach(function (b) {
+      b.addEventListener('click', function () { _this._toggleCompare(b.getAttribute('data-cmp-remove'), null); });
+    });
+  };
+
+  proto._loadCompare = function (handles) {
+    var _this = this;
+    handles = normalizeCompare(handles);
+    this._render('compare', { handles: handles, loading: true });
+    var jobs = handles.map(function (h) {
+      if (_this._compareCache[h]) return Promise.resolve(_this._compareCache[h]);
+      if (_this._pdpCache[h]) { _this._compareCache[h] = _this._pdpCache[h]; return Promise.resolve(_this._pdpCache[h]); }
+      return _this._api('/product/' + encodeURIComponent(h)).then(function (p) {
+        if (p) { _this._compareCache[h] = p; _this._pdpCache[h] = p; }
+        return p;
+      }).catch(function () { return null; });
+    });
+    return Promise.all(jobs).then(function (prods) {
+      var products = prods.filter(Boolean);
+      if (!products.length) { _this._toast('Could not load products to compare.', true); }
+      _this._render('compare', { handles: handles, products: products });
+    });
+  };
+
+  proto._renderCompare = function (params) {
+    var _this = this;
+    if (params.loading) { this._els.body.innerHTML = '<div class="sp-spinner"></div>'; return; }
+    var products = params.products || [];
+    if (!products.length) {
+      this._els.body.innerHTML = '<div class="sp-empty">Nothing to compare yet. Add 2-3 products from search.</div>';
+      return;
+    }
+    var cur = this.cfg.currency || '';
+    // Union of option names across products for aligned attribute rows.
+    var optNames = [];
+    products.forEach(function (p) {
+      (p.options || []).forEach(function (o) { if (o.name && optNames.indexOf(o.name) === -1) optNames.push(o.name); });
+    });
+
+    var cols = products.map(function (p) {
+      var priceAmt = (p.price && p.price.amount) || 0;
+      var compareAmt = (p.compare_at_price && Number(p.compare_at_price.amount)) || 0;
+      var pct = savePercent(priceAmt, compareAmt);
+      var img = p.image ? '<img src="' + escapeAttr(p.image) + '" alt="' + escapeAttr(p.title || '') + '">' : '<div class="sp-card-empty">No image</div>';
+      var attrs = optNames.map(function (name) {
+        var opt = (p.options || []).find(function (o) { return o.name === name; });
+        var val = opt ? (opt.values || []).join(', ') : '—';
+        return '<div class="sp-cmp-attr"><span>' + escapeHtml(name) + '</span><b>' + escapeHtml(val) + '</b></div>';
+      }).join('');
+      var ratingAttr = '<div class="sp-cmp-attr"><span>Rating</span><b>' +
+        (p.rating ? Number(p.rating).toFixed(1) + '★ (' + (Number(p.review_count) || 0) + ')' : '—') + '</b></div>';
+      var availAttr = '<div class="sp-cmp-attr"><span>Availability</span><b>' +
+        (p.available_for_sale === false ? 'Out of stock' : 'In stock') + '</b></div>';
+      var vendorAttr = p.vendor ? '<div class="sp-cmp-attr"><span>Brand</span><b>' + escapeHtml(p.vendor) + '</b></div>' : '';
+      return '<div class="sp-compare-col">' + img +
+        '<div class="sp-cmp-body">' +
+          '<div class="sp-cmp-title">' + escapeHtml(p.title || '') + '</div>' +
+          '<div class="sp-cmp-price">' + escapeHtml(formatMoney(priceAmt, cur)) +
+            (pct ? '<span class="sp-card-compare">' + escapeHtml(formatMoney(compareAmt, cur)) + '</span>' : '') + '</div>' +
+          vendorAttr + ratingAttr + availAttr + attrs +
+          '<button class="sp-cmp-view" data-cmp-open="' + escapeAttr(p.handle || '') + '">View product</button>' +
+        '</div></div>';
+    }).join('');
+
+    this._els.body.innerHTML = '<div class="sp-compare-wrap"><div class="sp-compare">' + cols + '</div></div>';
+    this._els.body.querySelectorAll('[data-cmp-open]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var h = b.getAttribute('data-cmp-open');
+        if (h) { _this.pushView('pdp', { handle: h }); _this._loadProduct(h); }
+      });
+    });
+  };
+
   proto._renderCart = function (params) {
     var _this = this;
     var cart = params.cart;
@@ -1364,6 +1846,26 @@
   }
   function escapeAttr(s) { return escapeHtml(s); }
 
+  // Escape a string for safe use inside an [attr="…"] selector.
+  function cssEsc(s) { return String(s == null ? '' : s).replace(/["\\]/g, '\\$&'); }
+
+  // Best-effort CSS color for a swatch from an option value. Named CSS colors
+  // ("Red", "Navy Blue") pass through; multi-word or unknown values fall back to
+  // the brand tint so the swatch never renders invisible/transparent.
+  function cssColor(v) {
+    var raw = String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g, '');
+    if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/.test(raw)) return raw;
+    var known = {
+      black: '#111827', white: '#ffffff', grey: '#9ca3af', gray: '#9ca3af',
+      silver: '#c0c0c0', red: '#dc2626', maroon: '#7f1d1d', orange: '#f97316',
+      yellow: '#facc15', gold: '#d4af37', green: '#16a34a', olive: '#65733a',
+      teal: '#14b8a6', blue: '#2563eb', navy: '#1e3a8a', navyblue: '#1e3a8a',
+      purple: '#7c3aed', violet: '#8b5cf6', pink: '#ec4899', brown: '#92400e',
+      beige: '#e8dcc4', cream: '#f5f0e1', tan: '#d2b48c', khaki: '#c3b091'
+    };
+    return known[raw] || (typeof CSS !== 'undefined' && CSS.supports && CSS.supports('color', v) ? v : 'var(--sp-brand-lite)');
+  }
+
   // Auto-configure from the widget loader config if present.
   if (typeof window !== 'undefined' && window.wooagent_config) {
     instance.setConfig(window.wooagent_config);
@@ -1393,6 +1895,9 @@
       pickVariant: pickVariant,
       variantPrice: variantPrice,
       applyDiscount: applyDiscount,
+      savePercent: savePercent,
+      starPercent: starPercent,
+      normalizeCompare: normalizeCompare,
       STORE_VIEW_ACTIONS: STORE_VIEW_ACTIONS,
       escapeHtml: escapeHtml
     };

@@ -40,3 +40,4 @@ wooagent.zip
 wooagent-backend/.env
 wooagent-backend/.env.example
 wooagent-backend/.env
+seed_tenant.py
