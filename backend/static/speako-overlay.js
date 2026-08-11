@@ -96,6 +96,18 @@
     return m ? decodeURIComponent(m[1]) : '';
   }
 
+  // Pull the search term out of a storefront URL like /search?q=blue+sneakers.
+  // The brain/LLM often emit search redirects carrying ONLY a URL (speako:navigate
+  // detail / append_live_navigation), so the overlay must derive the query from
+  // the URL instead of bailing out with an empty search that shows "No products".
+  function extractSearchQuery(url) {
+    var s = String(url || '');
+    var m = s.match(/[?&]q=([^&#]*)/);
+    if (!m) return '';
+    try { return decodeURIComponent(m[1].replace(/\+/g, ' ')); }
+    catch (e) { return m[1]; }
+  }
+
   function formatMoney(amount, currency) {
     var num = Number(amount || 0);
     if (isNaN(num)) num = 0;
@@ -270,12 +282,21 @@
     return Promise.resolve().then(function () {
       var p = act.payload || {};
       switch (act.type) {
-        case 'search':
-          _this.open('search', { query: p.query || '' });
-          return _this._loadSearch(p.query || '');
-        case 'show_products':
-          _this.open('search', { query: p.query || '', products: p.products || [] });
-          return _this._loadSearch(p.query || '', p.filters);
+        case 'search': {
+          var _searchQ = p.query || extractSearchQuery(p.url);
+          console.log('[Speako Overlay] search action → query="' + _searchQ + '" (raw=' + JSON.stringify(p.query) + ' url=' + (p.url || '') + ')');
+          _this.open('search', { query: _searchQ || '' });
+          return _this._loadSearch(_searchQ || '');
+        }
+        case 'show_products': {
+          var _prods = p.products || [];
+          var _spQ = p.query || extractSearchQuery(p.url);
+          _this.open('search', { query: _spQ || '', products: _prods });
+          // Products already provided in the payload → render them as-is (a
+          // _loadSearch('') call would only wipe them with the empty state).
+          if (_prods.length) { _this._render('search', { query: _spQ || '', products: _prods, filters: p.filters || {} }); return Promise.resolve(); }
+          return _this._loadSearch(_spQ || '', p.filters);
+        }
         case 'show_product_detail':
         case 'show_availability': {
           var handle = extractHandle(p, p.url || '');
@@ -298,8 +319,10 @@
         case 'redirect_checkout': {
           var reason = String(p.reason || '');
           if (reason === 'search') {
-            _this.open('search', { query: p.query || '' });
-            return _this._loadSearch(p.query || '', p.filters);
+            var _redQ = p.query || extractSearchQuery(p.url);
+            console.log('[Speako Overlay] redirect(reason=search) → query="' + _redQ + '" (raw=' + JSON.stringify(p.query) + ' url=' + (p.url || '') + ')');
+            _this.open('search', { query: _redQ || '' });
+            return _this._loadSearch(_redQ || '', p.filters);
           }
           if (reason === 'product') {
             var ph = extractHandle(p, p.url || '');
@@ -1364,6 +1387,7 @@
       isStoreNav: isStoreNav,
       isSameOriginTarget: isSameOriginTarget,
       extractHandle: extractHandle,
+      extractSearchQuery: extractSearchQuery,
       formatMoney: formatMoney,
       cartSubtotal: cartSubtotal,
       pickVariant: pickVariant,

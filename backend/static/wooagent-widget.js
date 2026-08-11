@@ -3223,6 +3223,13 @@ try {
           // SPA instead of a hard page navigation. checkout/home/account/orders
           // aren't claimed, so they keep navigating the page as before.
           const _ovNav = window.__SPEAKO_OVERLAY__;
+          // LLM search navigation only carries the URL — extract q so the overlay
+          // renders results instead of an empty search.
+          let _ovQuery = '';
+          try {
+            const _m = String(navUrl || '').match(/[?&]q=([^&#]*)/);
+            if (_m) _ovQuery = decodeURIComponent(_m[1].replace(/\+/g, ' '));
+          } catch (_e) {}
           console.log('[WooAgent Overlay] speako:navigate → routing', {
             url: navUrl,
             reason: reason,
@@ -3232,7 +3239,7 @@ try {
           if (IS_SHOPIFY && _ovNav && _ovNav.handle &&
               (reason === 'search' || reason === 'product' || reason === 'cart') &&
               (!_ovNav.claim || _ovNav.claim({ type: 'redirect', payload: { reason: reason, url: navUrl } }))) {
-            _ovNav.handle({ type: 'redirect', payload: { reason: reason, url: navUrl } });
+            _ovNav.handle({ type: 'redirect', payload: { reason: reason, url: navUrl, query: _ovQuery } });
             break;
           }
           if (reason === 'search' && IS_SHOPIFY && navUrl.includes('/search?q=')) {

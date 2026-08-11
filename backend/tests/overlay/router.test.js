@@ -150,3 +150,13 @@ test('escapeHtml neutralises markup', () => {
     '&lt;script&gt;alert(1)&lt;/script&gt;');
   assert.equal(OV.escapeHtml(null), '');
 });
+
+// ── extractSearchQuery ──────────────────────────────────────────────────────
+test('extractSearchQuery derives the term from a search URL', () => {
+  assert.equal(OV.extractSearchQuery('/search?q=blue+sneakers'), 'blue sneakers');
+  assert.equal(OV.extractSearchQuery('https://shop.com/search?q=shirt').trim(), 'shirt');
+  assert.equal(OV.extractSearchQuery('/search?q=50%25+off&sort=relevance'), '50% off');
+  assert.equal(OV.extractSearchQuery('/search'), '');
+  assert.equal(OV.extractSearchQuery(''), '');
+  assert.equal(OV.extractSearchQuery(null), '');
+});
