@@ -293,63 +293,82 @@
       --bot-bubble-border: rgba(0,0,0,0.08);
     }
 
-    /* ── FAB (compact glassmorphic voice launcher) ───────────── */
+    /* ── FAB (glassmorphic pill voice launcher) ───────────── */
     .wa-fab {
       position: fixed;
-      ${CFG.widget_position === 'bottom-left' ? 'left:20px' : 'right:20px'};
-      bottom: 20px;
-      width: 56px; height: 56px;
-      border-radius: 50%;
-      border: none;
-      background: linear-gradient(135deg, var(--p, #7c3aed) 0%, var(--p2, #6d28d9) 100%);
+      ${CFG.widget_position === 'bottom-left' ? 'left:24px' : 'right:24px'};
+      bottom: 24px;
+      height: 56px;
+      padding: 6px 20px 6px 6px;
+      border-radius: 9999px;
+      border: 1px solid rgba(124,58,237,0.22);
+      background: rgba(255,255,255,0.94);
       cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      color: #fff;
-      box-shadow: 0 0 0 0 var(--p-md), 0 8px 24px rgba(109,40,217,0.35);
+      display: inline-flex; align-items: center; gap: 11px;
+      color: #6d28d9;
+      box-shadow: 0 10px 34px rgba(109,40,217,0.22), 0 2px 10px rgba(15,23,42,0.10);
       transition: transform .22s cubic-bezier(.34,1.56,.64,1), box-shadow .22s ease;
       z-index: 2147483646;
       outline: none;
-      -webkit-backdrop-filter: blur(6px);
-      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: saturate(180%) blur(12px);
+      backdrop-filter: saturate(180%) blur(12px);
     }
     .wa-fab:hover {
-      transform: scale(1.07);
-      box-shadow: 0 0 0 8px var(--p-lo), 0 12px 32px rgba(109,40,217,0.45);
+      transform: translateY(-2px);
+      box-shadow: 0 16px 40px rgba(109,40,217,0.30), 0 4px 12px rgba(15,23,42,0.12);
     }
-    .wa-fab:active { transform: scale(0.93); }
-    .wa-fab.open { box-shadow: 0 0 0 0 transparent, 0 6px 20px rgba(109,40,217,0.4); }
+    .wa-fab:active { transform: translateY(0) scale(0.98); }
 
+    /* The label collapses out on very small viewports → orb-only launcher. */
+    .wa-fab-label {
+      font-size: 14px; font-weight: 600; letter-spacing: -0.01em;
+      white-space: nowrap; padding-right: 2px;
+    }
+    @media (max-width: 380px) {
+      .wa-fab { padding: 6px; }
+      .wa-fab-label { display: none; }
+    }
+
+    /* Pulsing purple voice orb sits at the pill's left edge. */
+    .wa-fab-orb {
+      position: relative;
+      flex: 0 0 auto;
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--p, #7c3aed) 0%, var(--p2, #6d28d9) 100%);
+      display: flex; align-items: center; justify-content: center;
+      color: #fff;
+      box-shadow: 0 4px 14px rgba(109,40,217,0.40);
+    }
     /* Ambient pulsing ring — subtle at idle, energetic while listening. */
-    .wa-fab::before {
-      content:''; position: absolute; inset: -6px;
+    .wa-fab-orb::before {
+      content:''; position: absolute; inset: 0;
       border-radius: 50%; border: 1.5px solid var(--p, #7c3aed);
       opacity: 0; animation: wa-ripple 3.5s ease-out infinite;
       pointer-events: none;
     }
-    .wa-fab.speaking::before {
+    .wa-fab.speaking .wa-fab-orb::before {
       animation: wa-ripple-fast 1.1s ease-out infinite;
-      border-color: var(--p, #7c3aed);
       border-width: 2px;
     }
-    .wa-fab.speaking { box-shadow: 0 0 0 6px var(--p-lo), 0 8px 24px rgba(109,40,217,0.5); }
+    .wa-fab.speaking .wa-fab-orb { box-shadow: 0 0 0 6px var(--p-lo), 0 6px 18px rgba(109,40,217,0.5); }
     @keyframes wa-ripple {
-      0%   { opacity:0.45; transform:scale(0.82); }
-      100% { opacity:0;   transform:scale(1.35); }
+      0%   { opacity:0.45; transform:scale(0.9); }
+      100% { opacity:0;   transform:scale(1.55); }
     }
     @keyframes wa-ripple-fast {
-      0%,100% { opacity:0.7; transform:scale(0.86); }
-      50%     { opacity:0.15; transform:scale(1.22); }
+      0%,100% { opacity:0.7; transform:scale(0.92); }
+      50%     { opacity:0.15; transform:scale(1.45); }
     }
 
-    .wa-fab-icon { transition: all .3s cubic-bezier(.34,1.56,.64,1); display:flex; }
-    .wa-fab.open .wa-fab-icon { transform: rotate(45deg) scale(0.88); }
+    .wa-fab-icon { transition: transform .3s cubic-bezier(.34,1.56,.64,1); display:flex; }
 
     .wa-badge {
-      position: absolute; top: -3px; right: -3px;
+      position: absolute; top: -6px; right: -4px;
       min-width: 18px; height: 18px;
       background: var(--err); color: #fff;
       font-size: 10px; font-weight: 700; border-radius: 9px;
-      border: 2px solid var(--bg0, #0f172a);
+      border: 2px solid #fff;
       display: flex; align-items: center; justify-content: center;
       padding: 0 4px;
       transform: scale(0); transition: transform .2s cubic-bezier(.34,1.56,.64,1);
@@ -1371,13 +1390,16 @@
       </button>
     </div>
 
-    <button class="wa-fab" id="wa-fab" aria-label="Open AI Shopping Assistant" aria-expanded="false">
-      <svg class="wa-fab-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <rect x="9" y="2.5" width="6" height="11" rx="3" fill="white"/>
-        <path d="M5.5 11a6.5 6.5 0 0 0 13 0" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
-        <line x1="12" y1="17.5" x2="12" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
-        <line x1="8.5" y1="21" x2="15.5" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
-      </svg>
+    <button class="wa-fab" id="wa-fab" aria-label="Talk with our AI" aria-expanded="false">
+      <span class="wa-fab-orb">
+        <svg class="wa-fab-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect x="9" y="2.5" width="6" height="11" rx="3" fill="white"/>
+          <path d="M5.5 11a6.5 6.5 0 0 0 13 0" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+          <line x1="12" y1="17.5" x2="12" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+          <line x1="8.5" y1="21" x2="15.5" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="wa-fab-label">Talk with our AI</span>
       <span class="wa-badge" id="wa-badge">0</span>
     </button>
 
@@ -1782,6 +1804,22 @@
   }
 
   fab.addEventListener('click', () => {
+    // Shopify + overlay enabled → the launcher opens the fullscreen Speako
+    // overlay SPA (greeting screen) instead of the compact widget menu.
+    if (OVERLAY_ENABLED) {
+      try {
+        const _ov = window.__SPEAKO_OVERLAY__;
+        if (_ov && _ov.open) {
+          primeAudioEngines();
+          if (_ov.isOpen && _ov.isOpen()) { _ov.close(); }
+          else { _ov.open('home'); }
+          return;
+        }
+        console.warn('[WooAgent Overlay] launcher click but bridge missing — falling back to widget menu');
+      } catch (e) {
+        console.warn('[WooAgent Overlay] launcher open threw:', e);
+      }
+    }
     if (S.open) { closePane(); return; }
     if (_resumePending) {
       _resumePending = false;
@@ -1793,6 +1831,18 @@
     if (S.mode === 'voice_nav') { stopVoiceNavMode(); return; }
     toggleMenu();
   });
+
+  // Overlay's persistent mic button drives the real voice pipeline. The overlay
+  // owns its own wave/orb UI; we just start/stop live capture here.
+  if (OVERLAY_ENABLED) {
+    try {
+      const _ovVoice = window.__SPEAKO_OVERLAY__;
+      if (_ovVoice && _ovVoice.on) {
+        _ovVoice.on('voicestart', () => { primeAudioEngines(); startLiveMode(); });
+        _ovVoice.on('voicestop', () => { try { stopVoiceNavMode(); } catch (e) {} });
+      }
+    } catch (e) {}
+  }
 
   menuChat.addEventListener('click', startChatMode);
   menuMic.addEventListener('click', startVoiceNavMode);

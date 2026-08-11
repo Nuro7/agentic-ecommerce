@@ -216,6 +216,15 @@
 
   var proto = Overlay.prototype;
 
+  // Inline stroke icons (Lucide-style, currentColor) — no emoji, theme-aware.
+  var SVG = {
+    mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>',
+    sparkles: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/><path d="M19 15l.9 2.4L22 18l-2.1.6L19 21l-.9-2.4L16 18l2.1-.6L19 15z"/></svg>',
+    trending: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
+    truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 3h13v13H1z"/><path d="M14 8h4l3 3v5h-7V8z"/><circle cx="6.5" cy="18.5" r="1.8"/><circle cx="17.5" cy="18.5" r="1.8"/></svg>',
+    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>'
+  };
+
   proto.setConfig = function (cfg) {
     cfg = cfg || {};
     this.cfg = Object.assign({}, this.cfg, cfg, {
@@ -437,7 +446,7 @@
   proto._wire = function (refs) {
     var _this = this;
     this._refs = refs;
-    refs._root.innerHTML = '' + 
+    refs._root.innerHTML = '' +
       '<div class="speako-header">' +
         '<button class="sp-btn" data-act="back" aria-label="Back">&#8592;</button>' +
         '<div class="sp-title">' + escapeHtml(this.cfg.storeName || 'Speako') + '</div>' +
@@ -446,6 +455,14 @@
         '<button class="sp-btn" data-act="close" aria-label="Close">&#10005;</button>' +
       '</div>' +
       '<div class="speako-body" data-body></div>' +
+      '<div class="sp-voicebar">' +
+        '<div class="sp-voicebar-field">' +
+          '<span class="sp-wave" data-wave>' +
+            '<span></span><span></span><span></span><span></span><span></span><span></span><span></span></span>' +
+          '<input data-voice-input placeholder="Ask me anything else…" aria-label="Ask Speako">' +
+          '<button class="sp-mic-btn" data-act="mic" aria-label="Talk to Speako">' + SVG.mic + '</button>' +
+        '</div>' +
+      '</div>' +
       '<div class="sp-toast" data-toast></div>';
 
     this._els = {
@@ -455,8 +472,27 @@
       closeBtn: refs._root.querySelector('[data-act="close"]'),
       badge: refs._root.querySelector('[data-badge]'),
       body: refs._root.querySelector('[data-body]'),
+      voicebar: refs._root.querySelector('.sp-voicebar'),
+      voiceInput: refs._root.querySelector('[data-voice-input]'),
+      micBtn: refs._root.querySelector('[data-act="mic"]'),
+      wave: refs._root.querySelector('.sp-voicebar [data-wave]'),
       toast: refs._root.querySelector('[data-toast]')
     };
+
+    // Persistent voice bar — submit text search from any screen; toggle voice.
+    var submitVoice = function () {
+      var q = (_this._els.voiceInput.value || '').trim();
+      if (!q) return;
+      _this._els.voiceInput.value = '';
+      _this.pushView('search', { query: q });
+      _this._loadSearch(q);
+    };
+    this._els.voiceInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); submitVoice(); }
+    });
+    this._els.micBtn.addEventListener('click', function () {
+      _this._toggleVoice();
+    });
 
     refs._root.addEventListener('click', function (e) {
       var el = e.target && e.target.closest ? e.target.closest('[data-act]') : null;
@@ -515,8 +551,12 @@
     // and the waveform visualizer without any top-level reload.
     this.on('transcript', function (data) {
       var t = (data && (data.text || data.transcript)) || '';
-      if (_this._els.transcript) _this._els.transcript.textContent = t || 'Aria is listening…';
-      _this._setWave(!!t);
+      // While the mic is live, mirror the recognized speech into the input.
+      if (_this._listening && _this._els.voiceInput) {
+        _this._els.voiceInput.value = t;
+      }
+      if (_this._els.transcript) _this._els.transcript.textContent = t || 'Listening…';
+      _this._setWave(!!t || !!_this._listening);
     });
     this.on('status', function (data) {
       var s = (data && (data.state || data.status)) || '';
@@ -527,9 +567,27 @@
   };
 
   proto._setWave = function (active) {
-    if (!this._els || !this._els.body) return;
-    var wave = this._els.body.querySelector('[data-wave]');
-    if (wave) wave.classList.toggle('active', !!active);
+    if (!this._els) return;
+    var on = !!active;
+    if (this._els.wave) this._els.wave.classList.toggle('active', on);
+    if (this._els.micBtn) this._els.micBtn.classList.toggle('listening', on);
+    // The greeting orb (present only on the home view) mirrors the state.
+    var orb = this._els.body && this._els.body.querySelector('[data-orb]');
+    if (orb) orb.classList.toggle('listening', on);
+  };
+
+  // Toggle the live voice session. The overlay owns the UI state (wave, mic,
+  // orb) and emits voicestart/voicestop so the widget bridge can drive the
+  // actual WebSocket capture — no page reload, works from every screen.
+  proto._toggleVoice = function () {
+    this._listening = !this._listening;
+    this._setWave(this._listening);
+    if (this._listening) {
+      this.emit('voicestart', {});
+      this._publish('voice_started', {});
+    } else {
+      this.emit('voicestop', {});
+    }
   };
 
   proto._handleBack = function () {
@@ -727,43 +785,35 @@
   proto._renderHome = function (params) {
     var _this = this;
     var suggestions = [
-      { icon: '🎯', label: 'Help me choose', act: 'assist' },
-      { icon: '🔥', label: 'What’s trending', act: 'search', q: 'best sellers' },
-      { icon: '🏷️', label: 'Today’s deals', act: 'search', q: 'sale' },
-      { icon: '📦', label: 'Track my order', act: 'track' }
+      { icon: SVG.sparkles, label: 'Help me choose', act: 'assist' },
+      { icon: SVG.trending, label: 'Show bestsellers', act: 'search', q: 'best sellers' },
+      { icon: SVG.truck, label: 'Track my order', act: 'track' },
+      { icon: SVG.search, label: 'Find formal shoes under 5000', act: 'search', q: 'formal shoes under 5000' }
     ];
     var chips = suggestions.map(function (s) {
       return '<button class="sp-suggest" data-suggest="' + s.act + '"' +
-        (s.q ? ' data-q="' + escapeAttr(s.q) + '"' : '') + '>' + s.icon + ' ' + escapeHtml(s.label) + '</button>';
+        (s.q ? ' data-q="' + escapeAttr(s.q) + '"' : '') + '>' +
+        s.icon + '<span>' + escapeHtml(s.label) + '</span></button>';
     }).join('');
-    var wave = '<span class="sp-wave" data-wave>' +
-      '<span></span><span></span><span></span><span></span><span></span><span></span><span></span></span>';
 
     this._els.body.innerHTML =
       '<div class="speako-home">' +
-        '<div class="speako-hello">Hi, I’m Aria &#128075;</div>' +
-        '<p class="speako-hint">Shop ' + escapeHtml(this.cfg.storeName || 'the store') + ' here while I stay on the line — search, compare, and check out without leaving.</p>' +
+        '<button class="sp-orb" data-orb aria-label="Talk to Speako">' + SVG.mic + '</button>' +
+        '<h1 class="speako-hello">Hi, how can I help you?</h1>' +
+        '<p class="speako-hint">Ask me to find products, compare options, or check out — I\'ll stay right here with you.</p>' +
         '<div class="sp-suggestions">' + chips + '</div>' +
-        '<div class="sp-searchbar">' +
-          '<input data-search-input placeholder="Search products…" aria-label="Search products">' +
-          '<button data-gone>Search</button>' +
-        '</div>' +
-        '<div class="speako-ambient">' + wave +
-          '<div class="sp-transcript" data-transcript>Aria is listening…</div></div>' +
       '</div>';
-    var input = this._els.body.querySelector('[data-search-input]');
-    var cb = function () {
-      var q = input.value.trim();
-      if (q) { _this.pushView('search', { query: q }); _this._loadSearch(q); }
-    };
-    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') cb(); });
-    this._els.body.querySelector('[data-gone]').addEventListener('click', cb);
+
+    var orb = this._els.body.querySelector('[data-orb]');
+    if (orb) orb.addEventListener('click', function () { _this._toggleVoice(); });
+    if (this._listening) this._setWave(true);
+
     this._els.body.querySelectorAll('[data-suggest]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var act = btn.getAttribute('data-suggest');
         if (act === 'search') { var q = btn.getAttribute('data-q') || ''; _this.pushView('search', { query: q }); _this._loadSearch(q); }
-        else if (act === 'assist') { _this.emit('suggestion', { intent: 'assist' }); _this._toast('Tell Aria what you’re looking for.'); }
-        else if (act === 'track') { _this.emit('suggestion', { intent: 'track_order' }); _this._toast('Ask Aria to track your order.'); }
+        else if (act === 'assist') { _this.emit('suggestion', { intent: 'assist' }); _this._toast('Tell me what you’re looking for.'); }
+        else if (act === 'track') { _this.emit('suggestion', { intent: 'track_order' }); _this._toast('Ask me to track your order.'); }
       });
     });
     this._badge0Banner();
@@ -784,32 +834,24 @@
     chips += '</div>';
 
     var grid;
+    var answer;
     if (params.loading) {
       grid = '<div class="sp-spinner"></div>';
+      answer = 'Searching' + (query ? ' for “' + escapeHtml(query) + '”' : '') + '…';
     } else if (!products.length) {
-      grid = '<div class="sp-empty">No products found' + (query ? ' for "' + escapeHtml(query) + '"' : '') + '.</div>';
+      grid = '<div class="sp-empty">No products found' + (query ? ' for "' + escapeHtml(query) + '"' : '') + '.<br><span>Try a different search, or ask me below.</span></div>';
+      answer = 'I couldn’t find a match' + (query ? ' for “' + escapeHtml(query) + '”' : '') + '. Want me to try something broader?';
     } else {
       grid = this._gridHtml(products);
+      answer = 'Here ' + (products.length === 1 ? 'is' : 'are') + ' <strong>' + products.length + '</strong> ' +
+        (products.length === 1 ? 'result' : 'results') + (query ? ' for “' + escapeHtml(query) + '”' : '') + '.';
     }
 
     this._els.body.innerHTML =
-      '<div class="sp-searchbar">' +
-        '<input data-search-input value="' + escapeAttr(query) + '" placeholder="Search products…" aria-label="Search products">' +
-        '<button data-gone>Search</button>' +
-      '</div>' +
+      '<div class="sp-answer"><span class="sp-answer-avatar">' + SVG.sparkles + '</span>' +
+        '<div>' + answer + '</div></div>' +
       chips +
       '<div class="sp-grid" data-grid>' + grid + '</div>';
-
-    var input = this._els.body.querySelector('[data-search-input]');
-    var doSearch = function () {
-      var q = input.value.trim();
-      if (!q) return;
-      if (_this._stack.size() > 1) { _this._stack.pop(); }
-      _this._render('search', { query: q, products: _this._products, loading: true });
-      _this._loadSearch(q);
-    };
-    input.addEventListener('keydown', function (e) { if (e.key === 'Enter') doSearch(); });
-    this._els.body.querySelector('[data-gone]').addEventListener('click', doSearch);
 
     var gridEl = this._els.body.querySelector('[data-grid]');
     var applyFacets = function () {

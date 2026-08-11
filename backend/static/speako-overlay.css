@@ -23,18 +23,25 @@
   --sp-bg-2: #f8fafc;
   --sp-fg: #0f172a;
   --sp-muted: #64748b;
-  --sp-border: #e5e7eb;
+  --sp-border: #e2e8f0;
   --sp-card: #f8fafc;
+  --sp-chip: #f1f5f9;
   --sp-ok: #16a34a;
   --sp-warn: #f59e0b;
   --sp-err: #dc2626;
   --sp-star: #f59e0b;
-  --sp-shadow: 0 8px 30px rgba(15, 23, 42, 0.12);
-  --sp-shadow-lg: 0 20px 50px rgba(15, 23, 42, 0.22);
+  /* Discount badge — mint green per spec (bg #ECFDF5 / fg #059669). */
+  --sp-sale-bg: #ecfdf5;
+  --sp-sale-fg: #059669;
+  --sp-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.08);
+  --sp-shadow: 0 10px 30px rgba(15, 23, 42, 0.10);
+  --sp-shadow-lg: 0 24px 60px rgba(15, 23, 42, 0.20);
 
-  /* Radii per spec: 12px cards, 8px buttons, 9999px pills. */
-  --sp-radius: 12px;
-  --sp-radius-btn: 8px;
+  /* Radii — generous, premium rounding. Cards/images 16px, panels 14px,
+     buttons 12px, pills fully round. */
+  --sp-radius: 14px;
+  --sp-radius-card: 16px;
+  --sp-radius-btn: 12px;
   --sp-radius-pill: 9999px;
 
   position: fixed;
@@ -68,19 +75,24 @@
   --sp-muted: #94a3b8;
   --sp-border: #1e293b;
   --sp-card: #1e1b4b;
+  --sp-chip: #1e293b;
   --sp-brand-soft: rgba(139, 92, 246, 0.18);
-  --sp-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
-  --sp-shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.6);
+  --sp-sale-bg: rgba(5, 150, 105, 0.16);
+  --sp-sale-fg: #34d399;
+  --sp-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --sp-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.6);
 }
 
 /* ── Header bar ── */
 .speako-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
+  gap: 6px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--sp-border);
-  background: var(--sp-bg);
+  background: color-mix(in srgb, var(--sp-bg) 82%, transparent);
+  backdrop-filter: saturate(180%) blur(12px);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
   flex: 0 0 auto;
   position: relative;
   z-index: 3;
@@ -89,24 +101,26 @@
   background: transparent;
   border: 0;
   color: var(--sp-fg);
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   font-size: 18px;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.speako-header .sp-btn:hover { background: var(--sp-border); }
+.speako-header .sp-btn:hover { background: var(--sp-chip); }
 .speako-header .sp-title {
   flex: 1;
   font-weight: 600;
   font-size: 15px;
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  letter-spacing: -0.01em;
 }
 .speako-cart-badge {
   position: relative;
@@ -133,45 +147,104 @@
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 14px;
+  padding: 16px 16px 24px;
   position: relative;
 }
 
-/* ── Home view ── */
+/* ── Home / greeting view ── */
 .speako-home {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding-top: 24px;
-  max-width: 680px;
+  align-items: center;
+  gap: 14px;
+  padding: 32px 4px 8px;
+  max-width: 560px;
   margin: 0 auto;
   width: 100%;
-}
-.speako-hello {
-  font-size: 24px;
-  font-weight: 700;
   text-align: center;
-  background: var(--sp-grad);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
 }
-.speako-hint { color: var(--sp-muted); text-align: center; font-size: 13px; }
 
-/* Suggestion chips (Help me choose / Track my order …). */
-.sp-suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+/* Big glowing voice orb — the hero of the greeting screen. */
+.sp-orb {
+  position: relative;
+  width: 112px;
+  height: 112px;
+  flex: 0 0 auto;
+  margin: 8px 0 6px;
+  border-radius: 50%;
+  cursor: pointer;
+  background: radial-gradient(circle at 32% 28%, #a78bfa 0%, #7c3aed 45%, #6d28d9 100%);
+  box-shadow: 0 12px 40px var(--sp-brand-glow), inset 0 2px 8px rgba(255, 255, 255, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  transition: transform 0.2s cubic-bezier(.34, 1.56, .64, 1);
+}
+.sp-orb:hover { transform: scale(1.04); }
+.sp-orb:active { transform: scale(0.97); }
+.sp-orb svg { width: 40px; height: 40px; position: relative; z-index: 2; }
+/* Layered breathing halo rings. */
+.sp-orb::before,
+.sp-orb::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: var(--sp-brand);
+  opacity: 0.22;
+  z-index: 0;
+  animation: sp-orb-ring 2.6s ease-out infinite;
+}
+.sp-orb::after { animation-delay: 1.3s; }
+.sp-orb.listening { box-shadow: 0 0 0 8px var(--sp-brand-soft), 0 16px 46px var(--sp-brand-glow); }
+@keyframes sp-orb-ring {
+  0% { transform: scale(1); opacity: 0.3; }
+  70% { opacity: 0; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sp-orb::before, .sp-orb::after { animation: none; }
+}
+
+.speako-hello {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  color: var(--sp-fg);
+}
+.speako-hint { color: var(--sp-muted); font-size: 14px; line-height: 1.5; max-width: 34ch; }
+
+/* Suggestion chips (Help me choose / Track my order …) — stacked pills. */
+.sp-suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 380px;
+  margin-top: 10px;
+}
 .sp-suggest {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
   border: 1px solid var(--sp-border);
-  background: var(--sp-bg);
+  background: var(--sp-chip);
   color: var(--sp-fg);
   border-radius: var(--sp-radius-pill);
-  padding: 8px 16px;
-  font-size: 13px;
+  padding: 13px 20px;
+  font-size: 14px;
   font-weight: 500;
+  text-align: left;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
 }
-.sp-suggest:hover { border-color: var(--sp-brand); color: var(--sp-brand); background: var(--sp-brand-soft); }
+.sp-suggest svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--sp-brand); }
+.sp-suggest span { flex: 1; }
+.sp-suggest:hover { border-color: var(--sp-brand); background: var(--sp-brand-soft); transform: translateY(-1px); }
+.sp-suggest:active { transform: translateY(0); }
 
 .sp-searchbar {
   display: flex;
@@ -204,37 +277,72 @@
 }
 .sp-searchbar button:hover { filter: brightness(1.08); }
 
-/* ── Ambient voice canvas + waveform visualizer ── */
-.speako-ambient {
-  margin-top: 8px;
-  border: 1px solid var(--sp-border);
-  border-radius: var(--sp-radius);
-  padding: 12px 14px;
+/* ── Persistent bottom voice input bar (all screens) ── */
+.sp-voicebar {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 12px;
-  background: var(--sp-card);
-  min-height: 56px;
+  gap: 10px;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--sp-border);
+  background: color-mix(in srgb, var(--sp-bg) 85%, transparent);
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  position: relative;
+  z-index: 4;
 }
-.speako-ambient .sp-voice-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+.sp-voicebar-field {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 52px;
+  padding: 0 6px 0 18px;
+  background: var(--sp-bg);
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius-pill);
+  box-shadow: var(--sp-shadow-sm);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.sp-voicebar-field:focus-within {
+  border-color: var(--sp-brand);
+  box-shadow: 0 0 0 3px var(--sp-brand-glow);
+}
+.sp-voicebar-field input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--sp-fg);
+  font-size: 15px;
+}
+/* Live waveform sits inside the field while listening. */
+.sp-voicebar .sp-wave { margin-right: 2px; }
+/* Purple circular mic button embedded at the field's right edge. */
+.sp-mic-btn {
   flex: 0 0 auto;
-  background: var(--sp-brand);
-  animation: sp-pulse 1.6s ease-in-out infinite;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--sp-grad);
+  color: #fff;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 14px var(--sp-brand-glow);
+  transition: transform 0.12s ease, box-shadow 0.15s ease;
 }
-.speako-ambient .sp-transcript {
-  flex: 1;
-  font-size: 13px;
-  color: var(--sp-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-@keyframes sp-pulse {
-  0%, 100% { opacity: 0.35; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.25); }
+.sp-mic-btn svg { width: 20px; height: 20px; }
+.sp-mic-btn:hover { transform: scale(1.06); }
+.sp-mic-btn:active { transform: scale(0.94); }
+.sp-mic-btn.listening { animation: sp-mic-pulse 1.4s ease-in-out infinite; }
+@keyframes sp-mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--sp-brand-glow), 0 4px 14px var(--sp-brand-glow); }
+  50% { box-shadow: 0 0 0 8px transparent, 0 4px 14px var(--sp-brand-glow); }
 }
 
 /* Waveform bars — driven by .sp-wave.active toggling animation-play-state. */
@@ -267,6 +375,10 @@
   0%, 100% { height: 6px; }
   50% { height: 22px; }
 }
+@keyframes sp-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.25); }
+}
 
 /* ── Filter chips / facets ── */
 .sp-facets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center; }
@@ -291,23 +403,29 @@
 /* ── Product grid ── */
 .sp-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 18px 14px;
 }
 .sp-card {
-  border: 1px solid var(--sp-border);
-  border-radius: var(--sp-radius);
-  overflow: hidden;
-  background: var(--sp-bg);
-  transition: box-shadow 0.15s ease, transform 0.15s ease;
+  border: 0;
+  border-radius: var(--sp-radius-card);
+  background: transparent;
+  transition: transform 0.18s ease;
   cursor: pointer;
   position: relative;
   display: flex;
   flex-direction: column;
 }
-.sp-card:hover { box-shadow: var(--sp-shadow); transform: translateY(-2px); }
-.sp-card.sp-highlight { outline: 3px solid var(--sp-brand); }
-.sp-card .sp-card-media { position: relative; }
+.sp-card:hover { transform: translateY(-3px); }
+.sp-card:hover .sp-card-media { box-shadow: var(--sp-shadow); }
+.sp-card.sp-highlight .sp-card-media { outline: 3px solid var(--sp-brand); outline-offset: 2px; }
+.sp-card .sp-card-media {
+  position: relative;
+  border-radius: var(--sp-radius-card);
+  overflow: hidden;
+  background: var(--sp-card);
+  transition: box-shadow 0.18s ease;
+}
 .sp-card img {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -315,42 +433,41 @@
   display: block;
   background: var(--sp-card);
 }
-.sp-card .sp-card-body { padding: 10px 12px 12px; flex: 1; display: flex; flex-direction: column; }
-.sp-card .sp-card-title { font-size: 13px; font-weight: 600; line-height: 1.3; max-height: 34px; overflow: hidden; }
-.sp-card .sp-card-vendor { font-size: 11px; color: var(--sp-muted); margin-top: 2px; }
+.sp-card .sp-card-body { padding: 10px 4px 4px; flex: 1; display: flex; flex-direction: column; }
+.sp-card .sp-card-title { font-size: 14px; font-weight: 600; line-height: 1.35; letter-spacing: -0.01em; max-height: 38px; overflow: hidden; }
+.sp-card .sp-card-vendor { font-size: 11px; color: var(--sp-muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
 .sp-card .sp-card-rating { display: flex; align-items: center; gap: 4px; margin-top: 6px; font-size: 11px; color: var(--sp-muted); }
 .sp-card .sp-card-rating .sp-stars { font-size: 12px; }
-.sp-card .sp-card-pricerow { display: flex; align-items: baseline; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
-.sp-card .sp-card-price { font-size: 15px; font-weight: 800; color: var(--sp-fg); }
-.sp-card .sp-card-compare { font-size: 12px; color: var(--sp-muted); text-decoration: line-through; }
+.sp-card .sp-card-pricerow { display: flex; align-items: baseline; gap: 7px; margin-top: 7px; flex-wrap: wrap; }
+.sp-card .sp-card-price { font-size: 15px; font-weight: 800; color: var(--sp-fg); font-variant-numeric: tabular-nums; }
+.sp-card .sp-card-compare { font-size: 12px; color: var(--sp-muted); text-decoration: line-through; font-variant-numeric: tabular-nums; }
 .sp-card .sp-card-empty {
   display: flex; align-items: center; justify-content: center; aspect-ratio: 1/1;
   background: var(--sp-card); color: var(--sp-muted); font-size: 12px;
 }
-/* Sale / % OFF badge on card media. */
+/* Discount / % OFF badge on card media — mint green per spec. */
 .sp-badge-sale {
   position: absolute;
-  top: 8px;
-  left: 8px;
-  background: var(--sp-grad);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 800;
-  padding: 4px 9px;
+  top: 10px;
+  left: 10px;
+  background: var(--sp-sale-bg);
+  color: var(--sp-sale-fg);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
   border-radius: var(--sp-radius-pill);
-  box-shadow: 0 3px 10px var(--sp-brand-glow);
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
 }
 /* Quick compare toggle on card. */
 .sp-card-compare-toggle {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 28px;
-  height: 28px;
+  top: 10px;
+  right: 10px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   border: 0;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.94);
   color: var(--sp-brand);
   cursor: pointer;
   display: inline-flex;
@@ -358,24 +475,58 @@
   justify-content: center;
   font-size: 14px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
 }
+.sp-card:hover .sp-card-compare-toggle,
+.sp-card-compare-toggle.active { opacity: 1; }
 .sp-card-compare-toggle.active { background: var(--sp-grad); color: #fff; }
 
+/* Conversational answer line — Aria's reply above a product grid (Images 2/3). */
+.sp-answer {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 2px 0 18px;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--sp-fg);
+}
+.sp-answer .sp-answer-avatar {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--sp-grad);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px var(--sp-brand-glow);
+}
+.sp-answer .sp-answer-avatar svg { width: 15px; height: 15px; }
+.sp-answer strong { font-weight: 700; }
+.sp-answer small { display: block; color: var(--sp-muted); font-size: 13px; margin-top: 2px; }
+
 /* Grouped collection rows (carousel-per-theme, like the reference UI). */
-.sp-collection { margin-bottom: 22px; }
-.sp-collection-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-.sp-collection-title { font-size: 16px; font-weight: 700; }
-.sp-collection-title small { display: block; font-size: 12px; font-weight: 500; color: var(--sp-muted); margin-top: 2px; }
+.sp-collection { margin-bottom: 26px; }
+.sp-collection-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; gap: 12px; }
+.sp-collection-title { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+.sp-collection-title small { display: block; font-size: 12px; font-weight: 500; color: var(--sp-muted); margin-top: 3px; letter-spacing: 0; }
+.sp-collection-more { flex: 0 0 auto; font-size: 13px; font-weight: 600; color: var(--sp-brand); background: none; border: 0; cursor: pointer; }
 .sp-hrow {
   display: flex;
-  gap: 12px;
+  gap: 14px;
   overflow-x: auto;
   scrollbar-width: none;
   scroll-snap-type: x mandatory;
   padding-bottom: 4px;
+  margin: 0 -16px;
+  padding-left: 16px;
+  padding-right: 16px;
 }
 .sp-hrow::-webkit-scrollbar { display: none; }
-.sp-hrow .sp-card { flex: 0 0 165px; scroll-snap-align: start; }
+.sp-hrow .sp-card { flex: 0 0 168px; scroll-snap-align: start; }
 
 /* ── Product detail view (rich PDP) ── */
 .sp-pdp { max-width: 720px; margin: 0 auto; width: 100%; }
@@ -743,12 +894,14 @@
   padding: 60px 20px;
   font-size: 14px;
 }
+.sp-empty span { display: inline-block; margin-top: 6px; font-size: 13px; opacity: 0.85; }
 
+/* Toast sits just above the persistent voice bar, not pinned to the edge. */
 /* ── Generic bits ── */
 .sp-toast {
   position: fixed;
   left: 50%;
-  bottom: 28px;
+  bottom: 92px;
   transform: translateX(-50%);
   background: var(--sp-fg);
   color: var(--sp-bg);

@@ -600,9 +600,11 @@ async def widget_loader(request: Request, shop: Optional[str] = None):
         "enable_text": os.getenv("SHOPIFY_ENABLE_TEXT", "true").lower() != "false",
         # Live Shopping Navigator: agent drives the storefront (search/product/cart)
         "live_navigation": os.getenv("SHOPIFY_LIVE_NAV", "true").lower() != "false",
-        # Fullscreen Shopping Overlay (testing phase): 'on' renders store-nav
-        # actions inside the overlay SPA. Off by default → zero behaviour change.
-        "overlay_mode": os.getenv("SHOPIFY_OVERLAY_MODE", "off").lower(),
+        # Fullscreen Shopping Overlay: 'on' renders store-nav actions inside the
+        # overlay SPA and the launcher opens it. On by default now that the
+        # overlay is the primary Shopify experience; set SHOPIFY_OVERLAY_MODE=off
+        # to fall back to the compact widget menu.
+        "overlay_mode": os.getenv("SHOPIFY_OVERLAY_MODE", "on").lower(),
         # Native PDP: overlay embeds the theme's real product-page section from
         # {shop}/products/{handle} (same-origin) instead of a rebuilt mini PDP.
         "native_pdp": os.getenv("SHOPIFY_NATIVE_PDP", "on").lower(),

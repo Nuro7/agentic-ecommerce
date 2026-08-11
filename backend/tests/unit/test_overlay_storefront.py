@@ -11,6 +11,8 @@ import pytest
 from src.app.integrations.shopify.storefront import (
     StorefrontService,
     StorefrontServiceError,
+    build_storefront_query,
+    parse_price_query,
 )
 
 
@@ -351,3 +353,99 @@ async def test_checkout_url_via_cart_get():
     sf = _make_service(handler)
     out = await sf.cart_get("gid://shopify/Cart/c1")
     assert out["checkout_url"] == "https://demo.myshopify.com/checkout/c/abc"
+
+
+# ── Natural-language price parsing + zero-result fallback ──────────────────────
+
+def test_parse_price_query_plain_passthrough():
+    # No price language → query is untouched (keeps existing search behavior).
+    assert parse_price_query("sneakers") == {"terms": "sneakers", "min": None, "max": None}
+    assert parse_price_query("nike air max") == {
+        "terms": "nike air max", "min": None, "max": None
+    }
+
+
+def test_parse_price_query_under():
+    p = parse_price_query("formal shoes under 5000")
+    assert p["terms"] == "formal shoes"
+    assert p["max"] == 5000
+    assert p["min"] is None
+
+
+def test_parse_price_query_strips_duplicate_number():
+    # The reported bug query — a stray number duplicating the bound is removed.
+    p = parse_price_query("formal shoes 5000 under 5000")
+    assert p["terms"] == "formal shoes"
+    assert p["max"] == 5000
+
+
+def test_parse_price_query_over_and_currency():
+    p = parse_price_query("watches above ₹1,200")
+    assert p["terms"] == "watches"
+    assert p["min"] == 1200
+    assert p["max"] is None
+
+
+def test_parse_price_query_between():
+    p = parse_price_query("headphones between 1000 and 3000")
+    assert p["terms"] == "headphones"
+    assert p["min"] == 1000
+    assert p["max"] == 3000
+
+
+def test_build_storefront_query_adds_price_filter():
+    q, has_price = build_storefront_query("formal shoes under 5000")
+    assert q == "formal shoes variants.price:<=5000"
+    assert has_price is True
+
+
+def test_build_storefront_query_plain():
+    q, has_price = build_storefront_query("sneakers")
+    assert q == "sneakers"
+    assert has_price is False
+
+
+@pytest.mark.asyncio
+async def test_search_builds_price_filtered_query():
+    wrap, captured = _capture(_search_response)
+    sf = _make_service(wrap)
+    await sf.search_products("formal shoes under 5000")
+    assert captured["body"]["variables"]["query"] == "formal shoes variants.price:<=5000"
+
+
+@pytest.mark.asyncio
+async def test_search_falls_back_to_keywords_when_price_filter_empty():
+    calls = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        q = body["variables"]["query"]
+        calls.append(q)
+        # Price-filtered attempt returns nothing; keyword-only attempt succeeds.
+        if "variants.price" in q:
+            return httpx.Response(200, json={"data": {"products": {"edges": []}}})
+        return httpx.Response(200, json=_search_response())
+
+    sf = _make_service(handler)
+    out = await sf.search_products("formal shoes under 5000")
+    assert len(out) == 1
+    assert calls[0] == "formal shoes variants.price:<=5000"
+    assert calls[1] == "formal shoes"
+
+
+@pytest.mark.asyncio
+async def test_search_falls_back_to_bestsellers_when_all_empty():
+    calls = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        calls.append((body["variables"]["query"], body["variables"]["sortKey"]))
+        if body["variables"]["sortKey"] == "BEST_SELLING":
+            return httpx.Response(200, json=_search_response())
+        return httpx.Response(200, json={"data": {"products": {"edges": []}}})
+
+    sf = _make_service(handler)
+    out = await sf.search_products("zzzznomatch under 5000")
+    assert len(out) == 1
+    # Final attempt is an empty-query best-sellers sweep.
+    assert calls[-1] == ("", "BEST_SELLING")

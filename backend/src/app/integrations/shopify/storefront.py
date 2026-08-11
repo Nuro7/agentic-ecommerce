@@ -12,7 +12,8 @@ Security invariant: ``storefront_token`` MUST stay server-side.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -21,6 +22,136 @@ from ...core.http_retry import request_with_retries
 logger = logging.getLogger(__name__)
 
 _DEFAULT_API_VERSION = "2026-07"
+
+# ── Natural-language price parsing ─────────────────────────────────────────────
+# Shoppers type queries like "formal shoes under 5000" or "watches between 1000
+# and 3000". Shopify's Storefront full-text search treats the WHOLE string as
+# title/keyword tokens, so the price words ("under", "5000") never match a
+# product title and the search returns zero hits — a blank overlay. We lift the
+# price intent out into structured ``variants.price`` filters and keep only the
+# real keywords for the text match. Plain queries (no price words) pass through
+# untouched.
+
+_CURRENCY = r"(?:rs\.?|inr|usd|₹|\$|€|£)?\s*"
+_NUM = r"([0-9][0-9,]*(?:\.[0-9]+)?)"
+
+# Order matters: try an explicit range first, then max-only, then min-only.
+_RANGE_RE = re.compile(
+    r"\bbetween\s+" + _CURRENCY + _NUM + r"\s+(?:and|to|-|–|—)\s+" + _CURRENCY + _NUM,
+    re.IGNORECASE,
+)
+_RANGE_DASH_RE = re.compile(
+    r"\b" + _NUM + r"\s*(?:to|-|–|—)\s*" + _CURRENCY + _NUM + r"\b", re.IGNORECASE
+)
+_MAX_RE = re.compile(
+    r"(?:under|below|less than|lesser than|cheaper than|up ?to|at most|no more than|"
+    r"within|max(?:imum)?|budget(?: of)?|<=?)\s*" + _CURRENCY + _NUM,
+    re.IGNORECASE,
+)
+_MIN_RE = re.compile(
+    r"(?:over|above|more than|greater than|at least|starting (?:at|from)|from|"
+    r"min(?:imum)?|>=?)\s*" + _CURRENCY + _NUM,
+    re.IGNORECASE,
+)
+_CURRENCY_WORDS = {"rs", "rs.", "inr", "usd", "$", "₹", "€", "£"}
+
+
+def _to_float(s: Optional[str]) -> Optional[float]:
+    try:
+        return float(str(s).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_price(n: float) -> str:
+    n = float(n)
+    return str(int(n)) if n.is_integer() else ("%g" % n)
+
+
+def parse_price_query(raw: str) -> Dict[str, Any]:
+    """Split a shopper query into keyword ``terms`` + optional price bounds.
+
+    Returns ``{"terms": str, "min": float|None, "max": float|None}``. A query
+    with no recognizable price language comes back with ``terms == raw.strip()``
+    and both bounds ``None`` — so ordinary searches are never altered.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return {"terms": "", "min": None, "max": None}
+
+    price_min: Optional[float] = None
+    price_max: Optional[float] = None
+    spans: List[Tuple[int, int]] = []
+
+    m = _RANGE_RE.search(text) or _RANGE_DASH_RE.search(text)
+    if m:
+        a, b = _to_float(m.group(1)), _to_float(m.group(2))
+        if a is not None and b is not None:
+            price_min, price_max = min(a, b), max(a, b)
+            spans.append(m.span())
+    else:
+        mx = _MAX_RE.search(text)
+        if mx:
+            price_max = _to_float(mx.group(1))
+            spans.append(mx.span())
+        mn = _MIN_RE.search(text)
+        if mn:
+            price_min = _to_float(mn.group(1))
+            spans.append(mn.span())
+
+    # Remove the matched price phrase(s) from the keyword string.
+    if spans:
+        kept, last = [], 0
+        for s, e in sorted(spans):
+            if s < last:  # overlapping match — skip
+                continue
+            kept.append(text[last:s])
+            last = e
+        kept.append(text[last:])
+        text = "".join(kept)
+
+    text = " ".join(text.split())
+
+    # Strip leftover currency tokens and any stray number that just duplicates a
+    # detected bound (e.g. "formal shoes 5000 under 5000" → "formal shoes").
+    if price_min is not None or price_max is not None:
+        bounds = {
+            int(b) for b in (price_min, price_max)
+            if b is not None and float(b).is_integer()
+        }
+        tokens = []
+        for tok in text.split():
+            bare = tok.strip(",.").lower()
+            if bare in _CURRENCY_WORDS:
+                continue
+            digits = bare.replace(",", "")
+            if digits.isdigit() and int(digits) in bounds:
+                continue
+            tokens.append(tok)
+        text = " ".join(tokens)
+
+    return {"terms": text.strip(), "min": price_min, "max": price_max}
+
+
+def build_storefront_query(raw: str) -> Tuple[str, bool]:
+    """Build a Shopify Storefront query string from a shopper query.
+
+    Returns ``(query, has_price_filter)``. Keywords stay as free-text tokens;
+    price bounds become ``variants.price`` range filters that Shopify's search
+    understands.
+    """
+    parsed = parse_price_query(raw)
+    parts: List[str] = []
+    if parsed["terms"]:
+        parts.append(parsed["terms"])
+    has_filter = False
+    if parsed["min"] is not None:
+        parts.append("variants.price:>=%s" % _fmt_price(parsed["min"]))
+        has_filter = True
+    if parsed["max"] is not None:
+        parts.append("variants.price:<=%s" % _fmt_price(parsed["max"]))
+        has_filter = True
+    return " ".join(parts).strip(), has_filter
 
 # ── GraphQL constants ─────────────────────────────────────────────────────────
 
@@ -371,6 +502,28 @@ class StorefrontService:
 
     # ── Products ──────────────────────────────────────────────────────────────
 
+    async def _run_search(
+        self,
+        query: str,
+        first: int,
+        sort_key: str,
+        reverse: bool,
+        buyer_ip: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        """Single Storefront products(query:) call → normalized product list."""
+        data = await self._graphql(
+            _SEARCH_QUERY,
+            {
+                "query": query or "",
+                "first": first,
+                "sortKey": sort_key,
+                "reverse": bool(reverse),
+            },
+            buyer_ip=buyer_ip,
+        )
+        edges = (data.get("products") or {}).get("edges") or []
+        return [_normalize_product(_node(e)) for e in edges]
+
     async def search_products(
         self,
         query: str,
@@ -380,19 +533,45 @@ class StorefrontService:
         reverse: bool = False,
         buyer_ip: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Storefront search root — relevance-ranked, first:N products."""
-        data = await self._graphql(
-            _SEARCH_QUERY,
-            {
-                "query": query or "",
-                "first": max(1, min(int(first or 20), 50)),
-                "sortKey": sort_key or "RELEVANCE",
-                "reverse": bool(reverse),
-            },
-            buyer_ip=buyer_ip,
+        """Storefront search root — relevance-ranked, first:N products.
+
+        Natural-language price constraints ("under 5000", "between 1k and 3k")
+        are parsed into ``variants.price`` filters so the keyword text still
+        matches product titles. When a filtered/keyword search yields nothing we
+        broaden progressively — drop the price filter, then the qualifier words,
+        then fall back to best-sellers — so the overlay is never left blank.
+        """
+        first_n = max(1, min(int(first or 20), 50))
+        primary_sort = sort_key or "RELEVANCE"
+        sf_query, has_price = build_storefront_query(query or "")
+        parsed = parse_price_query(query or "")
+
+        products = await self._run_search(
+            sf_query, first_n, primary_sort, reverse, buyer_ip
         )
-        edges = (data.get("products") or {}).get("edges") or []
-        return [_normalize_product(_node(e)) for e in edges]
+        if products:
+            return products
+
+        # Fallback 1 — keep the keywords, drop the price filter.
+        if has_price and parsed["terms"]:
+            products = await self._run_search(
+                parsed["terms"], first_n, "RELEVANCE", False, buyer_ip
+            )
+            if products:
+                return products
+
+        # Fallback 2 — broaden to the product noun (last keyword), e.g.
+        # "formal shoes" → "shoes".
+        terms = (parsed["terms"] or sf_query).split()
+        if len(terms) > 1:
+            products = await self._run_search(
+                terms[-1], first_n, "RELEVANCE", False, buyer_ip
+            )
+            if products:
+                return products
+
+        # Fallback 3 — best-sellers, so the shopper always sees something.
+        return await self._run_search("", first_n, "BEST_SELLING", False, buyer_ip)
 
     async def get_product(
         self, handle: str, *, buyer_ip: Optional[str] = None
