@@ -869,3 +869,146 @@ def test_attach_buyer_identity_sends_buyer_ip_header(monkeypatch):
 
 async def _noop():
     return None
+
+
+# ── Buy-now × Address FSM integration ────────────────────────────────────────
+# Regression: the address FSM owns the turn for "buy it now"/"go to checkout",
+# so handle_buy_now (the code that emits add_to_cart) never runs and nothing
+# adds the product to the cart — the widget then binds an EMPTY cart to the
+# checkout URL and Shopify bounces /checkout back to the homepage. The FSM must
+# resolve the target product (like handle_buy_now) and emit add_to_cart BEFORE
+# redirect_checkout_with_address on completion.
+
+def _buy_now_test_harness(meta, monkeypatch, resolver=None):
+    from src.app.agent.brain import core as brain_core
+    from src.app.agent.classifier import IntentResult
+
+    class FakeClassifier:
+        async def classify(self, message, lang):
+            return IntentResult(intent="search", confidence=0.9, via="test")
+
+    class FakeSession:
+        def __init__(self):
+            self.meta = dict(meta)
+            self.session = {}
+
+        async def get_meta(self, tenant_id, session_id):
+            return dict(self.meta)
+
+        async def save_meta(self, tenant_id, session_id, new_meta):
+            self.meta = {**self.meta, **new_meta}
+            return None
+
+        async def get_session(self, tenant_id, session_id):
+            return dict(self.session)
+
+        async def get_cart(self, tenant_id, session_id):
+            return None
+
+        async def save_cart(self, tenant_id, session_id, cart):
+            return None
+
+        async def update_session(self, tenant_id, session_id, **kwargs):
+            return None
+
+    class FakeFacts:
+        async def get(self, tenant_id, session_id):
+            return {}
+
+        async def update(self, tenant_id, session_id, message, facts_payload):
+            return None
+
+    class FakeBeta:
+        async def record_turn(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(brain_core, "append_live_navigation", lambda *a, **k: None)
+    monkeypatch.setattr(brain_core, "get_classifier", lambda: FakeClassifier())
+    monkeypatch.setattr(brain_core, "get_session_facts_service", lambda *a, **k: FakeFacts())
+    monkeypatch.setattr(brain_core, "get_beta_logger", lambda: FakeBeta())
+    if resolver is not None:
+        monkeypatch.setattr(brain_core, "_resolve_product_for_add", resolver)
+
+    return brain_core, FakeSession()
+
+
+def test_buy_now_start_persists_resolved_product(monkeypatch):
+    """On the START turn the FSM resolves the buy-now product and persists it so
+    the completion turn can emit add_to_cart (no checkout redirect yet)."""
+    async def fake_resolve(message, lower, session_id, active_recommendations, *,
+                           page_context, store_client, tenant_id, session_service):
+        assert page_context.get("product_id") == 100
+        return {
+            "id": 100, "name": "Formal Shoes", "variant_id": 5,
+            "permalink": "https://store.com/products/formal-shoes",
+        }
+
+    brain_core, fake_session = _buy_now_test_harness(
+        {"language": "en", "address_state": "idle"}, monkeypatch, resolver=fake_resolve,
+    )
+    result = asyncio.run(brain_core.ask_brain(
+        session_id="sess_buynow_start",
+        user_message="buy it now",
+        store_context={"url": "https://speako-demo.com"},
+        page_context={"url": "https://speako-demo.com/products/formal-shoes",
+                      "product_id": 100, "variant_id": 5},
+        language="en",
+        store_client=object(),
+        session_service=fake_session,
+        redis=None,
+        db_session_factory=None,
+    ))
+
+    types = [a.get("type") for a in (result.get("ui_actions") or [])]
+    assert "add_to_cart" not in types
+    assert "redirect_checkout_with_address" not in types
+    assert fake_session.meta.get("buy_now_product", {}).get("id") == 100
+    assert fake_session.meta.get("address_state") == S.COLLECTING_PHONE
+
+
+def test_buy_now_completion_emits_add_to_cart_before_redirect(monkeypatch):
+    """Closing the flow on confirm must emit add_to_cart (from the stashed
+    product) BEFORE redirect_checkout_with_address — so the widget binds a cart
+    that actually contains the product."""
+    async def fake_save(session_id, tenant_id, phone, address_data):
+        return None
+    monkeypatch.setattr("src.app.modules.users.address_service.save_address", fake_save)
+
+    brain_core, fake_session = _buy_now_test_harness({
+        "language": "en",
+        "address_state": "confirming",
+        "address_data": {
+            "first_name": "Asha", "last_name": "Nair",
+            "address_line1": "Flat 12, MG Road", "city": "Kochi",
+            "state": "California", "postcode": "90001",
+            "phone": "9876543210", "email": "asha@example.com",
+        },
+        "buy_now_product": {
+            "id": 100, "variant_id": 5,
+            "permalink": "https://store.com/products/formal-shoes",
+        },
+    }, monkeypatch)
+
+    result = asyncio.run(brain_core.ask_brain(
+        session_id="sess_buynow_confirm",
+        user_message="yes",
+        store_context={"url": "https://speako-demo.com"},
+        page_context={"url": "https://speako-demo.com/products/formal-shoes"},
+        language="en",
+        store_client=object(),
+        session_service=fake_session,
+        redis=None,
+        db_session_factory=None,
+    ))
+
+    actions = list(result.get("ui_actions") or [])
+    types = [a.get("type") for a in actions]
+    assert types and types[0] == "add_to_cart", types
+    assert actions[0]["payload"]["product_id"] == 100
+    assert actions[0]["payload"]["variant_id"] == 5
+    assert actions[0]["payload"]["handle"] == "formal-shoes"  # derived from permalink
+    redirect = next((a for a in actions if a.get("type") == "redirect_checkout_with_address"), None)
+    assert redirect is not None
+    assert redirect["payload"]["shipping"]["city"] == "Kochi"
+    # Stash is consumed on completion — a later flow must not re-add it.
+    assert fake_session.meta.get("buy_now_product") is None

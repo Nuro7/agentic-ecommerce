@@ -78,6 +78,7 @@ from .fast_intent import (
     handle_order_tracking,
     handle_add_to_cart,
     handle_pdp_auto_tour,
+    _resolve_product_for_add,
     _wants_collections,
 )
 from .llm_loop import run_llm_agent, retry_with_stricter_prompt
@@ -679,6 +680,37 @@ async def ask_brain(
             "[FLOW] brain address_fsm ENTER state=%s checkout_page=%s active=%s session=%s",
             _addr_state, _is_checkout_page, _addr_flow_active, session_id,
         )
+        # Buy-now fix: the address FSM owns the turn for "buy it now"/"go to
+        # checkout", so handle_buy_now (the code that emits add_to_cart) is never
+        # reached. Resolve the product the customer wants now (the SAME resolver
+        # handle_buy_now uses), stash it in session meta across FSM turns, and
+        # when the flow completes emit an add_to_cart BEFORE the checkout redirect
+        # — otherwise the widget binds an EMPTY cart to the checkout URL and
+        # Shopify bounces /checkout back to the homepage.
+        _buy_now_product = None
+        try:
+            _stashed = session_meta.get("buy_now_product", {}) if isinstance(session_meta, dict) else {}
+            if _checkout_start:
+                # New checkout flow: reset the stash. Only a buy-now intent sets
+                # it; a plain "go to checkout" must keep today's cart-only bind.
+                _stashed = {}
+                if has_buy_now_intent(lower_msg):
+                    _buy_now_product = await _resolve_product_for_add(
+                        cleaned_message, lower_msg, session_id, active_recommendations,
+                        page_context=page_context,
+                        store_client=store_client,
+                        tenant_id=tenant_id,
+                        session_service=session_service,
+                    )
+                    logger.info(
+                        "[FLOW] buy-now product resolved id=%s session=%s",
+                        _buy_now_product.get("id") if _buy_now_product else None, session_id,
+                    )
+            elif isinstance(_stashed, dict) and _stashed.get("id"):
+                _buy_now_product = _stashed
+        except Exception as _bnp_exc:
+            logger.warning("Buy-now product resolve failed (non-critical): %s", _bnp_exc)
+            _buy_now_product = None
         try:
             _addr_resp, _addr_next, _addr_dict, _addr_actions = await handle_address_collection(
                 session_id=session_id,
@@ -689,10 +721,44 @@ async def ask_brain(
                 page_context=page_context,
                 tenant_id=str(store_context.get("tenant_id") or DEV_TENANT_ID),
             )
+            # When a buy-now flow completes, prepend add_to_cart so the cart the
+            # widget binds to the checkout URL actually contains the product.
+            if (_buy_now_product and _addr_next == AddressCollectionState.COMPLETE
+                    and any(
+                        isinstance(a, dict) and a.get("type") == "redirect_checkout_with_address"
+                        for a in (_addr_actions or [])
+                    )
+                    and not any(
+                        isinstance(a, dict) and a.get("type") == "add_to_cart"
+                        for a in (_addr_actions or [])
+                    )):
+                _bnp_handle = _buy_now_product.get("handle") or ""
+                if not _bnp_handle:
+                    _bnp_match = re.search(
+                        r"/products/([^/?#]+)", _buy_now_product.get("permalink") or ""
+                    )
+                    if _bnp_match:
+                        _bnp_handle = _bnp_match.group(1)
+                _addr_actions = [
+                    {
+                        "type": "add_to_cart",
+                        "payload": {
+                            "product_id": int(_buy_now_product.get("id") or 0),
+                            "variant_id": int(_buy_now_product.get("variant_id") or 0),
+                            "quantity": 1,
+                            "handle": _bnp_handle,
+                            "permalink": _buy_now_product.get("permalink", ""),
+                        },
+                    },
+                ] + list(_addr_actions or [])
+                _buy_now_product = None  # consumed — don't re-add on another flow
             # Persist state + collected data so the flow resumes next turn.
             _next_meta = dict(session_meta) if isinstance(session_meta, dict) else {}
             _next_meta["address_state"] = _addr_next
             _next_meta["address_data"] = _addr_dict
+            # Persist the resolved buy-now product across FSM turns (holders for
+            # the completion turn; None once the add_to_cart has been emitted).
+            _next_meta["buy_now_product"] = _buy_now_product
             try:
                 await session_service.save_meta(tenant_id, session_id, _next_meta)
             except Exception as _meta_exc:
