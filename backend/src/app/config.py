@@ -45,12 +45,12 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
 
-    # Origins allowed by CORS (CORS_ORIGINS env var). "*" keeps the widget
-    # working on arbitrary merchant storefront domains; add merchant/admin
-    # dashboard origins here explicitly so they stay allowed (and so a future
-    # allow_credentials=True switch can drop the wildcard without losing them).
-    # Parsed defensively (JSON array / comma-separated / single origin) so a
-    # malformed env value can never take the app down at boot.
+    # Origins allowed by CORS (CORS_ORIGINS env var). Every Shopify storefront
+    # (https://*.myshopify.com) is allowed automatically at runtime — no need to
+    # list stores here. Add merchant/admin dashboard origins here explicitly as
+    # exact URLs (https://... ) or wildcards (https://*.example.com). "*" keeps
+    # everything allowed. Parsed defensively (JSON array / comma-separated /
+    # single origin) so a malformed env value can never take the app down at boot.
     cors_origins: Annotated[list[str], NoDecode] = ["*"]
 
     @field_validator("cors_origins", mode="before")

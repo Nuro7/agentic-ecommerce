@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
@@ -15,6 +14,7 @@ from sqlalchemy import text
 from .config import settings
 from .api.v1.router import api_router
 from .api.v1.voice import router as voice_router
+from .core.middleware import origin_matcher
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +346,34 @@ def create_app() -> FastAPI:
     from .core.middleware import app_error_handler
     app.add_exception_handler(AppError, app_error_handler)
 
+    # ── Multi-tenant CORS ─────────────────────────────────────────────────────
+    _origin_allowed = origin_matcher(settings.cors_origins)
+
+    @app.middleware("http")
+    async def add_dynamic_cors(request: Request, call_next):
+        if request.method == "OPTIONS":
+            # Short-circuit preflights — origin list is dynamic, so a stock
+            # CORSMiddleware can't answer them.
+            allowed = _origin_allowed(request.headers.get("origin", ""))
+            if allowed:
+                return Response(
+                    status_code=200,
+                    headers={
+                        "Access-Control-Allow-Origin": request.headers.get("origin", "") or "*",
+                        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+                        "Access-Control-Allow-Headers": "*",
+                        "Access-Control-Max-Age": "600",
+                        "Vary": "Origin",
+                    },
+                )
+            return Response(status_code=400)
+        response = await call_next(request)
+        origin = request.headers.get("origin", "")
+        if origin and _origin_allowed(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        return response
+
     @app.middleware("http")
     async def add_cors_to_static(request: Request, call_next) -> Response:
         response = await call_next(request)
@@ -370,13 +398,6 @@ def create_app() -> FastAPI:
             )
         return response
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=False,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
     # Widget endpoints under /api/v1 (greet, chat, module routers)
     app.include_router(api_router, prefix="/api/v1")
     # Voice WebSocket at root-level /wooagent/stream (no /api/v1 prefix)
