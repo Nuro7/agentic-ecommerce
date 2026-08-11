@@ -3181,7 +3181,13 @@ try {
         // same redirect logic (resume markers + non-interrupting scheduling).
         if (eventName === 'speako:navigate' && detail && detail.url) {
           const navUrl = String(detail.url || '');
-          const reason = String(detail.reason || '');
+          // The LLM sometimes emits speako:navigate WITHOUT a reason. Derive it
+          // from the URL so overlay store-nav still engages — a bare search URL
+          // used to hard-jump the page to the store's own /search.
+          let reason = String(detail.reason || '');
+          if (!reason && /^\/search(?:\?|$|\.)/i.test(navUrl)) reason = 'search';
+          if (!reason && /^\/products?\//i.test(navUrl)) reason = 'product';
+          if (!reason && /^\/cart(?:\/|$)/i.test(navUrl)) reason = 'cart';
           try {
             if (S.mode === 'voice_nav') {
               localStorage.setItem('_wa_voice_nav_resume', '1');
@@ -3194,7 +3200,9 @@ try {
           // SPA instead of a hard page navigation. checkout/home/account/orders
           // aren't claimed, so they keep navigating the page as before.
           const _ovNav = window.__SPEAKO_OVERLAY__;
-          if (IS_SHOPIFY && _ovNav && _ovNav.claim && _ovNav.claim({ type: 'redirect', payload: { reason: reason, url: navUrl } })) {
+          if (IS_SHOPIFY && _ovNav && _ovNav.handle &&
+              (reason === 'search' || reason === 'product' || reason === 'cart') &&
+              (!_ovNav.claim || _ovNav.claim({ type: 'redirect', payload: { reason: reason, url: navUrl } }))) {
             _ovNav.handle({ type: 'redirect', payload: { reason: reason, url: navUrl } });
             break;
           }
@@ -3296,6 +3304,13 @@ try {
             localStorage.setItem('_wa_voice_nav_resume', '1');
           }
         } catch (e) {}
+        // If the overlay script is loaded it is meant to own store-nav — open
+        // the in-SPA search instead of hard-navigating to the store's /search.
+        const _ovSearch = window.__SPEAKO_OVERLAY__;
+        if (IS_SHOPIFY && _ovSearch && _ovSearch.handle) {
+          _ovSearch.handle({ type: 'search', payload: { query: q } });
+          break;
+        }
         window.location.href = '/search?q=' + encodeURIComponent(q);
         break;
       }
