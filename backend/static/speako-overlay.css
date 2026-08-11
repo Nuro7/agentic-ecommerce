@@ -39,6 +39,12 @@
   .speako-root { height: 100vh; }
 }
 
+/* Visibility gate — the overlay must stay HIDDEN until open() adds
+   .sp-visible, otherwise the full-screen root covers the store the moment
+   it mounts. (Was missing — that's why the overlay showed never/always.) */
+.speako-root { visibility: hidden; }
+.speako-root.sp-visible { visibility: visible; }
+
 .speako-root[data-theme="dark"] {
   --sp-bg: #0f172a;
   --sp-fg: #f1f5f9;

@@ -34,11 +34,28 @@
   // the testing phase. Zero behaviour change when absent/off.
   const OVERLAY_ENABLED = CFG.overlay_mode === 'on' && IS_SHOPIFY;
 
+  if (typeof window !== 'undefined') {
+    console.log('[WooAgent Overlay] boot check', {
+      overlay_mode: CFG.overlay_mode,
+      platform: CFG.platform,
+      isShopify: IS_SHOPIFY,
+      OVERLAY_ENABLED,
+      bridgePresent: !!window.__SPEAKO_OVERLAY__,
+      overlayScriptLoaded: typeof window.__SPEAKO_OVERLAY_CSS__ !== 'undefined'
+    });
+  }
+
   // Push widget config into the overlay bridge so it targets the right API
   // base + shop, and is fully disabled on WooCommerce/custom.
   if (OVERLAY_ENABLED && typeof window !== 'undefined') {
     try {
       const _bridge = window.__SPEAKO_OVERLAY__;
+      console.log('[WooAgent Overlay] OVERLAY_ENABLED=true → pushing config to bridge', {
+        bridgePresent: !!_bridge,
+        overlay_mode: CFG.overlay_mode,
+        platform: CFG.platform,
+        shop: CFG.shop || CFG.tenant_id || ''
+      });
       if (_bridge && _bridge.setConfig) {
         _bridge.setConfig({
           overlayEnabled: true,
@@ -50,8 +67,13 @@
           nativePdp: CFG.native_pdp || 'on',
           primary_color: CFG.primary_color || '#6366f1'
         });
+        console.log('[WooAgent Overlay] bridge.setConfig() called OK');
+      } else {
+        console.warn('[WooAgent Overlay] bridge NOT present — window.__SPEAKO_OVERLAY__ is', _bridge);
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('[WooAgent Overlay] setConfig threw:', e);
+    }
   }
 
   // Tenant identifier appended to EVERY direct call to the Speako backend. Shopify
@@ -2546,6 +2568,7 @@ try {
     // identical when the overlay is off/absent.
     const __overlay = window.__SPEAKO_OVERLAY__;
     if (__overlay && __overlay.claim && __overlay.claim(act)) {
+      console.log('[WooAgent Overlay] claimed action → handle(' + act.type + ')');
       return __overlay.handle(act);
     }
     // In voice-nav mode with panel closed, skip DOM-rendering actions
@@ -3200,6 +3223,12 @@ try {
           // SPA instead of a hard page navigation. checkout/home/account/orders
           // aren't claimed, so they keep navigating the page as before.
           const _ovNav = window.__SPEAKO_OVERLAY__;
+          console.log('[WooAgent Overlay] speako:navigate → routing', {
+            url: navUrl,
+            reason: reason,
+            bridgePresent: !!_ovNav,
+            overlayEnabled: OVERLAY_ENABLED
+          });
           if (IS_SHOPIFY && _ovNav && _ovNav.handle &&
               (reason === 'search' || reason === 'product' || reason === 'cart') &&
               (!_ovNav.claim || _ovNav.claim({ type: 'redirect', payload: { reason: reason, url: navUrl } }))) {
@@ -3307,10 +3336,17 @@ try {
         // If the overlay script is loaded it is meant to own store-nav — open
         // the in-SPA search instead of hard-navigating to the store's /search.
         const _ovSearch = window.__SPEAKO_OVERLAY__;
+        console.log('[WooAgent Overlay] search action → routing', {
+          query: q,
+          isShopify: IS_SHOPIFY,
+          overlayBridge: !!_ovSearch,
+          overlayEnabled: OVERLAY_ENABLED
+        });
         if (IS_SHOPIFY && _ovSearch && _ovSearch.handle) {
           _ovSearch.handle({ type: 'search', payload: { query: q } });
           break;
         }
+        console.warn('[WooAgent Overlay] search NOT routed to overlay → hard navigation to /search?q=' + q);
         window.location.href = '/search?q=' + encodeURIComponent(q);
         break;
       }

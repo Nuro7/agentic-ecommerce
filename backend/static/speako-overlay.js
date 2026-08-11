@@ -181,6 +181,15 @@
       storeName: cfg.store_name || this.cfg.storeName || 'Speako',
       currency: cfg.currency || this.cfg.currency || '$'
     });
+    console.log('[Speako Overlay] setConfig →', {
+      overlayEnabled: this.cfg.overlayEnabled,
+      platform: this.cfg.platform,
+      shop: this.cfg.shop,
+      apiBase: this.cfg.apiBase,
+      storeName: this.cfg.storeName,
+      hasRoot: !!this._root,
+      rawOverlayMode: window.wooagent_config && window.wooagent_config.overlay_mode
+    });
     if (this.cfg.primary_color && this._root) {
       this._root.style.setProperty('--sp-brand', this.cfg.primary_color);
     }
@@ -200,13 +209,18 @@
   proto.isOpen = function () { return this._open; };
 
   proto.open = function (view, params) {
-    if (!this._ensureMounted()) return false;
+    if (!this._ensureMounted()) {
+      console.warn('[Speako Overlay] open() aborted — _ensureMounted() failed (no DOM or shadow attach error)');
+      return false;
+    }
+    console.log('[Speako Overlay] open() → view=' + view + ' enabled=' + this._enabled() + ' wasOpen=' + this._open, params || {});
     if (!this._open) {
       this._open = true;
       this._stack.reset();
       try { history.pushState(SPEAKO_MARKER, ''); } catch (e) {}
       this._lockScroll();
       this._root.classList.add('sp-visible');
+      console.log('[Speako Overlay] OPENED → sp-visible added to root', { rootVisible: this._root.classList.contains('sp-visible') });
     }
     this.pushView(view || 'home', params || {});
     return true;
@@ -225,25 +239,34 @@
 
   proto.close = function () {
     this._closeNativePdp();
-    if (!this._open) return;
+    if (!this._open) {
+      console.log('[Speako Overlay] close() called but overlay was NOT open');
+      return;
+    }
     this._open = false;
     this._unlockScroll();
     if (this._root) this._root.classList.remove('sp-visible');
     // Unwind our synthetic history marker so the theme's back-nav is untouched.
     try { if (history.state && history.state.type === 'speako-overlay') { history.back(); } } catch (e) {}
     this.emit('close');
+    console.log('[Speako Overlay] CLOSED');
   };
 
   proto.claim = function (act) {
-    return claimAction(act, {
+    var result = claimAction(act, {
       enabled: this._enabled(),
       platform: this.cfg.platform,
       origin: (typeof location !== 'undefined' ? location.origin : '')
     });
+    if (act && act.type) {
+      console.log('[Speako Overlay] claim(' + act.type + ') → ' + result + ' | enabled=' + this._enabled() + ' platform=' + this.cfg.platform);
+    }
+    return result;
   };
 
   proto.handle = function (act) {
     var _this = this;
+    console.log('[Speako Overlay] handle() called → type=' + (act && act.type), (act && act.payload) || {});
     return Promise.resolve().then(function () {
       var p = act.payload || {};
       switch (act.type) {
@@ -304,8 +327,6 @@
     return true;
   };
 
-  /* ── DOM mounting ── */
-
   proto._ensureMounted = function () {
     if (this._host && this._root) return true;
     if (typeof document === 'undefined' || typeof window === 'undefined') return false;
@@ -328,8 +349,10 @@
       this._shadow = shadow;
       this._root = root;
       this._wire(cssRoot(root));
+      console.log('[Speako Overlay] mounted #speako-overlay-host → host=' + !!host + ' shadow=' + !!shadow + ' cssBytes=' + (style.textContent || '').length);
       return true;
     } catch (e) {
+      console.warn('[Speako Overlay] _ensureMounted() threw:', e);
       return false;
     }
   };
@@ -1325,6 +1348,11 @@
 
   if (typeof window !== 'undefined') {
     window.__SPEAKO_OVERLAY__ = bridge;
+    console.log('[Speako Overlay] bootstrapped → window.__SPEAKO_OVERLAY__ set', {
+      enabled: instance._enabled(),
+      overlayMode: window.wooagent_config && window.wooagent_config.overlay_mode,
+      platform: window.wooagent_config && window.wooagent_config.platform
+    });
   }
 
   /* ════════════════════════════ NODE EXPORT ════════════════════════════ */
