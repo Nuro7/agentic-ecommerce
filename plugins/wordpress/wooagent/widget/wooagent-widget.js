@@ -3190,6 +3190,14 @@ try {
             }
             if (reason === 'search') sessionStorage.setItem('_wa_voice_active', '1');
           } catch (_e) {}
+          // Fullscreen overlay: route store-nav (search/product/cart) into the
+          // SPA instead of a hard page navigation. checkout/home/account/orders
+          // aren't claimed, so they keep navigating the page as before.
+          const _ovNav = window.__SPEAKO_OVERLAY__;
+          if (IS_SHOPIFY && _ovNav && _ovNav.claim && _ovNav.claim({ type: 'redirect', payload: { reason: reason, url: navUrl } })) {
+            _ovNav.handle({ type: 'redirect', payload: { reason: reason, url: navUrl } });
+            break;
+          }
           if (reason === 'search' && IS_SHOPIFY && navUrl.includes('/search?q=')) {
             let targetUrl = navUrl;
             try {

@@ -43,7 +43,7 @@ test('claimAction: disabled or non-shopify platform never claims', () => {
 
 test('claimAction: store view actions claim when overlay on', () => {
   ['show_products', 'show_product_detail', 'show_availability', 'show_cart',
-   'cart_updated', 'apply_discount_code', 'highlight_card'].forEach((type) => {
+   'cart_updated', 'apply_discount_code', 'highlight_card', 'search'].forEach((type) => {
     assert.equal(OV.claimAction({ type, payload: {} }, SHOPIFY), true, type);
   });
   assert.equal(OV.claimAction({ type: 'add_to_cart', payload: {} }, SHOPIFY), false);

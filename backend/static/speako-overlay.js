@@ -23,7 +23,8 @@
     'show_cart',
     'cart_updated',
     'apply_discount_code',
-    'highlight_card'
+    'highlight_card',
+    'search'
   ]);
 
   function RouterStack() {
@@ -246,6 +247,9 @@
     return Promise.resolve().then(function () {
       var p = act.payload || {};
       switch (act.type) {
+        case 'search':
+          _this.open('search', { query: p.query || '' });
+          return _this._loadSearch(p.query || '');
         case 'show_products':
           _this.open('search', { query: p.query || '', products: p.products || [] });
           return _this._loadSearch(p.query || '', p.filters);
