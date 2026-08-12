@@ -25,6 +25,7 @@
     'cart_updated',
     'apply_discount_code',
     'highlight_card',
+    'active_product_index',
     'search'
   ]);
 
@@ -107,6 +108,44 @@
     if (!m) return '';
     try { return decodeURIComponent(m[1].replace(/\+/g, ' ')); }
     catch (e) { return m[1]; }
+  }
+
+  // Normalize the /overlay/search response into a stable shape. The server now
+  // returns an envelope {products, query(cleaned), message, match, ...}; older
+  // builds (and the API test fake) may return a bare product array. Both are
+  // accepted so the grid never mis-reads the payload.
+  function unwrapSearch(data) {
+    if (Array.isArray(data)) {
+      return { products: data, query: '', message: '', match: data.length ? 'exact' : 'none' };
+    }
+    if (data && typeof data === 'object') {
+      return {
+        products: Array.isArray(data.products) ? data.products : [],
+        query: data.query || '',
+        message: data.message || '',
+        match: data.match || ''
+      };
+    }
+    return { products: [], query: '', message: '', match: 'none' };
+  }
+
+  // Choose the product whose title best matches a spoken/typed title. Prefers an
+  // exact (case-insensitive) title equality, then substring containment either
+  // way. Returns null when nothing plausibly matches — the caller must NOT open
+  // a PDP in that case, so we never render a hallucinated / wrong product.
+  function pickTitleMatch(products, title) {
+    var list = Array.isArray(products) ? products : [];
+    if (!list.length) return null;
+    var want = String(title || '').trim().toLowerCase();
+    if (!want) return null;
+    var contains = null;
+    for (var i = 0; i < list.length; i++) {
+      var t = String((list[i] && list[i].title) || '').trim().toLowerCase();
+      if (!t) continue;
+      if (t === want) return list[i];
+      if (!contains && (t.indexOf(want) !== -1 || want.indexOf(t) !== -1)) contains = list[i];
+    }
+    return contains;
   }
 
   function formatMoney(amount, currency) {
@@ -341,11 +380,31 @@
         }
         case 'show_product_detail':
         case 'show_availability': {
+          var isAvail = act.type === 'show_availability';
           var handle = extractHandle(p, p.url || '');
-          _this.open('pdp', { handle: handle, product: p.product || null, availability: act.type === 'show_availability' });
-          if (p.product) { _this._render('pdp', { handle: handle, product: p.product }); return; }
-          if (!handle) { _this._toast('Could not open that product.', true); return; }
-          return _this._loadProduct(handle);
+          // 1) Fully-specified product object with a handle → exact bind, render
+          //    directly (no round-trip, no guessing).
+          if (p.product && (p.product.handle || handle)) {
+            var boundHandle = handle || p.product.handle;
+            _this.open('pdp', { handle: boundHandle, product: p.product, availability: isAvail });
+            _this._render('pdp', { handle: boundHandle, product: p.product });
+            return;
+          }
+          // 2) Exact handle/id → load the canonical product; never fabricate.
+          if (handle) {
+            _this.open('pdp', { handle: handle, availability: isAvail });
+            return _this._loadProduct(handle);
+          }
+          // 3) No handle → resolve by title against the live catalog BEFORE
+          //    opening a PDP, so a hallucinated title can never render a product.
+          var wantTitle = p.title || p.product_title
+            || (p.product && p.product.title) || p.name || p.query || '';
+          if (wantTitle) {
+            _this.open('pdp', { handle: '', loading: true, availability: isAvail });
+            return _this._resolveProductByTitle(wantTitle);
+          }
+          _this._toast('Could not open that product.', true);
+          return;
         }
         case 'show_cart':
         case 'cart_updated':
@@ -368,6 +427,15 @@
         case 'highlight_card':
           _this._highlightCard(p);
           return;
+        case 'active_product_index': {
+          // Voice stream signalling "I'm now talking about product N" — the
+          // index may arrive under any of these keys depending on the emitter.
+          var _idx = (p.index != null) ? p.index
+                   : (p.active_product_index != null ? p.active_product_index
+                      : (p.value != null ? p.value : null));
+          _this._highlightCard({ index: _idx, handle: p.handle, product: p.product });
+          return;
+        }
         case 'redirect':
         case 'redirect_checkout': {
           var reason = String(p.reason || '');
@@ -590,6 +658,14 @@
     }
   };
 
+  // Start the live voice session if it isn't already running (idempotent). The
+  // launcher calls this right after open() so the mic is hot the instant the
+  // overlay appears — pure voice-to-voice, no extra tap on the orb.
+  proto.startVoice = function () {
+    if (this._listening) return;
+    this._toggleVoice();
+  };
+
   proto._handleBack = function () {
     if (this._stack.size() > 1) {
       this._stack.pop();
@@ -665,9 +741,19 @@
     this._publish('search_submitted', { search_term: query });
     this._render('search', { query: query, products: this._products, loading: true, filters: filters || {} });
     var qs = 'q=' + encodeURIComponent(query) + '&first=20';
-    return this._api('/search?' + qs).then(function (products) {
-      _this._products = products;
-      _this._render('search', { query: query, products: products, filters: filters || {} });
+    return this._api('/search?' + qs).then(function (data) {
+      var env = unwrapSearch(data);
+      _this._products = env.products;
+      // Prefer the server's cleaned query ("formal shoes") over the raw spoken
+      // text ("formal shoes 5000? under 5000") for the header + answer line, and
+      // surface the honest server message (e.g. "no X under N, but here are…").
+      _this._render('search', {
+        query: env.query || query,
+        products: env.products,
+        message: env.message,
+        match: env.match,
+        filters: filters || {}
+      });
     }).catch(function (err) {
       _this._toast(err.message || 'Search failed.', true);
       _this.emit('storefailure', { query: query });
@@ -684,6 +770,33 @@
     }).catch(function (err) {
       _this._toast(err.message || 'Could not load product.', true);
       _this.emit('storefailure', { handle: handle });
+    });
+  };
+
+  // Resolve a product by its title against the live catalog, then open its PDP
+  // by the exact matched handle. This is the anti-hallucination fallback for
+  // show_product_detail when the assistant emits a title but no handle/id: we
+  // NEVER open a PDP for an unverified handle. Caller should have opened a
+  // loading PDP first (this method fills the resolved handle into that entry).
+  proto._resolveProductByTitle = function (title) {
+    var _this = this;
+    var t = String(title || '').trim();
+    if (!t) { _this._toast('Could not open that product.', true); _this._handleBack(); return Promise.resolve(); }
+    var qs = 'q=' + encodeURIComponent(t) + '&first=10';
+    return _this._api('/search?' + qs).then(function (data) {
+      var env = unwrapSearch(data);
+      var match = pickTitleMatch(env.products, t);
+      if (match && match.handle) {
+        var top = _this._stack.top();
+        if (top && top.view === 'pdp') top.params.handle = match.handle;
+        return _this._loadProduct(match.handle);
+      }
+      // Honest miss — no fabricated product, back out of the loading PDP.
+      _this._toast('I couldn’t find “' + t + '”. Want to search instead?', true);
+      _this._handleBack();
+    }).catch(function (err) {
+      _this._toast(err.message || 'Could not open that product.', true);
+      _this._handleBack();
     });
   };
 
@@ -743,6 +856,79 @@
 
   proto._badge = function (count) {
     if (this._els && this._els.badge) this._els.badge.textContent = String(count || 0);
+  };
+
+  // The visible PDP hero image, used as the source of the fly-to-cart clone.
+  proto._pdpHeroImg = function () {
+    if (!this._els || !this._els.body) return null;
+    return this._els.body.querySelector(
+      '[data-gallery] img, .sp-gallery-main img, .sp-pdp-media img, .sp-card-media img, img'
+    );
+  };
+
+  // A short pop on the header cart button — the landing beat of fly-to-cart and
+  // a standalone confirmation when motion is reduced.
+  proto._popCart = function () {
+    var btn = this._els && this._els.cartBtn;
+    if (!btn) return;
+    btn.classList.add('sp-cart-pop');
+    setTimeout(function () { btn.classList.remove('sp-cart-pop'); }, 420);
+  };
+
+  // Fly-to-cart: a floating clone of the product image arcs from `sourceEl`
+  // into the header cart badge, then the badge pops. Purely cosmetic — the real
+  // cart mutation + authoritative badge count are owned by _addLine/_loadCart;
+  // this only animates on a confirmed add. Robust across the shadow boundary:
+  // the clone lives in the light DOM with fully inline styles and positions via
+  // viewport rects, so no shadow-scope or transformed-ancestor surprises.
+  proto._flyToCart = function (sourceEl) {
+    try {
+      if (typeof document === 'undefined' || !document.body) return;
+      if (typeof window !== 'undefined' && window.matchMedia &&
+          window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        this._popCart();
+        return;
+      }
+      var cartBtn = this._els && this._els.cartBtn;
+      if (!sourceEl || !cartBtn) { this._popCart(); return; }
+      var s = sourceEl.getBoundingClientRect();
+      var t = cartBtn.getBoundingClientRect();
+      if (!s.width || !t.width) { this._popCart(); return; }
+
+      var imgUrl = (sourceEl.tagName === 'IMG' ? sourceEl.getAttribute('src') : '') ||
+        (sourceEl.querySelector && sourceEl.querySelector('img') &&
+         sourceEl.querySelector('img').getAttribute('src')) || '';
+      var size = Math.min(110, Math.max(52, s.width * 0.6));
+      var clone = document.createElement('div');
+      clone.setAttribute('aria-hidden', 'true');
+      clone.style.cssText =
+        'position:fixed;z-index:2147483647;pointer-events:none;border-radius:14px;' +
+        'background:#fff center/cover no-repeat;box-shadow:0 10px 30px rgba(124,58,237,0.5);' +
+        'transition:transform 0.72s cubic-bezier(0.22,0.68,0.3,1),opacity 0.72s ease;' +
+        'left:' + (s.left + s.width / 2 - size / 2) + 'px;' +
+        'top:' + (s.top + s.height / 2 - size / 2) + 'px;' +
+        'width:' + size + 'px;height:' + size + 'px;';
+      if (imgUrl) clone.style.backgroundImage = 'url("' + imgUrl.replace(/"/g, '\\"') + '")';
+      else clone.style.background = 'var(--sp-brand, #7c3aed)';
+      document.body.appendChild(clone);
+
+      var dx = (t.left + t.width / 2) - (s.left + s.width / 2);
+      var dy = (t.top + t.height / 2) - (s.top + s.height / 2);
+      var _this = this;
+      // Paint the start frame first, then kick the transition on the next frame.
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          clone.style.transform = 'translate(' + dx + 'px,' + dy + 'px) scale(0.12)';
+          clone.style.opacity = '0.25';
+        });
+      });
+      var done = function () {
+        if (clone && clone.parentNode) clone.parentNode.removeChild(clone);
+        _this._popCart();
+      };
+      clone.addEventListener('transitionend', done, { once: true });
+      setTimeout(done, 950); // safety net if transitionend never fires
+    } catch (e) {}
   };
 
   proto._setBadgeCartId = function (cartId) {
@@ -840,11 +1026,21 @@
       answer = 'Searching' + (query ? ' for “' + escapeHtml(query) + '”' : '') + '…';
     } else if (!products.length) {
       grid = '<div class="sp-empty">No products found' + (query ? ' for "' + escapeHtml(query) + '"' : '') + '.<br><span>Try a different search, or ask me below.</span></div>';
-      answer = 'I couldn’t find a match' + (query ? ' for “' + escapeHtml(query) + '”' : '') + '. Want me to try something broader?';
+      // Trust the server's honest no-match copy when present (it explains the
+      // "none" vs "price_relaxed" reason); never dump unrelated products.
+      answer = params.message
+        ? escapeHtml(params.message)
+        : ('I couldn’t find a match' + (query ? ' for “' + escapeHtml(query) + '”' : '') + '. Want me to try something broader?');
     } else {
       grid = this._gridHtml(products);
-      answer = 'Here ' + (products.length === 1 ? 'is' : 'are') + ' <strong>' + products.length + '</strong> ' +
-        (products.length === 1 ? 'result' : 'results') + (query ? ' for “' + escapeHtml(query) + '”' : '') + '.';
+      // A relaxed-price / partial match carries an explicit caveat from the
+      // server ("no X under N, but here are the X we do have") — show it verbatim
+      // instead of the generic "Here are N results" line so we never imply the
+      // budget filter succeeded when it didn't.
+      answer = params.message
+        ? escapeHtml(params.message)
+        : ('Here ' + (products.length === 1 ? 'is' : 'are') + ' <strong>' + products.length + '</strong> ' +
+          (products.length === 1 ? 'result' : 'results') + (query ? ' for “' + escapeHtml(query) + '”' : '') + '.');
     }
 
     this._els.body.innerHTML =
@@ -959,15 +1155,44 @@
     }).join('');
   };
 
+  // Synchronize a purple glow with the product the assistant is narrating.
+  // Voice streams emit either a `highlight_card` (by handle/product) or an
+  // `active_product_index` (by position in the current grid); both land here.
+  // Only one card glows at a time, and it scrolls into view so the customer
+  // always sees what Aria is talking about.
   proto._highlightCard = function (payload) {
     var _this = this;
     var p = payload || {};
-    var handle = extractHandle(p, '');
-    var card = this._els && this._els.body && this._els.body.querySelector('[data-handle="' + handle + '"]');
-    if (card) {
-      card.classList.add('sp-highlight');
-      setTimeout(function () { card.classList.remove('sp-highlight'); }, 4000);
+    var body = this._els && this._els.body;
+    if (!body) return;
+
+    // Clear any previous glow — a single active card at a time.
+    var prev = body.querySelectorAll('.sp-card-glowing');
+    for (var i = 0; i < prev.length; i++) prev[i].classList.remove('sp-card-glowing');
+
+    var card = null;
+    var idx = (p.active_product_index != null) ? p.active_product_index
+            : (p.index != null ? p.index : null);
+    if (idx != null && !isNaN(Number(idx))) {
+      var cards = body.querySelectorAll('.sp-card');
+      card = cards[Number(idx)] || null;
     }
+    if (!card) {
+      var handle = extractHandle(p, '');
+      if (handle) card = body.querySelector('[data-handle="' + cssEsc(handle) + '"]');
+    }
+    if (!card) return;
+
+    card.classList.add('sp-card-glowing');
+    try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+
+    // Auto-clear after a spoken beat so a stale highlight doesn't outlive the
+    // narration; a fresh highlight cancels the pending clear.
+    clearTimeout(this._glowTimer);
+    this._glowTimer = setTimeout(function () {
+      if (card) card.classList.remove('sp-card-glowing');
+      _this._glowTimer = null;
+    }, 6000);
   };
 
   proto._renderPdp = function (params) {
@@ -1213,6 +1438,7 @@
       var v = _this._currentVariant;
       if (!v) { _this._toast('Select a variant first.', true); return; }
       if (v.available_for_sale === false) { _this._toast('This variant is out of stock.', true); return; }
+      _this._flyToCart(_this._pdpHeroImg());
       _this._addLine(v.id, qty);
     });
 
@@ -1484,6 +1710,7 @@
         if (idIn && idIn.value) v = { id: idIn.value };
       }
       if (!v || !v.id) { _this._toast('Choose a variant first.', true); return; }
+      _this._flyToCart(_this._pdpHeroImg());
       _this._addLine(v.id, qty);
     });
 
@@ -1876,6 +2103,7 @@
     claim: function (act) { return instance.claim(act); },
     handle: function (act) { return instance.handle(act); },
     pushView: function (view, params) { instance.pushView(view, params); },
+    startVoice: function () { instance.startVoice(); return bridge; },
     on: function (event, cb) { instance.on(event, cb); return bridge; },
     emit: function (event, data) { instance.emit(event, data); },
     setConfig: function (cfg) { instance.setConfig(cfg); return bridge; }
@@ -1932,6 +2160,8 @@
       isSameOriginTarget: isSameOriginTarget,
       extractHandle: extractHandle,
       extractSearchQuery: extractSearchQuery,
+      unwrapSearch: unwrapSearch,
+      pickTitleMatch: pickTitleMatch,
       formatMoney: formatMoney,
       cartSubtotal: cartSubtotal,
       pickVariant: pickVariant,

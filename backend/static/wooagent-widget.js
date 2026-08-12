@@ -1812,7 +1812,13 @@
         if (_ov && _ov.open) {
           primeAudioEngines();
           if (_ov.isOpen && _ov.isOpen()) { _ov.close(); }
-          else { _ov.open('home'); }
+          else {
+            _ov.open('home');
+            // Voice-to-voice: the mic goes hot the moment the overlay appears —
+            // no second tap on the orb. startVoice() emits 'voicestart', which
+            // the handler below turns into the real live-capture pipeline.
+            if (_ov.startVoice) { try { _ov.startVoice(); } catch (e) {} }
+          }
           return;
         }
         console.warn('[WooAgent Overlay] launcher click but bridge missing — falling back to widget menu');

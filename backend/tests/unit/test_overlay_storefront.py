@@ -75,8 +75,10 @@ async def test_search_query_and_variables_shape():
     assert body["variables"]["first"] == 20
     assert body["variables"]["sortKey"] == "RELEVANCE"
 
-    assert len(out) == 1
-    p = out[0]
+    assert out["match"] == "exact"
+    assert out["count"] == 1
+    assert len(out["products"]) == 1
+    p = out["products"][0]
     assert p["handle"] == "runner-shoe"
     assert p["title"] == "Runner Shoe"
     assert p["price"]["amount"] == 49.99
@@ -379,6 +381,13 @@ def test_parse_price_query_strips_duplicate_number():
     assert p["max"] == 5000
 
 
+def test_parse_price_query_strips_punctuated_duplicate_number():
+    # The exact screenshot query: "5000?" must not leak into the keywords.
+    p = parse_price_query("formal shoes 5000? under 5000")
+    assert p["terms"] == "formal shoes"
+    assert p["max"] == 5000
+
+
 def test_parse_price_query_over_and_currency():
     p = parse_price_query("watches above ₹1,200")
     assert p["terms"] == "watches"
@@ -407,45 +416,91 @@ def test_build_storefront_query_plain():
 
 @pytest.mark.asyncio
 async def test_search_builds_price_filtered_query():
-    wrap, captured = _capture(_search_response)
-    sf = _make_service(wrap)
+    calls = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        calls.append(body["variables"]["query"])
+        return httpx.Response(200, json=_search_response())
+
+    sf = _make_service(handler)
     await sf.search_products("formal shoes under 5000")
-    assert captured["body"]["variables"]["query"] == "formal shoes variants.price:<=5000"
+    # The FIRST (price-filtered) attempt must carry the parsed price bound.
+    assert calls[0] == "formal shoes variants.price:<=5000"
+
+
+def _formal_shoe_response():
+    """A genuine formal shoe priced above a typical budget (8999)."""
+    return {
+        "data": {
+            "products": {
+                "edges": [
+                    {
+                        "node": {
+                            "id": "gid://shopify/Product/2",
+                            "handle": "oxford-formal-shoe",
+                            "title": "Oxford Formal Shoe",
+                            "vendor": "Speako",
+                            "productType": "Formal Shoes",
+                            "tags": ["formal", "leather"],
+                            "availableForSale": True,
+                            "featuredImage": {"url": "https://cdn/oxford.jpg", "altText": "oxford"},
+                            "priceRange": {
+                                "minVariantPrice": {"amount": "8999.00", "currencyCode": "INR"},
+                                "maxVariantPrice": {"amount": "8999.00", "currencyCode": "INR"},
+                            },
+                        }
+                    }
+                ]
+            }
+        }
+    }
 
 
 @pytest.mark.asyncio
-async def test_search_falls_back_to_keywords_when_price_filter_empty():
+async def test_search_relaxes_price_when_matching_product_over_budget():
+    """A real formal shoe exists but costs more than the budget: the price-
+    filtered attempt is empty, the keyword-only attempt finds it, so we honestly
+    surface it as match='price_relaxed' ("no X under N, but here are our X")."""
     calls = []
 
     async def handler(request):
         body = json.loads(request.content)
         q = body["variables"]["query"]
         calls.append(q)
-        # Price-filtered attempt returns nothing; keyword-only attempt succeeds.
         if "variants.price" in q:
             return httpx.Response(200, json={"data": {"products": {"edges": []}}})
-        return httpx.Response(200, json=_search_response())
+        return httpx.Response(200, json=_formal_shoe_response())
 
     sf = _make_service(handler)
     out = await sf.search_products("formal shoes under 5000")
-    assert len(out) == 1
+    assert out["match"] == "price_relaxed"
+    assert len(out["products"]) == 1
+    assert out["products"][0]["handle"] == "oxford-formal-shoe"
     assert calls[0] == "formal shoes variants.price:<=5000"
     assert calls[1] == "formal shoes"
+    assert "under" in out["message"].lower()
 
 
 @pytest.mark.asyncio
-async def test_search_falls_back_to_bestsellers_when_all_empty():
+async def test_search_returns_none_and_never_dumps_bestsellers():
+    """When NO product matches the qualifiers (e.g. only running shoes exist for
+    a 'formal shoes' query), the relevance guard rejects the mismatches and we
+    return match='none' with an empty product set — the old best-seller dump
+    that produced the reported mismatch screenshot must NEVER run."""
     calls = []
 
     async def handler(request):
         body = json.loads(request.content)
         calls.append((body["variables"]["query"], body["variables"]["sortKey"]))
-        if body["variables"]["sortKey"] == "BEST_SELLING":
-            return httpx.Response(200, json=_search_response())
-        return httpx.Response(200, json={"data": {"products": {"edges": []}}})
+        # Every attempt returns only the mismatched running shoe.
+        return httpx.Response(200, json=_search_response())
 
     sf = _make_service(handler)
-    out = await sf.search_products("zzzznomatch under 5000")
-    assert len(out) == 1
-    # Final attempt is an empty-query best-sellers sweep.
-    assert calls[-1] == ("", "BEST_SELLING")
+    out = await sf.search_products("formal shoes under 5000")
+    assert out["match"] == "none"
+    assert out["products"] == []
+    assert out["count"] == 0
+    # The forbidden best-seller dump must never be issued.
+    assert not any(sort == "BEST_SELLING" for _, sort in calls)
+    assert "couldn't find" in out["message"].lower()

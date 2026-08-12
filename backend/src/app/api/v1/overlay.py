@@ -133,6 +133,21 @@ def _address_input(addr: DeliveryAddressIn) -> Dict[str, Any]:
     }
 
 
+def _selectable_address(addr: DeliveryAddressIn) -> Dict[str, Any]:
+    """Wrap a delivery address in the modern ``CartSelectableAddressInput`` shape.
+
+    Shopify's hosted checkout only pre-fills the delivery form when the address
+    is sent as ``{address: {deliveryAddress: {...}}, selected: true}``. The
+    legacy top-level ``{deliveryAddress: {...}}`` shape returns a checkoutUrl but
+    leaves the form blank, so we always send ``selected: true`` here.
+    """
+    return {
+        "address": {"deliveryAddress": _address_input(addr)},
+        "selected": True,
+        "oneTimeUse": True,
+    }
+
+
 def _err(status: int, message: str, detail: Any = None) -> JSONResponse:
     return JSONResponse(status_code=status, content={"errors": [{"message": message}], "detail": detail})
 
@@ -262,7 +277,7 @@ async def overlay_cart_buyer(
             sf,
             sf.cart_delivery_addresses_replace(
                 payload.cart_id,
-                [{"deliveryAddress": _address_input(payload.delivery_address)}],
+                [_selectable_address(payload.delivery_address)],
                 buyer_ip=_client_ip(request),
             ),
             request,
@@ -308,7 +323,7 @@ async def overlay_cart_checkout(
             sf,
             sf.cart_delivery_addresses_replace(
                 payload.cart_id,
-                [{"deliveryAddress": _address_input(payload.delivery_address)}],
+                [_selectable_address(payload.delivery_address)],
                 buyer_ip=ip,
             ),
             request,

@@ -193,6 +193,7 @@ _PROMPTS: Dict[str, Dict[str, str]] = {
         "confirm": "Got it! Delivering to {name}, {address}, {city} {pincode}. Phone: {phone}. Email: {email}. Shall I proceed to payment?",
         "done": "Perfect! Taking you to payment now. Just complete the payment and you're done!",
         "update_field": "Which detail would you like to change - name, address, city, state, pincode, phone, or email?",
+        "cancelled": "No problem — I've stopped the checkout. Want to keep browsing or look at something else?",
     },
     "hi": {
         "name": "Aapka poora naam kya hai?",
@@ -206,6 +207,7 @@ _PROMPTS: Dict[str, Dict[str, str]] = {
         "confirm": "Theek hai! {name} ko {address}, {city} {pincode} pe deliver karenge. Phone: {phone}. Email: {email}. Kya payment pe jaayein?",
         "done": "Perfect! Ab payment ke liye ja rahe hain. Sirf payment complete karein!",
         "update_field": "Kaun si detail badalni hai - naam, address, city, state, pincode, phone ya email?",
+        "cancelled": "Koi baat nahi — checkout rok diya. Aur browse karna hai ya kuch aur dekhein?",
     },
     "ml": {
         "name": "Ningalude muthuperu enthanu?",
@@ -219,8 +221,34 @@ _PROMPTS: Dict[str, Dict[str, str]] = {
         "confirm": "{name}, {address}, {city} {pincode} enthu sheriyano? Phone: {phone}. Email: {email}?",
         "done": "Sheriyanu! Payment cheyyan pokuva. Payment matram cheyyal mathi!",
         "update_field": "Etu detail maata vaanao - name, address, city, state, zip, phone, email?",
+        "cancelled": "Kuzhappamilla — checkout nirthi. Vere enthenkilum nokkano?",
     },
 }
+
+
+def _is_exit_intent(text: str) -> bool:
+    """True when the customer clearly wants OUT of the address/checkout flow.
+
+    Kept deliberately conservative so a legitimate address value is never
+    mistaken for a cancel: unambiguous phrases ("never mind", "keep browsing",
+    "cancel checkout") fire regardless of length, while bare single-word
+    commands ("cancel", "stop", "exit") only fire on a short command-like
+    message — so a street address such as "12 Bus Stop Road" is not swallowed.
+    "skip"/"no phone" are NOT exits (they skip an optional field).
+    """
+    t = str(text or "").strip().lower()
+    if not t:
+        return False
+    if re.search(
+        r"never\s*mind|nevermind|forget\s+it|keep\s+browsing|just\s+browsing|"
+        r"change\s+my\s+mind|(?:leave|cancel|exit|stop)\s+(?:the\s+)?checkout|"
+        r"not\s+(?:right\s+)?now|maybe\s+later|don'?t\s+want\s+to\s+(?:check\s*out|buy)",
+        t,
+    ):
+        return True
+    if len(t.split()) <= 3 and re.search(r"\b(cancel|stop|abort|quit|exit|browse|browsing)\b", t):
+        return True
+    return False
 
 
 async def handle_address_collection(
@@ -243,6 +271,15 @@ async def handle_address_collection(
     response = ""
     ui_actions: List[Dict[str, Any]] = []
     cleaned = sanitize_text(user_message or "", max_len=250)
+
+    # Explicit exit / cancel intent — the customer wants OUT of the address flow
+    # ("cancel", "stop", "never mind", "let me keep browsing"). Reset the FSM to
+    # IDLE with a fresh (empty) address so the next turn is handled normally by
+    # search/browse instead of being swallowed as the next address field. Only
+    # fires mid-collection; IDLE has no active flow to cancel.
+    if current_state != AddressCollectionState.IDLE and _is_exit_intent(cleaned):
+        response = lang_prompts.get("cancelled", _PROMPTS["en"]["cancelled"])
+        return response, AddressCollectionState.IDLE, AddressData().__dict__, ui_actions
 
     # Checkout phone-first mode: when the customer is on a checkout page, or has
     # just asked to buy now / go to checkout / place an order, and the state is

@@ -121,14 +121,16 @@ def parse_price_query(raw: str) -> Dict[str, Any]:
         }
         tokens = []
         for tok in text.split():
-            bare = tok.strip(",.").lower()
+            # Strip surrounding punctuation ("5000?", "5000." → "5000") so a stray
+            # number that duplicates a detected bound is recognised and removed.
+            bare = tok.strip(",.?!;:'\"()").lower()
             if bare in _CURRENCY_WORDS:
                 continue
             digits = bare.replace(",", "")
             if digits.isdigit() and int(digits) in bounds:
                 continue
-            tokens.append(tok)
-        text = " ".join(tokens)
+            tokens.append(tok.strip("?!.,;:"))
+        text = " ".join(t for t in tokens if t)
 
     return {"terms": text.strip(), "min": price_min, "max": price_max}
 
@@ -152,6 +154,88 @@ def build_storefront_query(raw: str) -> Tuple[str, bool]:
         parts.append("variants.price:<=%s" % _fmt_price(parsed["max"]))
         has_filter = True
     return " ".join(parts).strip(), has_filter
+
+
+# ── Result relevance guard ─────────────────────────────────────────────────────
+# Shopify's Storefront full-text search is fuzzy / OR-ranked: a query for
+# "formal shoes" also returns anything merely containing "shoes" (running,
+# casual, sports). For a MULTI-WORD query the extra words are qualifiers the
+# shopper actually means ("formal", "leather", "wireless") — silently dropping
+# them is exactly the mismatch bug. So we keep only products whose searchable
+# text contains EVERY qualifier. A single bare category word ("sneakers") has no
+# qualifier to enforce, so we trust Shopify's relevance ranking and don't filter.
+
+_SEARCH_STOPWORDS = {
+    "a", "an", "the", "for", "me", "my", "some", "any", "show", "find",
+    "want", "need", "please", "with", "in", "of", "and", "or", "to", "get",
+    "looking", "look", "search", "buy", "under", "over", "about", "that",
+    "this", "these", "those", "is", "are", "you", "have", "do", "can", "at",
+    "priced", "price", "cost", "around", "between", "below", "above", "than",
+    "less", "more", "rs", "inr",
+}
+# Generic browse words that don't describe a specific product line. When the
+# whole query is generic ("show me bestsellers", "new arrivals") we return the
+# store's relevance/best-selling results as-is instead of enforcing qualifiers.
+_GENERIC_TOKENS = {
+    "best", "seller", "sellers", "bestseller", "bestsellers", "selling",
+    "popular", "trending", "top", "new", "arrival", "arrivals", "latest",
+    "deal", "deals", "sale", "offer", "offers", "discount", "discounts",
+    "product", "products", "item", "items", "everything", "all", "browse",
+    "catalog", "catalogue", "store", "shop", "stuff", "things", "something",
+    "anything", "cheap", "cheapest", "affordable", "budget",
+}
+
+
+def _significant_terms(terms: str) -> List[str]:
+    """Meaningful keyword tokens: lowercased, ≥2 chars, minus stop/generic words."""
+    out: List[str] = []
+    for tok in (terms or "").lower().split():
+        w = tok.strip(",.?!;:'\"()").strip()
+        if len(w) < 2 or w in _SEARCH_STOPWORDS or w in _GENERIC_TOKENS:
+            continue
+        out.append(w)
+    return out
+
+
+def _term_matches(haystack: str, term: str) -> bool:
+    """Substring match with light singular/plural tolerance."""
+    if term in haystack:
+        return True
+    if term.endswith("s") and len(term) > 3 and term[:-1] in haystack:
+        return True
+    if not term.endswith("s") and (term + "s") in haystack:
+        return True
+    return False
+
+
+def _product_matches_terms(product: Dict[str, Any], terms: List[str]) -> bool:
+    """True when every qualifier term appears in the product's searchable text."""
+    if not terms:
+        return True
+    haystack = " ".join([
+        str(product.get("title") or ""),
+        str(product.get("product_type") or ""),
+        str(product.get("vendor") or ""),
+        " ".join(str(t) for t in (product.get("tags") or [])),
+    ]).lower()
+    return all(_term_matches(haystack, t) for t in terms)
+
+
+def _within_price(
+    product: Dict[str, Any], lo: Optional[float], hi: Optional[float]
+) -> bool:
+    """Price-bound check. Unknown/zero price is not excluded."""
+    try:
+        amt = float((product.get("price") or {}).get("amount") or 0)
+    except (TypeError, ValueError):
+        return True
+    if amt <= 0:
+        return True
+    if lo is not None and amt < lo:
+        return False
+    if hi is not None and amt > hi:
+        return False
+    return True
 
 # ── GraphQL constants ─────────────────────────────────────────────────────────
 
@@ -532,46 +616,108 @@ class StorefrontService:
         sort_key: Optional[str] = None,
         reverse: bool = False,
         buyer_ip: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """Storefront search root — relevance-ranked, first:N products.
+    ) -> Dict[str, Any]:
+        """Storefront search root — returns a result *envelope*, not a bare list.
 
         Natural-language price constraints ("under 5000", "between 1k and 3k")
         are parsed into ``variants.price`` filters so the keyword text still
-        matches product titles. When a filtered/keyword search yields nothing we
-        broaden progressively — drop the price filter, then the qualifier words,
-        then fall back to best-sellers — so the overlay is never left blank.
+        matches product titles. Because Shopify's search is fuzzy/OR-ranked we
+        then post-filter multi-word queries so every qualifier ("formal") is
+        honoured — we never dump unrelated products. The envelope:
+
+            {
+              "products": [...],          # normalized product dicts
+              "count":     int,
+              "query":     str,           # cleaned keyword text (no price NL)
+              "raw_query": str,
+              "match":     "exact" | "price_relaxed" | "none",
+              "price":     {"min": float|None, "max": float|None},
+              "message":   str,           # honest, speakable summary
+            }
         """
         first_n = max(1, min(int(first or 20), 50))
         primary_sort = sort_key or "RELEVANCE"
-        sf_query, has_price = build_storefront_query(query or "")
-        parsed = parse_price_query(query or "")
+        raw = query or ""
+        sf_query, has_price = build_storefront_query(raw)
+        parsed = parse_price_query(raw)
+        terms_display = parsed["terms"] or raw.strip()
+        sig = _significant_terms(parsed["terms"])
+        lo, hi = parsed["min"], parsed["max"]
+        # Only enforce qualifier matching for genuinely multi-word queries; a
+        # single category word ("sneakers") trusts Shopify's relevance ranking.
+        strict = len(sig) >= 2
 
-        products = await self._run_search(
+        def _envelope(products: List[Dict[str, Any]], match: str) -> Dict[str, Any]:
+            return {
+                "products": products,
+                "count": len(products),
+                "query": terms_display,
+                "raw_query": raw.strip(),
+                "match": match,
+                "price": {"min": lo, "max": hi},
+                "message": self._search_message(match, terms_display, products, lo, hi),
+            }
+
+        # Tier 1 — keywords (+ price filter), then post-filter for qualifiers.
+        raw_hits = await self._run_search(
             sf_query, first_n, primary_sort, reverse, buyer_ip
         )
-        if products:
-            return products
+        hits = [p for p in raw_hits if _within_price(p, lo, hi)]
+        if strict:
+            hits = [p for p in hits if _product_matches_terms(p, sig)]
+        if hits:
+            return _envelope(hits, "exact")
 
-        # Fallback 1 — keep the keywords, drop the price filter.
+        # Tier 2 — keep the keywords, drop ONLY the price filter. Surfaces
+        # products that exist but fall outside the budget, so we can be honest
+        # ("no X under N, but here are our X") instead of returning nothing.
         if has_price and parsed["terms"]:
-            products = await self._run_search(
+            raw_relaxed = await self._run_search(
                 parsed["terms"], first_n, "RELEVANCE", False, buyer_ip
             )
-            if products:
-                return products
+            relaxed = raw_relaxed
+            if strict:
+                relaxed = [p for p in raw_relaxed if _product_matches_terms(p, sig)]
+            if relaxed:
+                return _envelope(relaxed, "price_relaxed")
 
-        # Fallback 2 — broaden to the product noun (last keyword), e.g.
-        # "formal shoes" → "shoes".
-        terms = (parsed["terms"] or sf_query).split()
-        if len(terms) > 1:
-            products = await self._run_search(
-                terms[-1], first_n, "RELEVANCE", False, buyer_ip
+        # No honest match. Never dump unrelated best-sellers — return an empty
+        # set with a clear message the overlay/voice can speak verbatim.
+        return _envelope([], "none")
+
+    @staticmethod
+    def _search_message(
+        match: str,
+        terms: str,
+        products: List[Dict[str, Any]],
+        lo: Optional[float],
+        hi: Optional[float],
+    ) -> str:
+        """Honest, speakable one-liner describing the search outcome."""
+        label = (terms or "").strip() or "products"
+        n = len(products)
+        if match == "exact":
+            if not (terms or "").strip():
+                return "Here %s %d %s." % (
+                    "is" if n == 1 else "are", n, "product" if n == 1 else "products",
+                )
+            return "Here %s %d %s for “%s”." % (
+                "is" if n == 1 else "are", n, "match" if n == 1 else "matches", label,
             )
-            if products:
-                return products
-
-        # Fallback 3 — best-sellers, so the shopper always sees something.
-        return await self._run_search("", first_n, "BEST_SELLING", False, buyer_ip)
+        if match == "price_relaxed":
+            budget = ""
+            if hi is not None:
+                budget = " under %s" % _fmt_price(hi)
+            elif lo is not None:
+                budget = " over %s" % _fmt_price(lo)
+            return (
+                "I couldn't find %s%s, but here %s %d we do have."
+                % (label, budget, "is" if n == 1 else "are", n)
+            )
+        return (
+            "Sorry, I couldn't find any %s in the store right now. "
+            "Want to try a different search?" % label
+        )
 
     async def get_product(
         self, handle: str, *, buyer_ip: Optional[str] = None

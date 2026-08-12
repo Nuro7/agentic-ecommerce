@@ -53,7 +53,16 @@ class FakeStorefront:
     async def search_products(self, query, first=20, **kw):
         self._maybe_fail()
         self.calls.append(("search", query, first))
-        return [{"handle": "runner-shoe", "title": "Runner Shoe", "price": {"amount": 49.99, "currencyCode": "INR"}}]
+        products = [{"handle": "runner-shoe", "title": "Runner Shoe", "price": {"amount": 49.99, "currencyCode": "INR"}}]
+        return {
+            "products": products,
+            "count": len(products),
+            "query": query,
+            "raw_query": query,
+            "match": "exact",
+            "price": {"min": None, "max": None},
+            "message": "Here is 1 match.",
+        }
 
     async def get_product(self, handle, **kw):
         self._maybe_fail()
@@ -107,8 +116,9 @@ async def test_search_returns_products(client):
     resp = await client.get("/api/v1/overlay/search", params={"q": "sneakers", "shop": "demo.myshopify.com"})
     assert resp.status_code == 200
     data = resp.json()
-    assert data[0]["handle"] == "runner-shoe"
-    assert data[0]["price"]["amount"] == 49.99
+    assert data["match"] == "exact"
+    assert data["products"][0]["handle"] == "runner-shoe"
+    assert data["products"][0]["price"]["amount"] == 49.99
 
 
 @pytest.mark.asyncio
