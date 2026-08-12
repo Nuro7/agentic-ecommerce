@@ -240,6 +240,7 @@
     this._facets = [];
     this._discountCodes = [];
     this._currentVariant = null;
+    this._currentProduct = null;   // product on view — handed to voice on Buy-It-Now
     this._pdpCache = {};
     this._compare = [];        // handles selected for side-by-side compare
     this._compareCache = {};   // handle → full product
@@ -804,13 +805,19 @@
 
   proto._ensureCart = function (variantId, quantity) {
     var _this = this;
+    // Reuse the SAME session-backed cart across every view (search → PDP → cart →
+    // checkout) and across a page navigation — restore it from sessionStorage if
+    // the in-memory id was dropped (e.g. a native PDP reload). A single cart token
+    // is what lets buyer-identity + delivery address bind to the cart the customer
+    // actually checks out with.
+    this._restoreCartId();
     if (this._cartId) {
       return this._api('/cart/lines', {
         method: 'POST',
         body: { cart_id: this._cartId, lines: [{ merchandise_id: variantId, quantity: quantity || 1 }] }
       }).then(function (cart) {
         if (cart.errors) throw new Error('discount'); // surfaced inline by caller
-        _this._cartId = cart.cart_id;
+        _this._setBadgeCartId(cart.cart_id);
         _this._discountCodes = cart.discount_codes || [];
         return cart;
       });
@@ -820,7 +827,7 @@
       body: { lines: [{ merchandise_id: variantId, quantity: quantity || 1 }] }
     }).then(function (cart) {
       if (cart.errors) throw new Error(cart.errors[0].message || 'Could not create cart');
-      _this._cartId = cart.cart_id;
+      _this._setBadgeCartId(cart.cart_id);
       _this._discountCodes = cart.discount_codes || [];
       return cart;
     });
@@ -932,8 +939,11 @@
   };
 
   proto._setBadgeCartId = function (cartId) {
-    this._cartId = cartId;
-    try { sessionStorage.setItem('_speako_cart', cartId); } catch (e) {}
+    this._cartId = cartId || null;
+    try {
+      if (cartId) sessionStorage.setItem('_speako_cart', cartId);
+      else sessionStorage.removeItem('_speako_cart');
+    } catch (e) {}
   };
 
   proto._restoreCartId = function () {
@@ -1220,6 +1230,9 @@
     }
     var cur = this.cfg.currency || product.currency_code || '';
     this._currentVariant = pickVariant(product, null);
+    // Remember the product on view so Buy-It-Now can hand its identity to the
+    // voice pipeline (the brain resolves the buy-now product from page_context).
+    this._currentProduct = product;
 
     // ── Gallery images (tolerate string[] or {url}[] shapes) ──
     var imgs = [];
@@ -1517,25 +1530,50 @@
     }
   };
 
-  // Buy It Now — ensure the variant is in a cart, then perform the single
-  // deferred top-level navigation to checkout (the only allowed reload).
+  // Buy It Now — first ensure the variant is in the persistent cart (cartLinesAdd
+  // against the SAME _cartId). Then either hand off to the guided voice journey
+  // (phone → saved-address lookup → confirm → address-prefilled checkout) when the
+  // widget has wired a 'buynow' listener, or fall back to the express address-less
+  // checkout redirect (the single deferred top-level navigation) when it hasn't.
   proto._buyNow = function (variantId, quantity) {
     var _this = this;
     var btn = this._els.body.querySelector('[data-buynow]');
     if (btn) { btn.disabled = true; btn.textContent = 'Preparing checkout…'; }
-    this._ensureCart(variantId, quantity).then(function () {
-      return _this._api('/cart/checkout', {
-        method: 'POST',
-        body: { cart_id: _this._cartId, discount_codes: _this._discountCodes || [] }
-      });
-    }).then(function (res) {
-      if (res.errors || !res.checkout_url) {
-        _this._toast((res.errors && res.errors[0] && res.errors[0].message) || 'Could not start checkout.', true);
+
+    // A wired 'buynow' listener means the widget's voice pipeline is available.
+    var voiceReady = !!(this._listeners['buynow'] && this._listeners['buynow'].length);
+
+    return this._ensureCart(variantId, quantity).then(function () {
+      if (voiceReady) {
+        // Guided path: light up the live voice session and let the FSM collect the
+        // phone number, look up the saved address, confirm, and drive the prefilled
+        // checkout. No forced reload here — the widget owns the final navigation.
+        _this._publish('buy_now', { variant_id: variantId, quantity: quantity || 1 });
+        try { _this.startVoice(); } catch (e) {}
+        _this.emit('buynow', {
+          variant_id: variantId,
+          quantity: quantity || 1,
+          product_id: (_this._currentProduct && (_this._currentProduct.id || _this._currentProduct.product_id)) || null,
+          handle: (_this._currentProduct && _this._currentProduct.handle) || null,
+          cart_id: _this._cartId || null
+        });
+        _this._toast('What phone number should I use for shipping updates?');
         if (btn) { btn.disabled = false; btn.textContent = 'Buy It Now'; }
         return;
       }
-      _this._publish('buy_now', { variant_id: variantId, quantity: quantity || 1 });
-      try { window.location.href = res.checkout_url; } catch (e) {}
+      // Express fallback (no voice pipeline): jump straight to checkout as before.
+      return _this._api('/cart/checkout', {
+        method: 'POST',
+        body: { cart_id: _this._cartId, discount_codes: _this._discountCodes || [] }
+      }).then(function (res) {
+        if (res.errors || !res.checkout_url) {
+          _this._toast((res.errors && res.errors[0] && res.errors[0].message) || 'Could not start checkout.', true);
+          if (btn) { btn.disabled = false; btn.textContent = 'Buy It Now'; }
+          return;
+        }
+        _this._publish('buy_now', { variant_id: variantId, quantity: quantity || 1 });
+        try { window.location.href = res.checkout_url; } catch (e) {}
+      });
     }).catch(function (err) {
       _this._toast(err.message || 'Could not start checkout.', true);
       if (btn) { btn.disabled = false; btn.textContent = 'Buy It Now'; }
@@ -2140,6 +2178,10 @@
   if (typeof window !== 'undefined' && window.wooagent_config) {
     instance.setConfig(window.wooagent_config);
   }
+
+  // Recover the persistent cart token immediately so a page navigation (e.g. a
+  // native PDP reload) keeps the SAME cart the customer has been building.
+  try { instance._restoreCartId(); } catch (e) {}
 
   if (typeof window !== 'undefined') {
     window.__SPEAKO_OVERLAY__ = bridge;

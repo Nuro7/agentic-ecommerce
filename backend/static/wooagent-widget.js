@@ -1846,6 +1846,59 @@
       if (_ovVoice && _ovVoice.on) {
         _ovVoice.on('voicestart', () => { primeAudioEngines(); startLiveMode(); });
         _ovVoice.on('voicestop', () => { try { stopVoiceNavMode(); } catch (e) {} });
+        // Buy It Now on the overlay PDP → drive the guided buy-now voice journey
+        // (phone → saved-address lookup → confirm → prefilled checkout). Registered
+        // only when voice is enabled so the overlay's express-checkout fallback
+        // fires (no 'buynow' listener present) when it isn't.
+        if (CFG.enable_voice) {
+          _ovVoice.on('buynow', (data) => {
+            const d = data || {};
+            const pid = (d.product_id != null) ? d.product_id : null;
+            const vid = (d.variant_id != null) ? d.variant_id : null;
+            const handle = d.handle || null;
+            try { primeAudioEngines(); } catch (e) {}
+            // Remember the product being bought so the page_context handshake
+            // reflects it even while browsing INSIDE the overlay (no host-page
+            // navigation → detectProductId() can't see it).
+            try {
+              S.currentPageProduct = {
+                id: pid || (S.currentPageProduct && S.currentPageProduct.id) || null,
+                name: (S.currentPageProduct && S.currentPageProduct.name) || null,
+                handle: handle || (S.currentPageProduct && S.currentPageProduct.handle) || null
+              };
+            } catch (e) {}
+            // voicestart (fired just before this event) is bringing the socket up.
+            // Once it is OPEN, push a fresh page_update carrying THIS product — the
+            // pipeline reads the last page_update to resolve the buy-now product,
+            // and text_input frames don't carry page_context — then trigger the
+            // buy-now turn. Poll briefly for the socket rather than opening our own
+            // (avoids a double-open race with voicestart's startLiveMode).
+            let tries = 0;
+            const kick = () => {
+              if (geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
+                try {
+                  geminiSocket.send(JSON.stringify({
+                    type: 'page_update',
+                    page_context: {
+                      url: location.href,
+                      title: document.title,
+                      page_type: 'product',
+                      product_id: pid,
+                      product_handle: handle,
+                      variant_id: vid,
+                      last_products: (typeof displayedSearchProductIds === 'function' ? displayedSearchProductIds() : [])
+                    },
+                    cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
+                  }));
+                } catch (e) {}
+                try { sendTextToA2A('buy it now'); } catch (e) {}
+                return;
+              }
+              if (tries++ < 40) setTimeout(kick, 150);  // wait up to ~6s for the socket
+            };
+            kick();
+          });
+        }
       }
     } catch (e) {}
   }

@@ -180,6 +180,50 @@ def _apply_update_value(addr: AddressData, field: str, cleaned: str) -> Tuple[bo
     return False, "Please tell me the value."
 
 
+# Change cues that mark a correction rather than an affirmation at CONFIRMING
+# ("no, change the zip", "update city", "fix the state"). "correct" is
+# deliberately EXCLUDED — it is an affirmation ("that's correct") handled before
+# this ever runs.
+_CHANGE_CUE_RE = re.compile(
+    r"\b(change|update|fix|edit|modify|instead|wrong|incorrect|different|make it)\b",
+    re.IGNORECASE,
+)
+# Connective that separates the field from the new value: "... to X", "... is X".
+_CORRECTION_VALUE_RE = re.compile(r"\b(?:to|is|as|into|=|:)\s+(.+)$", re.IGNORECASE)
+
+
+def _extract_correction_value(cleaned: str, field: str) -> str:
+    """Pull the new value from an inline one-shot correction, e.g.
+    'no, change the zip to 19801' → '19801', 'update city to New Delhi' →
+    'New Delhi'. Returns '' when the customer named a field but no value.
+
+    For numeric fields the digits themselves are the value regardless of
+    phrasing; other fields prefer the phrase after a connective ("to"/"is"),
+    then fall back to stripping the change-cue + field-name words.
+    """
+    text = (cleaned or "").strip()
+    if not text:
+        return ""
+    if field in ("postcode", "phone"):
+        return normalize_phone_digits(text)
+    if field == "email":
+        return extract_email(text.lower()) or ""
+    m = _CORRECTION_VALUE_RE.search(text)
+    if m:
+        val = m.group(1).strip(" .,!?")
+        if val:
+            return val
+    stripped = re.sub(
+        r"\b(no|nope|change|update|fix|edit|modify|instead|wrong|incorrect|different|"
+        r"make it|the|my|please|should be|first name|last name|name|address|street|"
+        r"home|house|city|town|district|state|province|region|zip|zipcode|postal|"
+        r"postcode|pincode|pin|phone|mobile|number|contact|email|mail)\b",
+        " ", text, flags=re.IGNORECASE,
+    )
+    stripped = " ".join(re.sub(r"[,:.!?]", " ", stripped).split())
+    return stripped
+
+
 _PROMPTS: Dict[str, Dict[str, str]] = {
     "en": {
         "name": "What's your full name?",
@@ -191,6 +235,7 @@ _PROMPTS: Dict[str, Dict[str, str]] = {
         "phone": "Your phone number for delivery updates?",
         "email": "What email should we use for order updates?",
         "confirm": "Got it! Delivering to {name}, {address}, {city} {pincode}. Phone: {phone}. Email: {email}. Shall I proceed to payment?",
+        "saved_confirm": "I found your saved shipping address: {name}, {address}, {city}, {state} {pincode}. Shall I proceed to checkout with this address?",
         "done": "Perfect! Taking you to payment now. Just complete the payment and you're done!",
         "update_field": "Which detail would you like to change - name, address, city, state, pincode, phone, or email?",
         "cancelled": "No problem — I've stopped the checkout. Want to keep browsing or look at something else?",
@@ -205,6 +250,7 @@ _PROMPTS: Dict[str, Dict[str, str]] = {
         "phone": "Delivery updates ke liye phone number?",
         "email": "Order updates ke liye email kya hai?",
         "confirm": "Theek hai! {name} ko {address}, {city} {pincode} pe deliver karenge. Phone: {phone}. Email: {email}. Kya payment pe jaayein?",
+        "saved_confirm": "Mujhe aapka saved shipping address mila: {name}, {address}, {city}, {state} {pincode}. Kya isi address se checkout karun?",
         "done": "Perfect! Ab payment ke liye ja rahe hain. Sirf payment complete karein!",
         "update_field": "Kaun si detail badalni hai - naam, address, city, state, pincode, phone ya email?",
         "cancelled": "Koi baat nahi — checkout rok diya. Aur browse karna hai ya kuch aur dekhein?",
@@ -219,6 +265,7 @@ _PROMPTS: Dict[str, Dict[str, str]] = {
         "phone": "Phone number?",
         "email": "Order updatesinu email enthaanu?",
         "confirm": "{name}, {address}, {city} {pincode} enthu sheriyano? Phone: {phone}. Email: {email}?",
+        "saved_confirm": "Ningalude save cheytha shipping address kitti: {name}, {address}, {city}, {state} {pincode}. Ee address-il checkout cheyyatte?",
         "done": "Sheriyanu! Payment cheyyan pokuva. Payment matram cheyyal mathi!",
         "update_field": "Etu detail maata vaanao - name, address, city, state, zip, phone, email?",
         "cancelled": "Kuzhappamilla — checkout nirthi. Vere enthenkilum nokkano?",
@@ -417,10 +464,11 @@ async def handle_address_collection(
                         if addr.address_line1 and addr.city and addr.postcode:
                             addr._using_saved = "1"
                             next_state = AddressCollectionState.CONFIRMING
-                            response = lang_prompts["confirm"].format(
+                            response = lang_prompts.get("saved_confirm", lang_prompts["confirm"]).format(
                                 name=f"{addr.first_name} {addr.last_name}".strip(),
                                 address=addr.address_line1,
                                 city=addr.city,
+                                state=addr.state or "",
                                 pincode=addr.postcode,
                                 phone=addr.phone,
                                 email=addr.email or "not provided",
@@ -515,9 +563,46 @@ async def handle_address_collection(
                 except Exception:
                     pass
         else:
-            # Returning customer who already prefilled from a saved address →
-            # offer a targeted update that KEEPS the rest of the saved details.
-            if getattr(addr, "_using_saved", "") == "1":
+            # Not an affirmation → this is a correction. Handle the common
+            # one-shot case where the customer named BOTH the field and the new
+            # value in one breath ("no, change the zip to 19801", "update city to
+            # Boston"): apply ONLY that field and re-confirm — never drop the rest
+            # of the address, never re-ask for it.
+            lowered = cleaned.lower()
+            field = _detect_address_field(lowered)
+            has_change_cue = bool(_CHANGE_CUE_RE.search(lowered)) or bool(re.match(r"^\s*no\b", lowered))
+            value = _extract_correction_value(cleaned, field) if field else ""
+            if field and (has_change_cue or value):
+                if value:
+                    ok, msg = _apply_update_value(addr, field, value)
+                    if ok:
+                        addr._pending_field = ""
+                        next_state = AddressCollectionState.CONFIRMING
+                        response = lang_prompts["confirm"].format(
+                            name=f"{addr.first_name} {addr.last_name}".strip(),
+                            address=addr.address_line1,
+                            city=addr.city,
+                            pincode=addr.postcode,
+                            phone=addr.phone,
+                            email=addr.email or "not provided",
+                        )
+                        ui_actions.append({"type": "prefill_address", "payload": addr.to_woocommerce_format()})
+                    else:
+                        # A value was supplied but it was invalid (bad zip, etc.):
+                        # step into single-field collection so the retry updates
+                        # only this field.
+                        addr._pending_field = field
+                        next_state = AddressCollectionState.COLLECTING_UPDATE_VALUE
+                        response = msg
+                else:
+                    # Field named without a value ("update the city") → collect just
+                    # that field's new value, keep everything else.
+                    addr._pending_field = field
+                    next_state = AddressCollectionState.COLLECTING_UPDATE_VALUE
+                    response = _update_value_prompt(lang_prompts, field)
+            elif getattr(addr, "_using_saved", "") == "1":
+                # Returning customer who prefilled from a saved address but didn't
+                # name a field → ask which detail to change (keeps the rest).
                 addr._pending_field = ""
                 next_state = AddressCollectionState.COLLECTING_UPDATE_FIELD
                 response = lang_prompts["update_field"]

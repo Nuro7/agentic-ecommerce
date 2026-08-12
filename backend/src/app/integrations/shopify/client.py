@@ -1681,36 +1681,22 @@ class ShopifyClient(BaseStoreClient):
 
         result: Dict[str, Any] = {}
         addr = address or {}
-        used_legacy = False
-        mailing: Dict[str, Any] = {}
 
-        # When an address was provided it MUST be successfully bound for the whole
-        # bind to count as "success" — otherwise the widget would navigate to a
-        # hosted checkout with blank delivery fields while the response claims
-        # success. A failed address bind is reported as failure (never masked by a
-        # later email/phone-only buyerIdentity update succeeding).
-        address_ok = False
-        if addr:
-            result = await self.replace_cart_delivery_address(cart_id=cart_id, address=addr, buyer_ip=buyer_ip)
-            address_ok = bool(result.get("success")) and bool(result.get("checkout_url"))
-            used_legacy = bool(result.get("__legacy"))
-            if address_ok and used_legacy:
-                # Legacy path stores the address on buyerIdentity. Re-send it in the
-                # SAME cartBuyerIdentityUpdate below (email/phone) so the address is
-                # not overwritten/dropped. Rebuild the flat MailAddressInput shape.
-                mailing = {
-                    "firstName": (addr.get("first_name") or "").strip() or None,
-                    "lastName": (addr.get("last_name") or "").strip() or None,
-                    "address1": (addr.get("address_1") or addr.get("address_line1") or "").strip() or None,
-                    "city": (addr.get("city") or "").strip() or None,
-                    "province": (addr.get("province") or addr.get("state_code") or addr.get("state") or "").strip() or None,
-                    "zip": (addr.get("postcode") or addr.get("zip") or "").strip() or None,
-                    "phone": (addr.get("phone") or "").strip() or None,
-                    "country": (addr.get("country_code") or addr.get("country") or "").strip() or "US",
-                }
-                mailing = {k: v for k, v in mailing.items() if v is not None and str(v).strip()}
+        # ── Mutation order matters (Storefront API 2026-07) ──────────────────
+        # Set the buyer identity context (email / phone / countryCode) FIRST, then
+        # bind the delivery address. Establishing the cart's countryCode on
+        # buyerIdentity up front gives Shopify the delivery region it needs to
+        # validate the address's provinceCode, so the subsequent
+        # cartDeliveryAddressesReplace binds cleanly and the hosted checkout opens
+        # pre-populated. Binding the address first (before any country context)
+        # can leave the province unvalidated and the delivery form blank.
+        country_code = (
+            (addr.get("country_code") or addr.get("country") or "").strip().upper()[:2]
+            or (os.getenv("STORE_COUNTRY", "US") or "US").strip().upper()[:2]
+            or "US"
+        )
 
-        if email or phone:
+        if email or phone or country_code:
             GQL = """
             mutation CartBuyerIdentityUpdate($cartId: ID!, $buyerIdentity: CartBuyerIdentityInput!) {
               cartBuyerIdentityUpdate(cartId: $cartId, buyerIdentity: $buyerIdentity) {
@@ -1719,16 +1705,11 @@ class ShopifyClient(BaseStoreClient):
               }
             }
             """
-            _bi: Dict[str, Any] = {}
+            _bi: Dict[str, Any] = {"countryCode": country_code}
             if email:
                 _bi["email"] = email
             if phone:
                 _bi["phone"] = phone
-            # On the legacy API the delivery address lives on buyerIdentity, so it
-            # MUST ride along in this same update or setting email/phone overwrites
-            # it and the hosted checkout opens with blank delivery fields.
-            if used_legacy and mailing:
-                _bi["deliveryAddressPreferences"] = [{"deliveryAddress": mailing}]
             try:
                 data = await self._storefront(
                     GQL,
@@ -1746,16 +1727,28 @@ class ShopifyClient(BaseStoreClient):
             except Exception as exc:
                 logger.warning("Shopify cartBuyerIdentityUpdate failed: %s", exc)
 
+        # THEN bind the delivery address via the modern cartDeliveryAddressesReplace
+        # (selected + oneTimeUse). When an address was provided it MUST bind for the
+        # whole call to count as "success" — a failed address bind is reported as
+        # failure and is NEVER masked by the earlier email/phone buyerIdentity
+        # update succeeding, otherwise the widget would navigate to a hosted
+        # checkout with blank delivery fields while the response claims success.
+        address_ok = False
+        addr_reason: Optional[str] = None
+        if addr:
+            addr_result = await self.replace_cart_delivery_address(cart_id=cart_id, address=addr, buyer_ip=buyer_ip)
+            address_ok = bool(addr_result.get("success")) and bool(addr_result.get("checkout_url"))
+            addr_reason = addr_result.get("reason")
+            if address_ok:
+                result = addr_result
+
+        # Address gate: if an address was requested but did not bind, fail loud —
+        # regardless of how the email/phone update went.
+        if addr and not address_ok:
+            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False, "reason": addr_reason or "address bind returned no success/checkout_url"}
+
         if not result:
             return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": ""}
-
-        # The delivery address is the whole point of this bind. If an address was
-        # requested but NOT successfully bound (failed address replace, no
-        # checkout_url), report failure no matter how the email/phone update went —
-        # a hosted checkout opened from this cart would otherwise have blank
-        # delivery fields while the response claims success.
-        if addr and not address_ok:
-            return {"items": [], "item_count": 0, "is_empty": True, "total": "0", "checkout_url": "", "success": False, "reason": result.get("reason") or "address bind returned no success/checkout_url"}
 
         result["success"] = address_ok if addr else bool(result.get("success"))
         return result
