@@ -55,6 +55,37 @@ _MIN_RE = re.compile(
 )
 _CURRENCY_WORDS = {"rs", "rs.", "inr", "usd", "$", "₹", "€", "£"}
 
+# ── Variant-option tokens (size / fit) ─────────────────────────────────────────
+# "size 9", "uk 9", "size XL" are selectors the shopper picks on the product page
+# — NOT descriptors that appear in a product's title/type/tags. Left in the
+# keyword string they poison the relevance guard ("size" is in no product's text,
+# so every hit gets rejected → blank overlay) and skew Shopify's text ranking. We
+# lift them out here, mirroring the voice normalizer (agent/retrieval/normalizer),
+# so the overlay grid and the assistant surface the same products.
+_OPTION_SIZE_RE = re.compile(
+    r"\b(?:(?:sized?)\s*(?:uk|us|eu)?\s*(?:is|are|of)?|(?:uk|us|eu))\s*\d{1,2}(?:\.\d+)?\b"
+    r"|\b\d{1,2}(?:\.\d+)?\s*(?:uk|us|eu)\b",
+    re.IGNORECASE,
+)
+_OPTION_WORD_RE = re.compile(
+    r"\b(?:sizes?|xxs|xs|s|m|l|xl|xxl|xxxl|2xl|3xl|small|medium|large|xsmall|xlarge)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_option_terms(terms: str) -> str:
+    """Remove size / variant-selector tokens from a keyword string.
+
+    ``"formal shoes size 9"`` → ``"formal shoes"``; ``"dress size xl"`` → ``"dress"``.
+    These are chosen on the product page, never matched against product text, so
+    they must never become mandatory qualifiers in the relevance guard.
+    """
+    if not terms:
+        return ""
+    cleaned = _OPTION_SIZE_RE.sub(" ", terms)
+    cleaned = _OPTION_WORD_RE.sub(" ", cleaned)
+    return " ".join(cleaned.split())
+
 
 def _to_float(s: Optional[str]) -> Optional[float]:
     try:
@@ -144,8 +175,9 @@ def build_storefront_query(raw: str) -> Tuple[str, bool]:
     """
     parsed = parse_price_query(raw)
     parts: List[str] = []
-    if parsed["terms"]:
-        parts.append(parsed["terms"])
+    terms = strip_option_terms(parsed["terms"])
+    if terms:
+        parts.append(terms)
     has_filter = False
     if parsed["min"] is not None:
         parts.append("variants.price:>=%s" % _fmt_price(parsed["min"]))
@@ -640,8 +672,13 @@ class StorefrontService:
         raw = query or ""
         sf_query, has_price = build_storefront_query(raw)
         parsed = parse_price_query(raw)
-        terms_display = parsed["terms"] or raw.strip()
-        sig = _significant_terms(parsed["terms"])
+        # Lift size/variant selectors ("size 9", "uk 9", "XL") out of the keyword
+        # text so they never become mandatory qualifiers — this is what kept the
+        # grid blank for queries like "formal shoes size 9". The assistant's
+        # search does the same, keeping the two result sets consistent.
+        clean_terms = strip_option_terms(parsed["terms"])
+        terms_display = clean_terms or raw.strip()
+        sig = _significant_terms(clean_terms)
         lo, hi = parsed["min"], parsed["max"]
         # Only enforce qualifier matching for genuinely multi-word queries; a
         # single category word ("sneakers") trusts Shopify's relevance ranking.
@@ -671,9 +708,9 @@ class StorefrontService:
         # Tier 2 — keep the keywords, drop ONLY the price filter. Surfaces
         # products that exist but fall outside the budget, so we can be honest
         # ("no X under N, but here are our X") instead of returning nothing.
-        if has_price and parsed["terms"]:
+        if has_price and clean_terms:
             raw_relaxed = await self._run_search(
-                parsed["terms"], first_n, "RELEVANCE", False, buyer_ip
+                clean_terms, first_n, "RELEVANCE", False, buyer_ip
             )
             relaxed = raw_relaxed
             if strict:

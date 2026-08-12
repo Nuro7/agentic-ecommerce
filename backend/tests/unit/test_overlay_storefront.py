@@ -13,6 +13,7 @@ from src.app.integrations.shopify.storefront import (
     StorefrontServiceError,
     build_storefront_query,
     parse_price_query,
+    strip_option_terms,
 )
 
 
@@ -504,3 +505,82 @@ async def test_search_returns_none_and_never_dumps_bestsellers():
     # The forbidden best-seller dump must never be issued.
     assert not any(sort == "BEST_SELLING" for _, sort in calls)
     assert "couldn't find" in out["message"].lower()
+
+
+# ── Variant-option (size/fit) tokens must not poison the search ────────────────
+
+def test_strip_option_terms_removes_labeled_size():
+    # "size 9" is a variant selector, not a product descriptor.
+    assert strip_option_terms("formal shoes size 9") == "formal shoes"
+    assert strip_option_terms("formal shoes size uk 9") == "formal shoes"
+    assert strip_option_terms("running shoes uk 10") == "running shoes"
+    assert strip_option_terms("t-shirt size xl") == "t-shirt"
+
+
+def test_strip_option_terms_leaves_plain_queries_untouched():
+    assert strip_option_terms("formal shoes") == "formal shoes"
+    assert strip_option_terms("nike air max") == "nike air max"
+    assert strip_option_terms("") == ""
+
+
+def test_build_storefront_query_strips_size_tokens():
+    # The size selector must never reach Shopify's keyword text (it matches no
+    # product title and skews relevance), but the price bound is preserved.
+    q, has_price = build_storefront_query("formal shoes size 9 under 5000")
+    assert q == "formal shoes variants.price:<=5000"
+    assert has_price is True
+
+
+def _affordable_formal_shoe_response():
+    """A genuine formal shoe within a typical budget (4999)."""
+    return {
+        "data": {
+            "products": {
+                "edges": [
+                    {
+                        "node": {
+                            "id": "gid://shopify/Product/3",
+                            "handle": "derby-formal-shoe",
+                            "title": "Derby Formal Shoe",
+                            "vendor": "Speako",
+                            "productType": "Formal Shoes",
+                            "tags": ["formal", "leather"],
+                            "availableForSale": True,
+                            "featuredImage": {"url": "https://cdn/derby.jpg", "altText": "derby"},
+                            "priceRange": {
+                                "minVariantPrice": {"amount": "4999.00", "currencyCode": "INR"},
+                                "maxVariantPrice": {"amount": "4999.00", "currencyCode": "INR"},
+                            },
+                        }
+                    }
+                ]
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_search_with_size_token_finds_products_and_never_sends_size_as_keyword():
+    """The reported blank-overlay bug: "formal shoes size 9" returned nothing
+    because "size" was enforced as a mandatory keyword no product contains.
+    After the fix the size selector is stripped, so a genuine in-budget formal
+    shoe is surfaced and the Shopify query never carries "size"/the number."""
+    calls = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        calls.append(body["variables"]["query"])
+        return httpx.Response(200, json=_affordable_formal_shoe_response())
+
+    sf = _make_service(handler)
+    out = await sf.search_products("formal shoes size 9 under 5000")
+
+    assert out["match"] == "exact"
+    assert out["count"] == 1
+    assert out["products"][0]["handle"] == "derby-formal-shoe"
+    # The size selector must never reach Shopify's keyword text.
+    assert calls[0] == "formal shoes variants.price:<=5000"
+    assert "size" not in calls[0].lower()
+    assert " 9" not in calls[0]
+    # The cleaned, speakable query drops the size selector too.
+    assert out["query"] == "formal shoes"
