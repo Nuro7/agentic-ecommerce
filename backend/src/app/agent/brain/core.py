@@ -630,6 +630,19 @@ async def ask_brain(
         session_meta.get("address_state", "idle")
         if isinstance(session_meta, dict) else "idle"
     )
+    # Stale-COMPLETE wipe (multi-order fix): a session whose address_state is
+    # still "complete" from a PREVIOUS order must never re-trigger that order.
+    # Once the checkout redirect for an order is dispatched we reset the FSM to
+    # idle below, but a legacy/pre-reset session (or a reconnect that restored an
+    # old snapshot) can still arrive here in "complete". Treat it as IDLE with a
+    # CLEARED address so a NEW purchase intent ("buy something else", "new order",
+    # "checkout again") starts a fresh flow instead of re-emitting the old
+    # redirect or speaking stale order details. The saved address stays in the DB,
+    # so a returning buyer is still recognised by phone on the fresh flow.
+    _addr_wiped = False
+    if _addr_state == AddressCollectionState.COMPLETE:
+        _addr_state = AddressCollectionState.IDLE
+        _addr_wiped = True
     _is_checkout_page = (
         (page_context or {}).get("page_type") == "checkout"
         or "/checkout" in str((page_context or {}).get("url") or "").lower()
@@ -674,7 +687,7 @@ async def ask_brain(
     # any products"). The checkout signal is only needed to START the flow.
     if result is None and (_addr_flow_active or _checkout_start):
         _raw_addr = session_meta.get("address_data", {}) if isinstance(session_meta, dict) else {}
-        if not isinstance(_raw_addr, dict):
+        if not isinstance(_raw_addr, dict) or _addr_wiped:
             _raw_addr = {}
         logger.info(
             "[FLOW] brain address_fsm ENTER state=%s checkout_page=%s active=%s session=%s",
@@ -759,6 +772,24 @@ async def ask_brain(
             # Persist the resolved buy-now product across FSM turns (holders for
             # the completion turn; None once the add_to_cart has been emitted).
             _next_meta["buy_now_product"] = _buy_now_product
+            # ── Multi-order reset (checkout dispatched) ────────────────────────
+            # Once the FSM has emitted the checkout redirect, this order is handed
+            # off to the widget/browser for navigation + binding. Reset the FSM to
+            # IDLE with a CLEARED address so the NEXT purchase in the same session
+            # starts from a clean slate instead of re-triggering THIS order's
+            # redirect or reading back its stale details (the "sticky COMPLETE"
+            # session memory leak). THIS turn's emitted redirect action is
+            # unaffected — only the state persisted for the next turn is reset. The
+            # saved address remains in the DB, so a returning buyer is still
+            # recognised by phone when they start the next order.
+            _dispatched_checkout = any(
+                isinstance(a, dict) and a.get("type") == "redirect_checkout_with_address"
+                for a in (_addr_actions or [])
+            )
+            if _dispatched_checkout:
+                _next_meta["address_state"] = AddressCollectionState.IDLE
+                _next_meta["address_data"] = {}
+                _next_meta["buy_now_product"] = None
             try:
                 await session_service.save_meta(tenant_id, session_id, _next_meta)
             except Exception as _meta_exc:

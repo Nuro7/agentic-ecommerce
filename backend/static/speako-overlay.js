@@ -252,6 +252,12 @@
     this._nativePdpOpen = false;
     this._nativeVariant = null;
     this._nativeProduct = null;
+    // True once a REAL checkout redirect has begun. While set, the overlay is
+    // locked into a full-screen "Redirecting to secure checkout…" state: no
+    // close(), back, Escape, popstate, view re-render, or voice event may reset
+    // it to Home or interrupt the browser navigation to the hosted checkout.
+    this._checkoutRedirecting = false;
+    this._checkoutRedirectTimer = null;
   }
 
   var proto = Overlay.prototype;
@@ -332,6 +338,12 @@
   };
 
   proto.close = function () {
+    // Locked during a real checkout redirect — never tear the overlay down (or
+    // reveal Home) while the browser is navigating to the hosted checkout.
+    if (this._checkoutRedirecting) {
+      console.log('[Speako Overlay] close() suppressed — checkout redirect in progress');
+      return;
+    }
     this._closeNativePdp();
     if (!this._open) {
       console.log('[Speako Overlay] close() called but overlay was NOT open');
@@ -345,6 +357,95 @@
     this.emit('close');
     console.log('[Speako Overlay] CLOSED');
   };
+
+  // ── Real-checkout redirect lock ─────────────────────────────────────────
+  // Called the instant a TRUE checkout transition begins (the overlay's own
+  // express buy-now / cart checkout, OR the widget's guided prepareShopifyCheckout
+  // for redirect_checkout_with_address). It shows a full-screen, non-dismissable
+  // "Redirecting to secure checkout…" cover so nothing — a stray voice event, a
+  // browser Back, an Escape key, a competing render — can reset the overlay to
+  // Home before window.location.href actually leaves the page. Idempotent: a
+  // second call only refreshes the message. If a bound checkout_url is passed it
+  // performs the hard navigation itself.
+  proto.beginCheckoutRedirect = function (opts) {
+    opts = opts || {};
+    var message = opts.message || 'Redirecting to secure checkout…';
+    var _this = this;
+    this._checkoutRedirecting = true;
+    // Make sure there is a surface to paint the cover onto, even if the overlay
+    // was never opened (e.g. a cart-page checkout with the panel closed).
+    if (!this._ensureMounted()) {
+      // No DOM surface — still honour the hard nav if we were handed a URL.
+      if (opts.checkoutUrl) { try { window.location.href = opts.checkoutUrl; } catch (e) {} }
+      return;
+    }
+    if (!this._open) {
+      this._open = true;
+      this._lockScroll();
+      if (this._root) this._root.classList.add('sp-visible');
+    }
+    this._paintCheckoutRedirect(message);
+    // Safety valve: if navigation has not taken over after 20s the bind almost
+    // certainly failed. Release the lock and let the customer retry instead of
+    // trapping them under a spinner forever.
+    try { if (this._checkoutRedirectTimer) clearTimeout(this._checkoutRedirectTimer); } catch (e) {}
+    this._checkoutRedirectTimer = setTimeout(function () {
+      _this._clearCheckoutRedirect();
+      try { _this._toast('Could not reach checkout. Please try again.', true); } catch (e) {}
+    }, 20000);
+    if (opts.checkoutUrl) {
+      try { window.location.href = opts.checkoutUrl; } catch (e) {}
+    }
+  };
+
+  proto._paintCheckoutRedirect = function (message) {
+    if (!this._root) return;
+    var existing = this._root.querySelector('.sp-checkout-redirect');
+    if (existing) {
+      var msgEl = existing.querySelector('[data-msg]');
+      if (msgEl) msgEl.textContent = message;
+      return;
+    }
+    var cover = document.createElement('div');
+    cover.className = 'sp-checkout-redirect';
+    // Inline styles so the lock renders identically regardless of the external
+    // stylesheet (it must never fail open).
+    cover.setAttribute('style', [
+      'position:absolute', 'inset:0', 'z-index:2147483647',
+      'display:flex', 'flex-direction:column', 'align-items:center',
+      'justify-content:center', 'gap:18px', 'text-align:center', 'padding:24px',
+      'background:rgba(255,255,255,0.97)', 'color:#111827',
+      'font:600 16px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif'
+    ].join(';'));
+    cover.innerHTML =
+      '<div class="sp-spinner" aria-hidden="true" style="width:44px;height:44px;border:4px solid rgba(0,0,0,0.12);border-top-color:currentColor;border-radius:50%;animation:sp-spin 0.8s linear infinite"></div>' +
+      '<div data-msg role="status" aria-live="assertive">' + escapeHtml(message) + '</div>' +
+      '<style>@keyframes sp-spin{to{transform:rotate(360deg)}}</style>';
+    this._root.appendChild(cover);
+  };
+
+  proto._clearCheckoutRedirect = function () {
+    this._checkoutRedirecting = false;
+    try { if (this._checkoutRedirectTimer) clearTimeout(this._checkoutRedirectTimer); } catch (e) {}
+    this._checkoutRedirectTimer = null;
+    if (this._root) {
+      var cover = this._root.querySelector('.sp-checkout-redirect');
+      if (cover && cover.parentNode) cover.parentNode.removeChild(cover);
+    }
+  };
+
+  // Public: release the redirect lock after a KNOWN failed bind (called by the
+  // widget) so the customer isn't bounced to a blank checkout / Home. Restores
+  // the last view and surfaces a retry message instead.
+  proto.endCheckoutRedirect = function (message) {
+    if (!this._checkoutRedirecting) return;
+    this._clearCheckoutRedirect();
+    try { this._renderTop(); } catch (e) {}
+    if (message) { try { this._toast(message, true); } catch (e) {} }
+  };
+
+  proto.isCheckoutRedirecting = function () { return !!this._checkoutRedirecting; };
+
 
   proto.claim = function (act) {
     var result = claimAction(act, {
@@ -437,6 +538,15 @@
           _this._highlightCard({ index: _idx, handle: p.handle, product: p.product });
           return;
         }
+        case 'redirect_checkout_with_address': {
+          // REAL checkout with a prefilled address. The widget owns the bind +
+          // navigation (prepareShopifyCheckout), so the overlay normally never
+          // claims this. If it ever reaches here, DO NOT switch views or reset to
+          // Home — lock into the redirect state. Hard-nav only if a bound URL is
+          // already present (else the widget completes the navigation).
+          _this.beginCheckoutRedirect({ checkoutUrl: p.checkout_url || p.url || '' });
+          return;
+        }
         case 'redirect':
         case 'redirect_checkout': {
           var reason = String(p.reason || '');
@@ -456,6 +566,11 @@
           if (reason === 'cart') {
             _this.open('cart', {});
             return _this._loadCart();
+          }
+          // No store-reason → this is the TRUE checkout transition. Never reset
+          // to Home: lock the overlay and let the hard navigation proceed.
+          if (isRealCheckout(act)) {
+            _this.beginCheckoutRedirect({ checkoutUrl: p.checkout_url || (act.type === 'redirect_checkout' ? '' : p.url) || '' });
           }
           return;
         }
@@ -574,6 +689,12 @@
 
     window.addEventListener('popstate', function () {
       if (!_this._open) return;
+      // Locked during a real checkout redirect: swallow Back by re-pushing our
+      // marker so the browser can't pop the overlay away mid-navigation.
+      if (_this._checkoutRedirecting) {
+        try { history.pushState(SPEAKO_MARKER, ''); } catch (e) {}
+        return;
+      }
       if (_this._stack.size() > 1) {
         _this._stack.pop();
         _this._renderTop();
@@ -584,6 +705,7 @@
 
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && _this._open) {
+        if (_this._checkoutRedirecting) { e.preventDefault(); return; }
         e.preventDefault();
         _this.close();
       }
@@ -668,6 +790,7 @@
   };
 
   proto._handleBack = function () {
+    if (this._checkoutRedirecting) return;   // locked during checkout redirect
     if (this._stack.size() > 1) {
       this._stack.pop();
       this._renderTop();
@@ -956,6 +1079,9 @@
 
   proto._render = function (view, params) {
     if (!this._els) return;
+    // Locked during a real checkout redirect: never repaint the body (which
+    // could flash Home / a stale view) over the "Redirecting…" cover.
+    if (this._checkoutRedirecting) return;
     // Native PDP lives in a fullscreen light-DOM layer; tear it down whenever
     // the rendered view is anything but a product detail.
     if (view !== 'pdp') this._closeNativePdp();
@@ -1572,7 +1698,9 @@
           return;
         }
         _this._publish('buy_now', { variant_id: variantId, quantity: quantity || 1 });
-        try { window.location.href = res.checkout_url; } catch (e) {}
+        // Lock the overlay + hard-nav — never fall back to Home on an express
+        // checkout: the customer explicitly asked to buy.
+        _this.beginCheckoutRedirect({ checkoutUrl: res.checkout_url });
       });
     }).catch(function (err) {
       _this._toast(err.message || 'Could not start checkout.', true);
@@ -2051,14 +2179,15 @@
       var email = emailInput ? emailInput.value.trim() : '';
       if (email) body.email = email;
       _this._api('/cart/checkout', { method: 'POST', body: body }).then(function (res) {
-        if (res.errors) {
-          _this._toast((res.errors[0] && res.errors[0].message) || 'Could not start checkout.', true);
+        if (res.errors || !res.checkout_url) {
+          _this._toast((res.errors && res.errors[0] && res.errors[0].message) || 'Could not start checkout.', true);
           btn.disabled = false;
           btn.textContent = 'Checkout →';
           return;
         }
-        // The ONLY top-level transition in the overlay flow.
-        try { window.location.href = res.checkout_url; } catch (e) {}
+        // The ONLY top-level transition in the overlay flow — lock + hard-nav so
+        // no stray render/back can bounce the customer to Home first.
+        _this.beginCheckoutRedirect({ checkoutUrl: res.checkout_url });
       }).catch(function (err) {
         _this._toast(err.message || 'Could not start checkout.', true);
         btn.disabled = false;
@@ -2140,6 +2269,9 @@
     isOpen: function () { return instance.isOpen(); },
     claim: function (act) { return instance.claim(act); },
     handle: function (act) { return instance.handle(act); },
+    beginCheckoutRedirect: function (opts) { instance.beginCheckoutRedirect(opts); return bridge; },
+    endCheckoutRedirect: function (message) { instance.endCheckoutRedirect(message); return bridge; },
+    isCheckoutRedirecting: function () { return instance.isCheckoutRedirecting(); },
     pushView: function (view, params) { instance.pushView(view, params); },
     startVoice: function () { instance.startVoice(); return bridge; },
     on: function (event, cb) { instance.on(event, cb); return bridge; },

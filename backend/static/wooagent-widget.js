@@ -3032,6 +3032,10 @@ try {
           // API-generated checkoutUrl so Shopify's own hosted checkout opens
           // pre-filled (URL params are ignored; the DOM is cross-origin).
           const addr = act.payload.billing || act.payload.shipping || act.payload || {};
+          // Lock the overlay (if open) into "Redirecting…" NOW so the async bind
+          // + navigation below cannot be interrupted by a stray render / voice
+          // event / Back that would bounce the customer to Home.
+          lockOverlayForCheckout();
           try {
             if (addr && Object.keys(addr).length) persistCheckoutAddress({ billing: addr, shipping: addr });
             if (S.mode === 'voice_nav') {
@@ -3043,6 +3047,7 @@ try {
           // Wait for the brain's redirect timing, then bind + navigate.
           setTimeout(() => { prepareShopifyCheckout(addr); }, 200);
         } else {
+          lockOverlayForCheckout();
           try {
             if (S.mode === 'voice_nav') {
               localStorage.setItem('_wa_voice_nav_resume', '1');
@@ -4418,6 +4423,37 @@ try {
   // the widget re-opens and fills the stored address on the page when a custom
   // (same-origin) checkout form exists. Dropping the _addrUsable shortcut also
   // removes the "pushed to checkout but address never collected" behaviour.
+  // Lock the Speako overlay (if it is currently open) into its full-screen
+  // "Redirecting to secure checkout…" state before a real checkout navigation.
+  // Only locks an ALREADY-OPEN overlay — never force-mounts it — so plain
+  // widget-mode stores (no overlay) are unaffected. This is what stops the
+  // overlay PDP flow from bouncing back to Home during the async cart bind +
+  // hard navigation to the hosted checkout.
+  function lockOverlayForCheckout(message) {
+    try {
+      const _ov = window.__SPEAKO_OVERLAY__;
+      if (_ov && _ov.beginCheckoutRedirect && _ov.isOpen && _ov.isOpen()) {
+        _ov.beginCheckoutRedirect(message ? { message: message } : {});
+      }
+    } catch (e) {}
+  }
+
+  // Release a lock set by lockOverlayForCheckout after a KNOWN failed bind, so the
+  // overlay restores its last view + shows a retry toast instead of being trapped
+  // under the spinner (or bounced to a blank /checkout → Home). Returns true if a
+  // locked overlay was actually released, so the caller can skip its own blank-
+  // checkout fallback navigation.
+  function releaseOverlayCheckout(message) {
+    try {
+      const _ov = window.__SPEAKO_OVERLAY__;
+      if (_ov && _ov.isCheckoutRedirecting && _ov.isCheckoutRedirecting()) {
+        if (_ov.endCheckoutRedirect) { _ov.endCheckoutRedirect(message); }
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
   // Approach C: bind the collected buyer identity + address to the session's
   // Storefront cart via /api/v1/cart/checkout, then navigate to the API-generated
   // checkoutUrl. Shopify's hosted checkout ignores `checkout[...]` URL params and
@@ -4430,6 +4466,9 @@ try {
     // trigger Shopify cart-locking/race errors — serialize them instead.
     if (S._checkoutInFlight) { return; }
     S._checkoutInFlight = true;
+    // Ensure the overlay (if open) is locked even when prepareShopifyCheckout is
+    // reached via a path that did not pre-lock (page_update re-entry, buy-now).
+    lockOverlayForCheckout();
     try {
       await _prepareShopifyCheckoutInner(addr);
     } finally {
@@ -4493,9 +4532,16 @@ try {
       setTimeout(() => { window.location.href = checkoutUrl; }, 800);
       return;
     }
-    // Bind never succeeded — don't silently push to a blank checkout. Persist the
-    // address so a same-origin checkout form can be re-filled client-side, then
-    // land on the store's /checkout anyway (better than being stuck in chat).
+    // Bind never succeeded. If the overlay PDP flow is driving this checkout,
+    // DO NOT bounce to a blank /checkout — Shopify sends an unbound cart straight
+    // back to Home, which is the exact redirect-loop we are fixing. Release the
+    // spinner lock, restore the overlay's last view, and let the customer retry.
+    if (releaseOverlayCheckout('Could not reach secure checkout. Please try again.')) {
+      return;
+    }
+    // Plain widget mode (no overlay): persist the address so a same-origin
+    // checkout form can be re-filled client-side, then land on the store's
+    // /checkout anyway (better than being stuck in chat).
     try {
       persistCheckoutAddress({ billing: addr, shipping: addr });
     } catch (_e) {}

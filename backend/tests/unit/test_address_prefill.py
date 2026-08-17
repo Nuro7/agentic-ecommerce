@@ -1012,3 +1012,95 @@ def test_buy_now_completion_emits_add_to_cart_before_redirect(monkeypatch):
     assert redirect["payload"]["shipping"]["city"] == "Kochi"
     # Stash is consumed on completion — a later flow must not re-add it.
     assert fake_session.meta.get("buy_now_product") is None
+
+
+# ── Multi-order session memory-leak regressions (core.py) ────────────────────
+# The address FSM returns COMPLETE on confirm so the SAME turn can emit
+# redirect_checkout_with_address (+ the prepended add_to_cart). But the state
+# PERSISTED for the next turn must be reset to idle with a cleared address —
+# otherwise a second purchase in the same session re-triggers the first order's
+# redirect ("sticky COMPLETE" leak). These drive full turns through core.py.
+
+def test_checkout_dispatch_resets_fsm_for_next_order(monkeypatch):
+    """After the FSM dispatches redirect_checkout_with_address, the persisted
+    session meta must be reset to idle / empty address / no stashed product, so
+    the NEXT order in the same session starts from a clean slate. THIS turn's
+    redirect is unaffected."""
+    async def fake_save(session_id, tenant_id, phone, address_data):
+        return None
+    monkeypatch.setattr("src.app.modules.users.address_service.save_address", fake_save)
+
+    brain_core, fake_session = _buy_now_test_harness({
+        "language": "en",
+        "address_state": "confirming",
+        "address_data": {
+            "first_name": "Asha", "last_name": "Nair",
+            "address_line1": "Flat 12, MG Road", "city": "Kochi",
+            "state": "California", "postcode": "90001",
+            "phone": "9876543210", "email": "asha@example.com",
+        },
+        "buy_now_product": {
+            "id": 100, "variant_id": 5,
+            "permalink": "https://store.com/products/formal-shoes",
+        },
+    }, monkeypatch)
+
+    result = asyncio.run(brain_core.ask_brain(
+        session_id="sess_reset_after_dispatch",
+        user_message="yes",
+        store_context={"url": "https://speako-demo.com"},
+        page_context={"url": "https://speako-demo.com/products/formal-shoes"},
+        language="en",
+        store_client=object(),
+        session_service=fake_session,
+        redis=None,
+        db_session_factory=None,
+    ))
+
+    # This turn still fires the redirect for the CURRENT order.
+    types = [a.get("type") for a in (result.get("ui_actions") or [])]
+    assert "redirect_checkout_with_address" in types
+    # …but the state persisted for the NEXT turn is wiped clean.
+    assert fake_session.meta.get("address_state") == S.IDLE
+    assert fake_session.meta.get("address_data") == {}
+    assert fake_session.meta.get("buy_now_product") is None
+
+
+def test_stale_complete_state_wiped_on_new_checkout(monkeypatch):
+    """A session that arrives still in COMPLETE from a PREVIOUS order (legacy
+    snapshot / reconnect) must NOT re-emit that order's redirect when the
+    customer starts a new checkout. The stale COMPLETE is treated as IDLE with a
+    cleared address, so a fresh flow begins (asks for the phone) instead."""
+    brain_core, fake_session = _buy_now_test_harness({
+        "language": "en",
+        "address_state": "complete",
+        "address_data": {
+            "first_name": "Asha", "last_name": "Nair",
+            "address_line1": "Flat 12, MG Road", "city": "Kochi",
+            "state": "California", "postcode": "90001",
+            "phone": "9876543210", "email": "asha@example.com",
+        },
+    }, monkeypatch)
+
+    result = asyncio.run(brain_core.ask_brain(
+        session_id="sess_stale_complete",
+        user_message="go to checkout",
+        store_context={"url": "https://speako-demo.com"},
+        page_context={"url": "https://speako-demo.com/products/formal-shoes",
+                      "page_type": "product"},
+        language="en",
+        store_client=object(),
+        session_service=fake_session,
+        redis=None,
+        db_session_factory=None,
+    ))
+
+    # The OLD order must NOT be re-triggered.
+    types = [a.get("type") for a in (result.get("ui_actions") or [])]
+    assert "redirect_checkout_with_address" not in types
+    # A fresh collection flow begins from the phone.
+    assert "phone" in (result.get("response_text") or "").lower()
+    assert fake_session.meta.get("address_state") == S.COLLECTING_PHONE
+    # The stale address is gone (not carried into the new flow).
+    assert fake_session.meta.get("address_data", {}).get("city") != "Kochi"
+
