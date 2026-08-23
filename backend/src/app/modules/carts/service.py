@@ -50,6 +50,7 @@ class CartService:
                         discount=float(d.get("discount", 0)),
                         savings=float(d.get("savings", d.get("discount", 0))),
                         offer_id=d.get("offer_id"),
+                        discount_code=d.get("discount_code"),
                     )
                     for d in result.get("discounts", [])
                 ]

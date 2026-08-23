@@ -79,13 +79,23 @@ async def run_llm_agent(
     except Exception:
         promoted_products = None
 
-    # ── Cart-aware offer suggestions ──
-    # Deterministic combo / bulk / dead-stock recommendations computed from the
-    # customer's actual cart lines. Injected as exact-product directives so Aria
-    # can pitch a concrete offer (add item X, bundle price Y) with zero math.
+    # ── Phase detection ──
+    def _detect_phase(cart: Dict[str, Any], page_context: Dict[str, Any], interrupted_flow: Dict[str, Any]) -> str:
+        """discovery | commitment | checkout_nudge"""
+        if isinstance(interrupted_flow, dict) and interrupted_flow.get("from") == "checkout":
+            return "checkout_nudge"
+        page_type = (page_context or {}).get("page_type", "")
+        if page_type in ("product", "collection", "search", "home"):
+            return "discovery"
+        return "commitment"
+
+    _interrupted_flow = (page_context or {}).get("interrupted_flow") or {}
+    _phase = _detect_phase(cart, page_context, _interrupted_flow)
+
+    # ── 4-tier assembler (replaces separate promoted + cart calls) ──
     cart_offer_directives: List[str] = []
     try:
-        from ...modules.offers.recommendations import get_recommendations_for_cart
+        from ...modules.offers.recommendations import assemble_recommendations
         from ...core.database import AsyncSessionLocal
         cart_lines = [
             {
@@ -99,44 +109,54 @@ async def run_llm_agent(
             for i in (cart.get("items") or []) if isinstance(i, dict)
         ]
         if cart_lines:
-            suggestions = await get_recommendations_for_cart(
+            suggestions = await assemble_recommendations(
                 tenant_id=tenant_id,
                 cart_items=cart_lines,
                 store_client=store_client,
                 db_session_factory=lambda: AsyncSessionLocal(),
+                phase=_phase,
                 limit=4,
             )
             for s in suggestions or []:
-                if s.get("kind") == "combo" and not s.get("satisfied") and s.get("missing_items"):
+                kind = s.get("kind", "")
+                tactic = s.get("tactic", "")
+                if kind == "combo" and not s.get("satisfied") and s.get("missing_items"):
                     missing = ", ".join(
                         f"{m.get('quantity', 1)}x {m.get('name') or m.get('platform_id')}"
                         for m in s.get("missing_items", [])
                     )
                     cart_offer_directives.append(
-                        f"The customer's cart qualifies for a COMBO offer "
-                        f"'{s.get('title', '')}': add {missing} to unlock the bundle "
-                        f"price {s.get('bundle_price')} instead of the full price. "
-                        f"Pitch this only if the items fit their needs."
+                        f"[{tactic}] COMBO: '{s.get('title', '')}' — add {missing} for bundle price {s.get('bundle_price')}. "
+                        f"Pitch only if items fit their needs."
                     )
-                elif s.get("kind") == "bulk" and s.get("next_tier"):
+                elif kind == "bulk" and s.get("next_tier"):
                     tier = s.get("next_tier")
                     pct = tier.get("discount_percent")
                     amt = tier.get("discount_amount")
                     dsc = f"{pct}%" if pct is not None else f"₹{amt}"
                     cart_offer_directives.append(
-                        f"The customer has {s.get('current_qty', 0)}x of "
-                        f"{s.get('name') or s.get('platform_id')}: adding "
-                        f"{s.get('add_quantity', 1)} more unlocks a BULK discount of {dsc} "
-                        f"({s.get('title', '')}). Pitch this if it fits their needs."
+                        f"[{tactic}] BULK: {s.get('current_qty', 0)}x {s.get('name') or s.get('platform_id')} — "
+                        f"add {s.get('add_quantity', 1)} more for {dsc} off ({s.get('title', '')})."
                     )
-                elif s.get("kind") == "dead_stock" and not s.get("in_cart"):
+                elif kind == "affinity":
                     cart_offer_directives.append(
-                        f"There is a DEAD-STOCK clearance offer on "
-                        f"{s.get('name') or s.get('platform_id')} "
-                        f"({s.get('title', '')}). Pitch it only if it fits the customer's needs."
+                        f"[{tactic}] FREQUENTLY BOUGHT TOGETHER: {s.get('name')} (₹{s.get('price', 0)}) — "
+                        f"customers who bought {', '.join([i.get('name','') for i in cart_lines[:2]])} also bought this."
+                    )
+                elif kind == "dead_stock" and not s.get("in_cart"):
+                    pct = s.get('discount_percent')
+                    amt = s.get('discount_amount')
+                    discount_str = f"{pct}% off" if pct else f"₹{amt} off"
+                    cart_offer_directives.append(
+                        f"[{tactic}] {s.get('name')} — {discount_str} ({s.get('title', '')})."
+                    )
+                elif kind == "bestseller":
+                    cart_offer_directives.append(
+                        f"[{tactic}] POPULAR: {s.get('name')} — {s.get('total_qty', 0)} sold recently. "
+                        f"Great choice if they're browsing."
                     )
     except Exception as exc:
-        logger.debug("get_recommendations_for_cart failed (non-fatal): %s", exc)
+        logger.debug("assemble_recommendations failed (non-fatal): %s", exc)
 
     # ── Promotional dynamic injection ──
     # Scan last_products for promo-flagged items and inject pitch directives
@@ -150,7 +170,7 @@ async def run_llm_agent(
                 hook = p.get("pitch_hook", "")
                 name = p.get("name", "this item")
                 directive = (
-                    f"The product '{name}' matches our active '{pid}' merchant campaign! "
+                    f"[Smart Shopper] The product '{name}' matches our active '{pid}' merchant campaign! "
                     f"You are authorized to offer the customer a {pct}% discount on this item. "
                     f"To pitch this effectively, you MUST speak this offer naturally: "
                     f'"{hook}". '
@@ -169,12 +189,19 @@ async def run_llm_agent(
         personality=_personality,
         promoted_products=promoted_products,
     )
+    # Inject conversation phase for persona framing
+    system_prompt += f"\n\n[CONVERSATION PHASE: {_phase.upper()}]"
     if promo_directives:
         system_prompt += "\n\n" + "\n\n".join(promo_directives)
     if cart_offer_directives:
         offers_block = "\n\n[AVAILABLE OFFERS FOR THIS CART]\n"
         offers_block += "\n\n".join(cart_offer_directives)
         system_prompt += offers_block
+    # Phase-specific guidance
+    if _phase == "discovery":
+        system_prompt += "\n\n[PHASE GUIDANCE: Discovery — customer is browsing. Light suggestions only on request. Do NOT push offers.]"
+    elif _phase == "checkout_nudge":
+        system_prompt += "\n\n[PHASE GUIDANCE: Checkout nudge — emphasize Hidden Gem (clearance) + ensure any bound discount code is applied.]"
 
     try:
         facts = await get_session_facts_service().get(tenant_id, session_id)
@@ -188,12 +215,11 @@ async def run_llm_agent(
     # When the user leaves the checkout page mid-session to browse/add products,
     # the frontend sets interrupted_flow in page_context. Tell the LLM about
     # this so it knows to guide the user back to checkout after they add items.
-    interrupted_flow = (page_context or {}).get("interrupted_flow") or {}
     _interrupted_checkout_note = ""
-    if isinstance(interrupted_flow, dict) and interrupted_flow.get("from") == "checkout":
+    if _phase == "checkout_nudge" and isinstance(_interrupted_flow, dict):
         _interrupted_checkout_note = (
             "\n\n[CONTEXT: The customer was in the middle of checkout and interrupted to browse more products. "
-            "They searched for: \"" + str(interrupted_flow.get("query") or "") + "\". "
+            "They searched for: \"" + str(_interrupted_flow.get("query") or "") + "\". "
             "Once they have added what they need, proactively offer to guide them back to checkout. "
             "Do NOT restart the checkout form — their previous info is saved.]"
         )

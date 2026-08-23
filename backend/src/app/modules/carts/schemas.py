@@ -30,6 +30,7 @@ class CartDiscountOut(BaseModel):
     discount: float
     savings: float
     offer_id: Optional[str] = None
+    discount_code: Optional[str] = None
 
 
 class CartOut(BaseModel):

@@ -4,6 +4,7 @@ from .repository import OfferRepository
 from .models import ProductOffer
 from .from_text import parse_offer_from_text
 from .schemas import ProductOfferCreate
+from .discounts import ensure_offer_has_bound_code
 
 
 class OfferService:
@@ -13,7 +14,10 @@ class OfferService:
     async def create_offer(
         self, tenant_id: str, data: dict
     ) -> ProductOffer:
-        return await self.repo.create(tenant_id, data)
+        offer = await self.repo.create(tenant_id, data)
+        if offer.offer_kind in ("combo", "bulk"):
+            await ensure_offer_has_bound_code(tenant_id, offer.id)
+        return offer
 
     async def update_offer(
         self, offer_id: str, tenant_id: str, data: dict
@@ -51,4 +55,7 @@ class OfferService:
         """
         data = await parse_offer_from_text(text)
         valid = ProductOfferCreate.model_validate(data)
-        return await self.repo.create(tenant_id, valid.model_dump())
+        offer = await self.repo.create(tenant_id, valid.model_dump())
+        if offer.offer_kind in ("combo", "bulk"):
+            await ensure_offer_has_bound_code(tenant_id, offer.id)
+        return offer

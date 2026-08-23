@@ -48,7 +48,8 @@ SHOPIFY_SCOPES = (
     "read_products,write_script_tags,read_script_tags,read_orders,write_orders,read_customers,"
     "unauthenticated_read_product_listings,unauthenticated_read_product_inventory,"
     "unauthenticated_read_product_tags,unauthenticated_read_checkouts,"
-    "unauthenticated_write_checkouts"
+    "unauthenticated_write_checkouts,"
+    "write_discounts,read_discounts"  # NEW: for combo/bulk bound codes + coupon lookup
 )
 
 

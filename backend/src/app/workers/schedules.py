@@ -21,6 +21,11 @@ celery_app.conf.beat_schedule = {
         "task": "src.app.workers.tasks.sync_products.sync_products",
         "schedule": crontab(hour=2, minute=30),
     },
+    # Affinity build — runs after product sync at 03:00 UTC
+    "build-affinity-nightly": {
+        "task": "src.app.workers.tasks.affinity.build_affinity",
+        "schedule": crontab(hour=3, minute=0),
+    },
     # Retry failed mutation tool calls (add_to_cart, apply_coupon, etc.).
     # Drains speako:retry_queue every 60 s; items that permanently fail are
     # moved to the dead-letter set (speako:retry_dead) after 3 attempts.

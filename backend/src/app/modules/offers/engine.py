@@ -44,7 +44,7 @@ def offer_to_dict(offer: Any) -> Dict[str, Any]:
         "title", "description", "discount_percent", "discount_amount",
         "combo_items", "combo_price", "bulk_tiers", "max_redemptions",
         "redemption_count", "inventory_threshold", "discount_code",
-        "starts_at", "ends_at", "is_active", "priority",
+        "starts_at", "ends_at", "is_active", "priority", "merchant_boost",
     ):
         data[col] = getattr(offer, col, None)
     return data

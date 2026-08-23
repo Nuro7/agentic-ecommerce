@@ -117,87 +117,29 @@ async def generate_and_apply_discount(
     try:
         code = f"SPEAKO-{uuid.uuid4().hex[:8].upper()}"
         discount_pct = float(campaign.get("discount_percentage", 10))
+        campaign_id = campaign.get("campaign_id", "promo")
 
-        gql = """
-        mutation discountCodeBasicCreate($input: DiscountCodeBasicInput!) {
-          discountCodeBasicCreate(input: $input) {
-            codeDiscountNode {
-              codeDiscount {
-                ... on DiscountCodeBasic {
-                  codes(first: 5) {
-                    edges { node { code } }
-                  }
-                }
-              }
-            }
-            userErrors { field message }
-          }
-        }
-        """
-        variables = {
-            "input": {
-                "code": code,
-                "usageLimit": 1,
-                "appliesOnOneTimePurchase": True,
-                "customerSelection": {"all": True},
-                "appliesOnSubscription": False,
-                "combineWith": {
-                    "orderDiscountApplications": True,
-                    "productDiscounts": True,
-                    "shippingDiscounts": True,
-                },
-                "startsAt": "2024-01-01T00:00:00Z",
-                "endsAt": None,
-                "minimumRequirement": {"quantity": {"greaterThanOrEqualTo": 1}},
-                "value": {
-                    "percentage": discount_pct / 100.0,
-                },
-            }
-        }
-        if customer_email:
-            variables["input"]["customerSelection"] = {
-                "customers": [{"email": customer_email}]
-            }
-
-        admin_data = await store_client._admin_graphql(gql, variables)
-        errors = admin_data.get("discountCodeBasicCreate", {}).get("userErrors", [])
-        if errors:
-            logger.warning("Discount creation failed: %s", errors)
-            return {"success": False, "message": f"Discount creation failed: {errors}"}
+        # Use shared create_discount_code wrapper instead of inlined mutation
+        create_result = await store_client.create_discount_code(code, discount_pct, campaign_id)
+        if not create_result.get("success"):
+            logger.warning("Discount creation failed: %s", create_result.get("message"))
+            return {"success": False, "message": f"Discount creation failed: {create_result.get('message')}"}
 
         logger.info("Generated discount code %s via Admin API", code)
 
         cart_id = await store_client._get_cart_id(session_id)
         if cart_id:
-            sf_gql = """
-            mutation CartDiscountCodesUpdate($cartId: ID!, $discountCodes: [String!]!) {
-              cartDiscountCodesUpdate(cartId: $cartId, discountCodes: $discountCodes) {
-                cart { id checkoutUrl
-                  cost { totalAmount { amount currencyCode } }
-                  lines(first: 50) { edges { node {
-                    id quantity
-                    merchandise { ... on ProductVariant { id title product { id title } image { url } } }
-                    cost { amountPerQuantity { amount } subtotalAmount { amount } }
-                  } } }
-                }
-                userErrors { field message }
-              }
-            }
-            """
-            sf_data = await store_client._storefront(sf_gql, {
-                "cartId": cart_id,
-                "discountCodes": [code],
-            })
-            sf_errors = sf_data.get("cartDiscountCodesUpdate", {}).get("userErrors", [])
-            if sf_errors:
-                logger.warning("Cart discount apply failed: %s", sf_errors)
+            # Use shared apply_discount_to_cart wrapper
+            apply_result = await store_client.apply_discount_to_cart(cart_id, code)
+            if not apply_result.get("success"):
+                logger.warning("Cart discount apply failed: %s", apply_result.get("message"))
                 return {
                     "success": True,
                     "code": code,
                     "message": f"Code {code} generated but could not auto-apply. Please enter at checkout.",
                 }
 
-            cart_node = sf_data.get("cartDiscountCodesUpdate", {}).get("cart")
+            cart_node = apply_result.get("cart")
             if cart_node:
                 cart_snapshot = store_client._normalize_cart(cart_node)
                 return {

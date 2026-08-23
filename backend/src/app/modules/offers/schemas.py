@@ -32,6 +32,7 @@ class ProductOfferCreate(BaseModel):
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
     priority: int = Field(default=0, ge=0)
+    merchant_boost: float = Field(default=1.0, ge=0.0, le=10.0)
 
     @model_validator(mode="after")
     def _validate_kind_shape(self):
@@ -64,6 +65,7 @@ class ProductOfferUpdate(BaseModel):
     is_active: Optional[bool] = None
     ends_at: Optional[datetime] = None
     priority: Optional[int] = Field(None, ge=0)
+    merchant_boost: Optional[float] = Field(None, ge=0.0, le=10.0)
 
 
 class ProductOfferOut(BaseModel):
@@ -88,6 +90,7 @@ class ProductOfferOut(BaseModel):
     ends_at: Optional[datetime]
     is_active: bool
     priority: int
+    merchant_boost: float
     created_at: datetime
     updated_at: datetime
 

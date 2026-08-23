@@ -65,5 +65,8 @@ class ProductOffer(Base):
     # Priority — higher = shown first by the agent
     priority: Mapped[int] = mapped_column(default=0)
 
+    # Merchant-controlled boost for recommendation ranking (default 1.0)
+    merchant_boost: Mapped[float] = mapped_column(Float, default=1.0)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

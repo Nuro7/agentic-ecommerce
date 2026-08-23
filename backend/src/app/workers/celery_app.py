@@ -16,6 +16,7 @@ celery_app = Celery(
         "src.app.workers.tasks.analytics",
         "src.app.workers.tasks.sync_products",
         "src.app.workers.tasks.retry_actions",
+        "src.app.workers.tasks.affinity",
     ],
 )
 
