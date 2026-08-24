@@ -155,6 +155,36 @@
     return num.toFixed(2);
   }
 
+  // Brand-shade helpers — plain sRGB channel math so merchant re-tinting works on
+  // every engine (older Safari / in-app webviews lack color-mix). A non-hex input
+  // returns null, and callers fall back to the stylesheet's rose/magenta defaults.
+  function spHexToRgb(hex) {
+    var h = String(hex || '').replace('#', '').trim();
+    if (h.length === 3) h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+    if (h.length !== 6 || /[^0-9a-fA-F]/.test(h)) return null;
+    var n = parseInt(h, 16);
+    return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
+  }
+  function spChan(v) { v = Math.round(v); return v < 0 ? 0 : (v > 255 ? 255 : v); }
+  function spToHex(r, g, b) {
+    return '#' + [r, g, b].map(function (x) {
+      var s = spChan(x).toString(16);
+      return s.length === 1 ? '0' + s : s;
+    }).join('');
+  }
+  // amt 0..1: fraction of the way from `hex` toward pure white (toWhite) or black.
+  function spMixToward(hex, toWhite, amt) {
+    var c = spHexToRgb(hex);
+    if (!c) return hex;
+    var t = toWhite ? 255 : 0;
+    return spToHex(c.r + (t - c.r) * amt, c.g + (t - c.g) * amt, c.b + (t - c.b) * amt);
+  }
+  function spAlpha(hex, a) {
+    var c = spHexToRgb(hex);
+    if (!c) return hex;
+    return 'rgba(' + c.r + ', ' + c.g + ', ' + c.b + ', ' + a + ')';
+  }
+
   function cartSubtotal(lines) {
     var total = 0;
     (lines || []).forEach(function (line) {
@@ -291,7 +321,22 @@
       rawOverlayMode: window.wooagent_config && window.wooagent_config.overlay_mode
     });
     if (this.cfg.primary_color && this._root) {
-      this._root.style.setProperty('--sp-brand', this.cfg.primary_color);
+      // Re-tint the whole accent system to the merchant's brand colour. Shades
+      // are computed with plain sRGB math (not color-mix) so custom colours
+      // render identically on older Safari / in-app webviews. A non-hex value
+      // leaves the stylesheet's rose/magenta defaults untouched.
+      var c = this.cfg.primary_color;
+      if (spHexToRgb(c)) {
+        var st = this._root.style;
+        st.setProperty('--sp-brand', c);
+        st.setProperty('--sp-brand-2', spMixToward(c, false, 0.24));
+        st.setProperty('--sp-brand-lite', spMixToward(c, true, 0.26));
+        st.setProperty('--sp-brand-soft', spAlpha(c, 0.16));
+        st.setProperty('--sp-brand-glow', spAlpha(c, 0.45));
+        st.setProperty('--sp-grad', 'linear-gradient(135deg, ' +
+          spMixToward(c, true, 0.20) + ' 0%, ' + c + ' 52%, ' +
+          spMixToward(c, false, 0.24) + ' 100%)');
+      }
     }
   };
 
@@ -601,7 +646,7 @@
         : '';
       var root = document.createElement('div');
       root.className = 'speako-root';
-      root.setAttribute('data-theme', 'light');
+      root.setAttribute('data-theme', (this.cfg && this.cfg.theme === 'light') ? 'light' : 'dark');
       shadow.appendChild(style);
       shadow.appendChild(root);
 
@@ -1033,13 +1078,13 @@
       clone.setAttribute('aria-hidden', 'true');
       clone.style.cssText =
         'position:fixed;z-index:2147483647;pointer-events:none;border-radius:14px;' +
-        'background:#fff center/cover no-repeat;box-shadow:0 10px 30px rgba(124,58,237,0.5);' +
+        'background:#fff center/cover no-repeat;box-shadow:0 10px 30px rgba(236,72,153,0.5);' +
         'transition:transform 0.72s cubic-bezier(0.22,0.68,0.3,1),opacity 0.72s ease;' +
         'left:' + (s.left + s.width / 2 - size / 2) + 'px;' +
         'top:' + (s.top + s.height / 2 - size / 2) + 'px;' +
         'width:' + size + 'px;height:' + size + 'px;';
       if (imgUrl) clone.style.backgroundImage = 'url("' + imgUrl.replace(/"/g, '\\"') + '")';
-      else clone.style.background = 'var(--sp-brand, #7c3aed)';
+      else clone.style.background = 'var(--sp-brand, #ec4899)';
       document.body.appendChild(clone);
 
       var dx = (t.left + t.width / 2) - (s.left + s.width / 2);
@@ -1109,8 +1154,7 @@
     var suggestions = [
       { icon: SVG.sparkles, label: 'Help me choose', act: 'assist' },
       { icon: SVG.trending, label: 'Show bestsellers', act: 'search', q: 'best sellers' },
-      { icon: SVG.truck, label: 'Track my order', act: 'track' },
-      { icon: SVG.search, label: 'Find formal shoes under 5000', act: 'search', q: 'formal shoes under 5000' }
+      { icon: SVG.truck, label: 'Track my order', act: 'track' }
     ];
     var chips = suggestions.map(function (s) {
       return '<button class="sp-suggest" data-suggest="' + s.act + '"' +
@@ -1263,6 +1307,15 @@
       var priceAmt = (p.price && p.price.amount) || 0;
       var compareAmt = (p.compare_at_price && Number(p.compare_at_price.amount)) || 0;
       var pct = savePercent(priceAmt, compareAmt);
+      var tags = Array.isArray(p.tags) ? p.tags : [];
+      var isNew = tags.some(function (t) { var s = String(t).toLowerCase().trim(); return s === 'new' || s === 'new in' || s === 'new-in'; });
+      var soldOut = p.available_for_sale === false;
+      // A single label occupies the top-left slot — sold-out wins over a sale,
+      // a sale wins over "new in". All three are read from live product data.
+      var badge = soldOut
+        ? '<span class="sp-card-tag sold">Sold out</span>'
+        : (pct ? '<span class="sp-badge-sale">' + pct + '% OFF</span>'
+               : (isNew ? '<span class="sp-card-tag">New in</span>' : ''));
       var handle = p.handle || '';
       var inCompare = _this._compare.indexOf(handle) !== -1;
       var img = p.image
@@ -1277,7 +1330,7 @@
         : '';
       return '<div class="sp-card" data-handle="' + escapeAttr(handle) + '">' +
         '<div class="sp-card-media">' + img +
-          (pct ? '<span class="sp-badge-sale">' + pct + '% OFF</span>' : '') +
+          badge +
           '<button class="sp-card-compare-toggle' + (inCompare ? ' active' : '') + '" data-compare-toggle="' + escapeAttr(handle) + '" title="Compare" aria-label="Add to compare">&#8646;</button>' +
         '</div>' +
         '<div class="sp-card-body">' +
@@ -1460,11 +1513,21 @@
           '<button class="sp-add" id="sp-btn-add-cart" data-add>Add to Cart</button>' +
           '<button class="sp-buy-now" id="sp-btn-buy-now" data-buynow>Buy It Now</button>' +
         '</div>' +
+        '<button class="sp-aria-assist" data-ask-aria type="button">' +
+          '<span class="sp-aria-orb">' + SVG.sparkles + '</span>' +
+          '<span class="sp-aria-copy"><strong>Ask Aria about this</strong>' +
+            '<span>Fit, materials, styling, or how it compares — just ask.</span></span>' +
+        '</button>' +
         accordions +
       '</div>' +
       '<div class="sp-zoom" data-zoom><button class="sp-zoom-close" data-zoomclose aria-label="Close">&#10005;</button><img data-zoomimg alt=""></div>';
 
     var qty = 1;
+
+    // "Ask Aria about this" reuses the existing voice pipeline (same as the
+    // greeting orb) so the concierge card is always a real, working control.
+    var askAria = _this._els.body.querySelector('[data-ask-aria]');
+    if (askAria) askAria.addEventListener('click', function () { _this._toggleVoice(); });
 
     // ── Pricing + stock repaint for the active variant ──
     var paint = function () {
@@ -1488,7 +1551,7 @@
       if (sw) sw.innerHTML = '<span class="sp-stock ' + stockCls + '">' + stockTxt + '</span>';
       var addBtn = _this._els.body.querySelector('[data-add]');
       var buyBtn = _this._els.body.querySelector('[data-buynow]');
-      if (addBtn) { addBtn.disabled = !!oos; addBtn.textContent = oos ? 'Out of stock' : 'Add to Cart'; }
+      if (addBtn) { addBtn.disabled = !!oos; addBtn.textContent = oos ? 'Out of stock' : ('Add to bag · ' + formatMoney(price, cur)); }
       if (buyBtn) buyBtn.disabled = !!oos;
     };
 

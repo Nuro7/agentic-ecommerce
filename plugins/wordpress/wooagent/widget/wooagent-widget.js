@@ -6,7 +6,7 @@
     rest_url: '',
     nonce: '',
     store_name: 'Store',
-    primary_color: '#7c3aed',
+    primary_color: '#ec4899',
     widget_position: 'bottom-right',
     enable_voice: true,
     language: 'en',
@@ -65,7 +65,7 @@
           store_name: CFG.store_name,
           currency: CFG.currency,
           nativePdp: CFG.native_pdp || 'on',
-          primary_color: CFG.primary_color || '#7c3aed'
+          primary_color: CFG.primary_color || '#ec4899'
         });
         console.log('[WooAgent Overlay] bridge.setConfig() called OK');
       } else {
@@ -215,7 +215,7 @@
     const m = (x, y) => Math.round(x * f + y * (1 - f));
     return `rgb(${m(ca.r, cb.r)},${m(ca.g, cb.g)},${m(ca.b, cb.b)})`;
   }
-  const PC = CFG.primary_color || '#7c3aed';
+  const PC = CFG.primary_color || '#ec4899';
 
   const host = document.createElement('div');
   host.id = '_wooagent_root';
@@ -229,41 +229,45 @@
 
     .wa {
       --p:    ${PC};
-      --p2:   ${_waMixBlack(PC, 72)};
+      --p2:   ${_waMixBlack(PC, 68)};
+      --p-hi: ${_waBlend(PC, '#ffffff', 78)};
       --p-lo: ${_waAlpha(PC, 14)};
-      --p-md: ${_waAlpha(PC, 28)};
-      /* ── Dark theme tokens (default) ── */
-      --bg0:  #08080f;
-      --bg1:  #0e0e1c;
-      --bg2:  #141426;
-      --bg3:  #1c1c30;
-      --bg4:  #242438;
-      --line: rgba(255,255,255,0.07);
-      --line2:rgba(255,255,255,0.13);
-      --text: #f0f0f8;
-      --text2:#8888a8;
-      --text3:#44445a;
+      --p-md: ${_waAlpha(PC, 30)};
+      /* Signature gradient — derived from the merchant's colour so it always
+         re-tints, defaulting to Speako's rose→deep-magenta. */
+      --grad: linear-gradient(135deg, var(--p-hi) 0%, var(--p) 54%, var(--p2) 100%);
+      /* ── Midnight Concierge dark theme (default) ── */
+      --bg0:  #0b0712;
+      --bg1:  #140b20;
+      --bg2:  #1b1030;
+      --bg3:  #241539;
+      --bg4:  #2e1b46;
+      --line: rgba(246,238,249,0.08);
+      --line2:rgba(246,238,249,0.14);
+      --text: #f6eef9;
+      --text2:#a99bb8;
+      --text3:#6f6280;
       --ok:   #34d399;
       --warn: #fbbf24;
-      --err:  #f87171;
+      --err:  #fb7185;
       --r-xl: 28px;
       --r-lg: 18px;
       --r-md: 13px;
       --r-sm: 9px;
-      --shadow: 0 0 0 1px rgba(255,255,255,0.06),
+      --shadow: 0 0 0 1px rgba(246,238,249,0.06),
                 0 40px 100px rgba(0,0,0,0.92),
                 0 12px 40px rgba(0,0,0,0.72);
       /* Theme-adaptive tokens */
-      --fade-end:  rgba(8,8,15,0.96);
-      --fade-mid:  rgba(8,8,15,0.72);
-      --bar-bg:    #0e0e1c;
-      --input-bg:  #1a1a2e;
-      --input-bg-focus: #20203c;
-      --input-border: rgba(255,255,255,0.18);
-      --input-ph:  #6868a0;
+      --fade-end:  rgba(11,7,18,0.96);
+      --fade-mid:  rgba(11,7,18,0.72);
+      --bar-bg:    #140b20;
+      --input-bg:  #1b1030;
+      --input-bg-focus: #241539;
+      --input-border: rgba(246,238,249,0.18);
+      --input-ph:  #6f6280;
       --header-bg: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
-      --bot-bubble-bg: #141426;
-      --bot-bubble-border: rgba(255,255,255,0.08);
+      --bot-bubble-bg: #1b1030;
+      --bot-bubble-border: rgba(246,238,249,0.08);
     }
 
     /* ── Light theme overrides ───────────────────────────── */
@@ -301,12 +305,12 @@
       height: 56px;
       padding: 6px 20px 6px 6px;
       border-radius: 9999px;
-      border: 1px solid rgba(124,58,237,0.22);
+      border: 1px solid var(--p-md);
       background: rgba(255,255,255,0.94);
       cursor: pointer;
       display: inline-flex; align-items: center; gap: 11px;
-      color: #6d28d9;
-      box-shadow: 0 10px 34px rgba(109,40,217,0.22), 0 2px 10px rgba(15,23,42,0.10);
+      color: var(--p2);
+      box-shadow: 0 10px 34px var(--p-md), 0 2px 10px rgba(15,23,42,0.10);
       transition: transform .22s cubic-bezier(.34,1.56,.64,1), box-shadow .22s ease;
       z-index: 2147483646;
       outline: none;
@@ -315,7 +319,7 @@
     }
     .wa-fab:hover {
       transform: translateY(-2px);
-      box-shadow: 0 16px 40px rgba(109,40,217,0.30), 0 4px 12px rgba(15,23,42,0.12);
+      box-shadow: 0 16px 40px var(--p-md), 0 4px 12px rgba(15,23,42,0.12);
     }
     .wa-fab:active { transform: translateY(0) scale(0.98); }
 
@@ -329,21 +333,21 @@
       .wa-fab-label { display: none; }
     }
 
-    /* Pulsing purple voice orb sits at the pill's left edge. */
+    /* Pulsing voice orb sits at the pill's left edge. */
     .wa-fab-orb {
       position: relative;
       flex: 0 0 auto;
       width: 44px; height: 44px;
       border-radius: 50%;
-      background: linear-gradient(135deg, var(--p, #7c3aed) 0%, var(--p2, #6d28d9) 100%);
+      background: var(--grad);
       display: flex; align-items: center; justify-content: center;
       color: #fff;
-      box-shadow: 0 4px 14px rgba(109,40,217,0.40);
+      box-shadow: 0 4px 14px var(--p-md);
     }
     /* Ambient pulsing ring — subtle at idle, energetic while listening. */
     .wa-fab-orb::before {
       content:''; position: absolute; inset: 0;
-      border-radius: 50%; border: 1.5px solid var(--p, #7c3aed);
+      border-radius: 50%; border: 1.5px solid var(--p, #ec4899);
       opacity: 0; animation: wa-ripple 3.5s ease-out infinite;
       pointer-events: none;
     }
@@ -351,7 +355,7 @@
       animation: wa-ripple-fast 1.1s ease-out infinite;
       border-width: 2px;
     }
-    .wa-fab.speaking .wa-fab-orb { box-shadow: 0 0 0 6px var(--p-lo), 0 6px 18px rgba(109,40,217,0.5); }
+    .wa-fab.speaking .wa-fab-orb { box-shadow: 0 0 0 6px var(--p-lo), 0 6px 18px var(--p-md); }
     @keyframes wa-ripple {
       0%   { opacity:0.45; transform:scale(0.9); }
       100% { opacity:0;   transform:scale(1.55); }
@@ -574,10 +578,10 @@
     /* ── USER AVATAR ───────────────────────────────────────── */
     .wa-user-avatar {
       width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0;
-      background: linear-gradient(140deg, #a78bfa 0%, #7c3aed 100%);
+      background: var(--grad);
       display: flex; align-items: center; justify-content: center;
       color: rgba(255,255,255,0.9); font-size: 13px; font-weight: 600;
-      box-shadow: 0 2px 10px rgba(124,58,237,0.4);
+      box-shadow: 0 2px 10px var(--p-md);
       overflow: hidden;
     }
 
@@ -594,7 +598,7 @@
       box-shadow: 0 2px 12px rgba(0,0,0,0.10), inset 2px 0 0 var(--p-lo);
     }
     .wa-bubble.user {
-      background: linear-gradient(135deg, var(--p, #6366f1) 0%, var(--p2, #4f46e5) 100%);
+      background: var(--grad);
       color: #fff; border-radius: 20px 4px 20px 20px;
       box-shadow: 0 4px 18px var(--p-md);
     }
@@ -1193,9 +1197,9 @@
     }
     .wa-bar-btn:active { transform: scale(0.92); }
     .wa-bar-btn.active {
-      background: rgba(99,102,241,0.25);
-      border-color: rgba(99,102,241,0.6);
-      color: #a78bfa;
+      background: var(--p-lo);
+      border-color: var(--p-md);
+      color: var(--p-hi);
     }
 
     /* ── TOAST ────────────────────────────────────────────── */
@@ -1368,7 +1372,7 @@
   // ── Global (light-DOM) styles ────────────────────────────────────
   const globalCss = document.createElement('style');
   globalCss.textContent = `
-    .wa-mic-banner button:hover { background: #4f46e5 !important; }
+    .wa-mic-banner button:hover { background: var(--p2) !important; }
   `;
   document.head.appendChild(globalCss);
 
@@ -1812,7 +1816,13 @@
         if (_ov && _ov.open) {
           primeAudioEngines();
           if (_ov.isOpen && _ov.isOpen()) { _ov.close(); }
-          else { _ov.open('home'); }
+          else {
+            _ov.open('home');
+            // Voice-to-voice: the mic goes hot the moment the overlay appears —
+            // no second tap on the orb. startVoice() emits 'voicestart', which
+            // the handler below turns into the real live-capture pipeline.
+            if (_ov.startVoice) { try { _ov.startVoice(); } catch (e) {} }
+          }
           return;
         }
         console.warn('[WooAgent Overlay] launcher click but bridge missing — falling back to widget menu');
@@ -1840,6 +1850,59 @@
       if (_ovVoice && _ovVoice.on) {
         _ovVoice.on('voicestart', () => { primeAudioEngines(); startLiveMode(); });
         _ovVoice.on('voicestop', () => { try { stopVoiceNavMode(); } catch (e) {} });
+        // Buy It Now on the overlay PDP → drive the guided buy-now voice journey
+        // (phone → saved-address lookup → confirm → prefilled checkout). Registered
+        // only when voice is enabled so the overlay's express-checkout fallback
+        // fires (no 'buynow' listener present) when it isn't.
+        if (CFG.enable_voice) {
+          _ovVoice.on('buynow', (data) => {
+            const d = data || {};
+            const pid = (d.product_id != null) ? d.product_id : null;
+            const vid = (d.variant_id != null) ? d.variant_id : null;
+            const handle = d.handle || null;
+            try { primeAudioEngines(); } catch (e) {}
+            // Remember the product being bought so the page_context handshake
+            // reflects it even while browsing INSIDE the overlay (no host-page
+            // navigation → detectProductId() can't see it).
+            try {
+              S.currentPageProduct = {
+                id: pid || (S.currentPageProduct && S.currentPageProduct.id) || null,
+                name: (S.currentPageProduct && S.currentPageProduct.name) || null,
+                handle: handle || (S.currentPageProduct && S.currentPageProduct.handle) || null
+              };
+            } catch (e) {}
+            // voicestart (fired just before this event) is bringing the socket up.
+            // Once it is OPEN, push a fresh page_update carrying THIS product — the
+            // pipeline reads the last page_update to resolve the buy-now product,
+            // and text_input frames don't carry page_context — then trigger the
+            // buy-now turn. Poll briefly for the socket rather than opening our own
+            // (avoids a double-open race with voicestart's startLiveMode).
+            let tries = 0;
+            const kick = () => {
+              if (geminiSocket && geminiSocket.readyState === WebSocket.OPEN) {
+                try {
+                  geminiSocket.send(JSON.stringify({
+                    type: 'page_update',
+                    page_context: {
+                      url: location.href,
+                      title: document.title,
+                      page_type: 'product',
+                      product_id: pid,
+                      product_handle: handle,
+                      variant_id: vid,
+                      last_products: (typeof displayedSearchProductIds === 'function' ? displayedSearchProductIds() : [])
+                    },
+                    cart_context: (S.cartSnapshot && typeof S.cartSnapshot === 'object' && !Array.isArray(S.cartSnapshot)) ? S.cartSnapshot : {}
+                  }));
+                } catch (e) {}
+                try { sendTextToA2A('buy it now'); } catch (e) {}
+                return;
+              }
+              if (tries++ < 40) setTimeout(kick, 150);  // wait up to ~6s for the socket
+            };
+            kick();
+          });
+        }
       }
     } catch (e) {}
   }
@@ -2141,7 +2204,7 @@ try {
           const h = Math.max(3, val * 28);
           const y = (32 - h) / 2;
           const alpha = 0.4 + val * 0.6;
-          c.fillStyle = hexToRgba(CFG.primary_color || '#6366f1', alpha);
+          c.fillStyle = hexToRgba(CFG.primary_color || '#ec4899', alpha);
           drawRounded(c, i * (barW + gap), y, barW, h, 2);
         }
       })();
@@ -2973,6 +3036,10 @@ try {
           // API-generated checkoutUrl so Shopify's own hosted checkout opens
           // pre-filled (URL params are ignored; the DOM is cross-origin).
           const addr = act.payload.billing || act.payload.shipping || act.payload || {};
+          // Lock the overlay (if open) into "Redirecting…" NOW so the async bind
+          // + navigation below cannot be interrupted by a stray render / voice
+          // event / Back that would bounce the customer to Home.
+          lockOverlayForCheckout();
           try {
             if (addr && Object.keys(addr).length) persistCheckoutAddress({ billing: addr, shipping: addr });
             if (S.mode === 'voice_nav') {
@@ -2984,6 +3051,7 @@ try {
           // Wait for the brain's redirect timing, then bind + navigate.
           setTimeout(() => { prepareShopifyCheckout(addr); }, 200);
         } else {
+          lockOverlayForCheckout();
           try {
             if (S.mode === 'voice_nav') {
               localStorage.setItem('_wa_voice_nav_resume', '1');
@@ -3187,7 +3255,7 @@ try {
               try { c.removeAttribute('data-wa-glowed'); } catch (_e) {}
             });
             target.style.outline = 'none';
-            target.style.border = '2px solid #6366f1';
+            target.style.border = '2px solid ' + (CFG.primary_color || '#ec4899');
             target.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
             target.style.transition = 'all 0.3s ease-in-out';
             try { target.setAttribute('data-wa-glowed', '1'); } catch (_e) {}
@@ -3231,7 +3299,7 @@ try {
           if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             window.scrollBy({ top: -90, behavior: 'instant' });
-            el.style.outline = '3px solid #6366f1';
+            el.style.outline = '3px solid ' + (CFG.primary_color || '#ec4899');
             el.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
             el.style.transition = 'all 0.3s ease-in-out';
             setTimeout(() => {
@@ -4359,6 +4427,37 @@ try {
   // the widget re-opens and fills the stored address on the page when a custom
   // (same-origin) checkout form exists. Dropping the _addrUsable shortcut also
   // removes the "pushed to checkout but address never collected" behaviour.
+  // Lock the Speako overlay (if it is currently open) into its full-screen
+  // "Redirecting to secure checkout…" state before a real checkout navigation.
+  // Only locks an ALREADY-OPEN overlay — never force-mounts it — so plain
+  // widget-mode stores (no overlay) are unaffected. This is what stops the
+  // overlay PDP flow from bouncing back to Home during the async cart bind +
+  // hard navigation to the hosted checkout.
+  function lockOverlayForCheckout(message) {
+    try {
+      const _ov = window.__SPEAKO_OVERLAY__;
+      if (_ov && _ov.beginCheckoutRedirect && _ov.isOpen && _ov.isOpen()) {
+        _ov.beginCheckoutRedirect(message ? { message: message } : {});
+      }
+    } catch (e) {}
+  }
+
+  // Release a lock set by lockOverlayForCheckout after a KNOWN failed bind, so the
+  // overlay restores its last view + shows a retry toast instead of being trapped
+  // under the spinner (or bounced to a blank /checkout → Home). Returns true if a
+  // locked overlay was actually released, so the caller can skip its own blank-
+  // checkout fallback navigation.
+  function releaseOverlayCheckout(message) {
+    try {
+      const _ov = window.__SPEAKO_OVERLAY__;
+      if (_ov && _ov.isCheckoutRedirecting && _ov.isCheckoutRedirecting()) {
+        if (_ov.endCheckoutRedirect) { _ov.endCheckoutRedirect(message); }
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
   // Approach C: bind the collected buyer identity + address to the session's
   // Storefront cart via /api/v1/cart/checkout, then navigate to the API-generated
   // checkoutUrl. Shopify's hosted checkout ignores `checkout[...]` URL params and
@@ -4371,6 +4470,9 @@ try {
     // trigger Shopify cart-locking/race errors — serialize them instead.
     if (S._checkoutInFlight) { return; }
     S._checkoutInFlight = true;
+    // Ensure the overlay (if open) is locked even when prepareShopifyCheckout is
+    // reached via a path that did not pre-lock (page_update re-entry, buy-now).
+    lockOverlayForCheckout();
     try {
       await _prepareShopifyCheckoutInner(addr);
     } finally {
@@ -4434,9 +4536,16 @@ try {
       setTimeout(() => { window.location.href = checkoutUrl; }, 800);
       return;
     }
-    // Bind never succeeded — don't silently push to a blank checkout. Persist the
-    // address so a same-origin checkout form can be re-filled client-side, then
-    // land on the store's /checkout anyway (better than being stuck in chat).
+    // Bind never succeeded. If the overlay PDP flow is driving this checkout,
+    // DO NOT bounce to a blank /checkout — Shopify sends an unbound cart straight
+    // back to Home, which is the exact redirect-loop we are fixing. Release the
+    // spinner lock, restore the overlay's last view, and let the customer retry.
+    if (releaseOverlayCheckout('Could not reach secure checkout. Please try again.')) {
+      return;
+    }
+    // Plain widget mode (no overlay): persist the address so a same-origin
+    // checkout form can be re-filled client-side, then land on the store's
+    // /checkout anyway (better than being stuck in chat).
     try {
       persistCheckoutAddress({ billing: addr, shipping: addr });
     } catch (_e) {}
@@ -6121,11 +6230,11 @@ try {
     if (S.micPermissionAsked || S.micPermissionGranted) return;
     const banner = document.createElement('div');
     banner.className = 'wa-mic-banner';
-    banner.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1e1b4b;color:#fff;padding:14px 24px;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,0.3);display:flex;align-items:center;gap:12px;font-family:-apple-system,system-ui,sans-serif;font-size:15px;';
+    banner.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1b1030;color:#fff;padding:14px 24px;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,0.3);display:flex;align-items:center;gap:12px;font-family:-apple-system,system-ui,sans-serif;font-size:15px;';
     banner.innerHTML = `
       <span style="font-size:20px;">🎤</span>
       <span>Enable Voice Assistant to shop hands-free</span>
-      <button style="background:#6366f1;color:#fff;border:none;padding:8px 20px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Enable Voice</button>
+      <button style="background:${PC};color:#fff;border:none;padding:8px 20px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Enable Voice</button>
     `;
     document.body.appendChild(banner);
     banner.querySelector('button').addEventListener('click', async () => {
@@ -7513,7 +7622,7 @@ if (statusTxt) statusTxt.textContent = text;
         const _glowStyle = (card, on) => {
           if (!card) return;
           card.style.outline = on ? 'none' : '';
-          card.style.border = on ? '2px solid #6366f1' : '';
+          card.style.border = on ? ('2px solid ' + (CFG.primary_color || '#ec4899')) : '';
           card.style.boxShadow = on ? '0 0 20px rgba(99, 102, 241, 0.85)' : '';
           card.style.transition = 'all 0.3s ease-in-out';
           if (on) card.setAttribute('data-wa-glowed', '1');

@@ -1,6 +1,19 @@
 /* Speako Fullscreen Overlay — scoped styles injected into the overlay shadow root.
    Theme-leak-proof by construction: every selector is relative to the host container.
-   Purple brand system: primary #7C3AED / #6D28D9, accent #8B5CF6 / #DDD6FE. */
+
+   DESIGN SYSTEM — "Midnight Concierge"
+   ────────────────────────────────────────────────────────────────────────
+   Dark-first luxury commerce surface. Violet-undertoned midnight ground
+   (#0B0712, not clinical slate), warm pearl text, and a single signature
+   rose→magenta→orchid gradient reserved for the voice orb, primary CTAs and
+   SAVE badges. Editorial serif (Fraunces) for display headings; fast system
+   sans for body/UI. Glass surfaces, hairline borders, ambient corner glow.
+
+   Every accent derives from --sp-brand, so a merchant's primary_color
+   re-tints the entire system (setConfig overrides the derived tokens).
+   Defaults to the Speako rose/magenta when no brand colour is supplied. */
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&display=swap');
 
 .speako-root,
 .speako-root * {
@@ -10,52 +23,67 @@
 }
 
 .speako-root {
-  /* Brand palette (overridable at runtime via setConfig → --sp-brand). */
-  --sp-brand: #7c3aed;
-  --sp-brand-2: #6d28d9;
-  --sp-brand-lite: #8b5cf6;
-  --sp-brand-soft: #ddd6fe;
-  --sp-brand-glow: rgba(124, 58, 237, 0.35);
-  --sp-grad: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+  /* Brand — single overridable colour; companions derive from it so any
+     merchant primary_color cleanly re-tints the whole accent system. */
+  --sp-brand: #ec4899;
+  --sp-brand-2: #a21caf;
+  --sp-brand-lite: #f9a8d4;
+  --sp-brand-soft: rgba(236, 72, 153, 0.16);
+  --sp-brand-glow: rgba(236, 72, 153, 0.45);
+  /* Signature gradient — the one bold move, reused across orb / CTA / badge. */
+  --sp-grad: linear-gradient(135deg, #ff77b0 0%, #e0339e 46%, #a438d6 100%);
+  --sp-grad-soft: linear-gradient(135deg, rgba(255, 119, 176, 0.18), rgba(164, 56, 214, 0.16));
 
-  /* Light surface system. */
-  --sp-bg: #ffffff;
-  --sp-bg-2: #f8fafc;
-  --sp-fg: #0f172a;
-  --sp-muted: #64748b;
-  --sp-border: #e2e8f0;
-  --sp-card: #f8fafc;
-  --sp-chip: #f1f5f9;
-  --sp-ok: #16a34a;
-  --sp-warn: #f59e0b;
-  --sp-err: #dc2626;
-  --sp-star: #f59e0b;
-  /* Discount badge — mint green per spec (bg #ECFDF5 / fg #059669). */
-  --sp-sale-bg: #ecfdf5;
-  --sp-sale-fg: #059669;
-  --sp-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.08);
-  --sp-shadow: 0 10px 30px rgba(15, 23, 42, 0.10);
-  --sp-shadow-lg: 0 24px 60px rgba(15, 23, 42, 0.20);
+  /* Midnight surface system (dark-first). */
+  --sp-bg: #0b0712;
+  --sp-bg-2: #140b20;
+  --sp-fg: #f6eef9;
+  --sp-muted: #a99bb8;
+  --sp-faint: #6f6280;
+  --sp-border: rgba(246, 238, 249, 0.10);
+  --sp-border-soft: rgba(246, 238, 249, 0.06);
+  --sp-card: #150c22;
+  --sp-glass: rgba(28, 18, 42, 0.66);
+  --sp-bar: rgba(11, 7, 18, 0.72);
+  --sp-glass-2: rgba(11, 7, 18, 0.55);
+  --sp-chip: rgba(246, 238, 249, 0.05);
+  --sp-ok: #34d399;
+  --sp-warn: #fbbf24;
+  --sp-err: #fb7185;
+  --sp-star: #fbbf24;
 
-  /* Radii — generous, premium rounding. Cards/images 16px, panels 14px,
-     buttons 12px, pills fully round. */
-  --sp-radius: 14px;
-  --sp-radius-card: 16px;
-  --sp-radius-btn: 12px;
+  --sp-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --sp-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
+  --sp-shadow-lg: 0 28px 70px rgba(0, 0, 0, 0.6);
+  --sp-glow: 0 10px 40px var(--sp-brand-glow);
+
+  /* Radii — generous, premium rounding. */
+  --sp-radius: 16px;
+  --sp-radius-card: 20px;
+  --sp-radius-btn: 14px;
   --sp-radius-pill: 9999px;
+
+  /* Type. Fraunces is the editorial display voice; swap keeps it non-blocking
+     and Georgia carries the look if the font never arrives. */
+  --sp-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --sp-font-display: "Fraunces", "Hoefler Text", Georgia, "Times New Roman", serif;
 
   position: fixed;
   inset: 0;
   width: 100vw;
   z-index: 2147483647;
   height: 100dvh; /* modern viewport */
-  background: var(--sp-bg);
+  background:
+    radial-gradient(120% 78% at 12% -12%, rgba(236, 72, 153, 0.16), transparent 58%),
+    radial-gradient(120% 80% at 102% 0%, rgba(164, 56, 214, 0.16), transparent 55%),
+    var(--sp-bg);
   color: var(--sp-fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--sp-font);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 @supports not (height: 100dvh) {
@@ -65,22 +93,31 @@
 /* Visibility gate — the overlay must stay HIDDEN until open() adds
    .sp-visible, otherwise the full-screen root covers the store the moment
    it mounts. */
-.speako-root { visibility: hidden; opacity: 0; transition: opacity 0.22s ease; }
+.speako-root { visibility: hidden; opacity: 0; transition: opacity 0.24s ease; }
 .speako-root.sp-visible { visibility: visible; opacity: 1; }
 
-.speako-root[data-theme="dark"] {
-  --sp-bg: #0f172a;
-  --sp-bg-2: #1e1b4b;
-  --sp-fg: #f1f5f9;
-  --sp-muted: #94a3b8;
-  --sp-border: #1e293b;
-  --sp-card: #1e1b4b;
-  --sp-chip: #1e293b;
-  --sp-brand-soft: rgba(139, 92, 246, 0.18);
-  --sp-sale-bg: rgba(5, 150, 105, 0.16);
-  --sp-sale-fg: #34d399;
-  --sp-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-  --sp-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.6);
+/* ── Paired light variant (warm boutique daylight — same accent) ── */
+.speako-root[data-theme="light"] {
+  --sp-bg: #fbf7fb;
+  --sp-bg-2: #ffffff;
+  --sp-fg: #1a1120;
+  --sp-muted: #6b5f78;
+  --sp-faint: #9a8fa8;
+  --sp-border: rgba(26, 17, 32, 0.10);
+  --sp-border-soft: rgba(26, 17, 32, 0.06);
+  --sp-card: #ffffff;
+  --sp-glass: rgba(255, 255, 255, 0.74);
+  --sp-bar: rgba(251, 247, 251, 0.82);
+  --sp-glass-2: rgba(255, 255, 255, 0.60);
+  --sp-chip: rgba(26, 17, 32, 0.04);
+  --sp-brand-soft: rgba(236, 72, 153, 0.12);
+  --sp-shadow-sm: 0 1px 2px rgba(26, 17, 32, 0.06), 0 1px 3px rgba(26, 17, 32, 0.08);
+  --sp-shadow: 0 12px 30px rgba(26, 17, 32, 0.12);
+  --sp-shadow-lg: 0 26px 60px rgba(26, 17, 32, 0.20);
+  background:
+    radial-gradient(120% 78% at 12% -12%, rgba(236, 72, 153, 0.10), transparent 60%),
+    radial-gradient(120% 80% at 102% 0%, rgba(164, 56, 214, 0.09), transparent 56%),
+    var(--sp-bg);
 }
 
 /* ── Header bar ── */
@@ -90,9 +127,9 @@
   gap: 6px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--sp-border);
-  background: color-mix(in srgb, var(--sp-bg) 82%, transparent);
-  backdrop-filter: saturate(180%) blur(12px);
-  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  background: var(--sp-bar);
+  backdrop-filter: saturate(160%) blur(16px);
+  -webkit-backdrop-filter: saturate(160%) blur(16px);
   flex: 0 0 auto;
   position: relative;
   z-index: 3;
@@ -112,6 +149,7 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 .speako-header .sp-btn:hover { background: var(--sp-chip); }
+.speako-header .sp-btn:active { transform: scale(0.94); }
 .speako-header .sp-title {
   flex: 1;
   font-weight: 600;
@@ -139,6 +177,7 @@
   min-width: 16px;
   text-align: center;
   font-weight: 700;
+  box-shadow: 0 2px 8px var(--sp-brand-glow);
 }
 /* Fly-to-cart landing beat — the cart button pops when a product "lands". */
 .speako-cart-badge.sp-cart-pop { animation: sp-cart-pop 0.42s cubic-bezier(0.2, 0.7, 0.3, 1); }
@@ -160,6 +199,7 @@
   -webkit-overflow-scrolling: touch;
   padding: 16px 16px 24px;
   position: relative;
+  z-index: 1;
 }
 
 /* ── Home / greeting view ── */
@@ -168,33 +208,35 @@
   flex-direction: column;
   align-items: center;
   gap: 14px;
-  padding: 32px 4px 8px;
+  padding: 40px 4px 8px;
   max-width: 560px;
   margin: 0 auto;
   width: 100%;
   text-align: center;
 }
 
-/* Big glowing voice orb — the hero of the greeting screen. */
+/* Big glowing voice orb — the signature of the greeting screen. */
 .sp-orb {
   position: relative;
-  width: 112px;
-  height: 112px;
+  width: 116px;
+  height: 116px;
   flex: 0 0 auto;
-  margin: 8px 0 6px;
+  margin: 8px 0 10px;
   border-radius: 50%;
   cursor: pointer;
-  background: radial-gradient(circle at 32% 28%, #a78bfa 0%, #7c3aed 45%, #6d28d9 100%);
-  box-shadow: 0 12px 40px var(--sp-brand-glow), inset 0 2px 8px rgba(255, 255, 255, 0.35);
+  border: 0;
+  background:
+    radial-gradient(circle at 32% 26%, #ffd0e6 0%, #ff77b0 30%, #e0339e 60%, #a438d6 100%);
+  box-shadow: 0 18px 60px var(--sp-brand-glow), inset 0 2px 10px rgba(255, 255, 255, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
   color: #fff;
-  transition: transform 0.2s cubic-bezier(.34, 1.56, .64, 1);
+  transition: transform 0.24s cubic-bezier(.34, 1.56, .64, 1);
 }
-.sp-orb:hover { transform: scale(1.04); }
+.sp-orb:hover { transform: scale(1.05); }
 .sp-orb:active { transform: scale(0.97); }
-.sp-orb svg { width: 40px; height: 40px; position: relative; z-index: 2; }
+.sp-orb svg { width: 42px; height: 42px; position: relative; z-index: 2; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.25)); }
 /* Layered breathing halo rings. */
 .sp-orb::before,
 .sp-orb::after {
@@ -205,56 +247,74 @@
   background: var(--sp-brand);
   opacity: 0.22;
   z-index: 0;
-  animation: sp-orb-ring 2.6s ease-out infinite;
+  animation: sp-orb-ring 2.8s ease-out infinite;
 }
-.sp-orb::after { animation-delay: 1.3s; }
-.sp-orb.listening { box-shadow: 0 0 0 8px var(--sp-brand-soft), 0 16px 46px var(--sp-brand-glow); }
+.sp-orb::after { animation-delay: 1.4s; }
+.sp-orb.listening { box-shadow: 0 0 0 10px var(--sp-brand-soft), 0 20px 60px var(--sp-brand-glow); }
 @keyframes sp-orb-ring {
-  0% { transform: scale(1); opacity: 0.3; }
+  0% { transform: scale(1); opacity: 0.32; }
   70% { opacity: 0; }
-  100% { transform: scale(1.6); opacity: 0; }
+  100% { transform: scale(1.65); opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .sp-orb::before, .sp-orb::after { animation: none; }
 }
 
 .speako-hello {
-  font-size: 28px;
+  font-family: var(--sp-font-display);
+  font-optical-sizing: auto;
+  font-size: 34px;
   font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: -0.02em;
+  line-height: 1.12;
+  letter-spacing: -0.015em;
   color: var(--sp-fg);
 }
-.speako-hint { color: var(--sp-muted); font-size: 14px; line-height: 1.5; max-width: 34ch; }
+.speako-hint { color: var(--sp-muted); font-size: 15px; line-height: 1.55; max-width: 36ch; }
 
-/* Suggestion chips (Help me choose / Track my order …) — stacked pills. */
+/* Suggestion chips (Help me choose / Track my order …) — glass pills. */
 .sp-suggestions {
   display: flex;
   flex-direction: column;
   gap: 10px;
   width: 100%;
-  max-width: 380px;
-  margin-top: 10px;
+  max-width: 400px;
+  margin-top: 16px;
 }
 .sp-suggest {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
   border: 1px solid var(--sp-border);
-  background: var(--sp-chip);
+  background: var(--sp-glass);
   color: var(--sp-fg);
   border-radius: var(--sp-radius-pill);
-  padding: 13px 20px;
-  font-size: 14px;
+  padding: 14px 20px;
+  font-size: 14.5px;
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.12s ease, box-shadow 0.16s ease;
 }
 .sp-suggest svg { width: 18px; height: 18px; flex: 0 0 auto; color: var(--sp-brand); }
 .sp-suggest span { flex: 1; }
-.sp-suggest:hover { border-color: var(--sp-brand); background: var(--sp-brand-soft); transform: translateY(-1px); }
+.sp-suggest::after {
+  content: "";
+  width: 7px; height: 7px; flex: 0 0 auto;
+  border-right: 2px solid var(--sp-faint);
+  border-top: 2px solid var(--sp-faint);
+  transform: rotate(45deg);
+  transition: border-color 0.16s ease, transform 0.16s ease;
+}
+.sp-suggest:hover {
+  border-color: var(--sp-brand);
+  background: var(--sp-brand-soft);
+  transform: translateY(-1px);
+  box-shadow: var(--sp-shadow-sm);
+}
+.sp-suggest:hover::after { border-color: var(--sp-brand); transform: translateX(2px) rotate(45deg); }
 .sp-suggest:active { transform: translateY(0); }
 
 .sp-searchbar {
@@ -268,7 +328,7 @@
   border-radius: var(--sp-radius);
   padding: 0 16px;
   font-size: 15px;
-  background: var(--sp-bg);
+  background: var(--sp-bg-2);
   color: var(--sp-fg);
   outline: none;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -296,9 +356,9 @@
   gap: 10px;
   padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--sp-border);
-  background: color-mix(in srgb, var(--sp-bg) 85%, transparent);
-  backdrop-filter: saturate(180%) blur(14px);
-  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  background: var(--sp-bar);
+  backdrop-filter: saturate(160%) blur(16px);
+  -webkit-backdrop-filter: saturate(160%) blur(16px);
   position: relative;
   z-index: 4;
 }
@@ -307,9 +367,9 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 52px;
-  padding: 0 6px 0 18px;
-  background: var(--sp-bg);
+  height: 54px;
+  padding: 0 6px 0 20px;
+  background: var(--sp-bg-2);
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius-pill);
   box-shadow: var(--sp-shadow-sm);
@@ -331,11 +391,11 @@
 }
 /* Live waveform sits inside the field while listening. */
 .sp-voicebar .sp-wave { margin-right: 2px; }
-/* Purple circular mic button embedded at the field's right edge. */
+/* Gradient circular mic button embedded at the field's right edge. */
 .sp-mic-btn {
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   border: 0;
   background: var(--sp-grad);
@@ -344,7 +404,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 14px var(--sp-brand-glow);
+  box-shadow: 0 4px 16px var(--sp-brand-glow);
   transition: transform 0.12s ease, box-shadow 0.15s ease;
 }
 .sp-mic-btn svg { width: 20px; height: 20px; }
@@ -352,8 +412,8 @@
 .sp-mic-btn:active { transform: scale(0.94); }
 .sp-mic-btn.listening { animation: sp-mic-pulse 1.4s ease-in-out infinite; }
 @keyframes sp-mic-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 var(--sp-brand-glow), 0 4px 14px var(--sp-brand-glow); }
-  50% { box-shadow: 0 0 0 8px transparent, 0 4px 14px var(--sp-brand-glow); }
+  0%, 100% { box-shadow: 0 0 0 0 var(--sp-brand-glow), 0 4px 16px var(--sp-brand-glow); }
+  50% { box-shadow: 0 0 0 10px transparent, 0 4px 16px var(--sp-brand-glow); }
 }
 
 /* Waveform bars — driven by .sp-wave.active toggling animation-play-state. */
@@ -386,36 +446,40 @@
   0%, 100% { height: 6px; }
   50% { height: 22px; }
 }
+@media (prefers-reduced-motion: reduce) {
+  .sp-wave span { animation: none !important; height: 12px; }
+  .sp-mic-btn.listening { animation: none; }
+}
 @keyframes sp-pulse {
   0%, 100% { opacity: 0.35; transform: scale(1); }
   50% { opacity: 1; transform: scale(1.25); }
 }
 
 /* ── Filter chips / facets ── */
-.sp-facets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; align-items: center; }
+.sp-facets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; align-items: center; }
 .sp-chip {
   border: 1px solid var(--sp-border);
-  background: var(--sp-bg);
+  background: var(--sp-chip);
   color: var(--sp-fg);
   border-radius: var(--sp-radius-pill);
-  padding: 6px 14px;
+  padding: 7px 15px;
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.12s ease;
   white-space: nowrap;
 }
-.sp-chip:hover { border-color: var(--sp-brand-lite); }
-.sp-chip.active { background: var(--sp-grad); border-color: transparent; color: #fff; }
+.sp-chip:hover { border-color: var(--sp-brand-lite); color: var(--sp-fg); }
+.sp-chip.active { background: var(--sp-grad); border-color: transparent; color: #fff; box-shadow: 0 4px 14px var(--sp-brand-glow); }
 .sp-chip[data-kind="group"] { border-style: dashed; }
-.sp-facet-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sp-muted); margin-right: 4px; }
+.sp-facet-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--sp-muted); margin-right: 4px; }
 .sp-facet-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; margin-bottom: 6px; }
 
 /* ── Product grid ── */
 .sp-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
-  gap: 18px 14px;
+  gap: 22px 16px;
 }
 .sp-card {
   border: 0;
@@ -427,15 +491,17 @@
   display: flex;
   flex-direction: column;
 }
-.sp-card:hover { transform: translateY(-3px); }
-.sp-card:hover .sp-card-media { box-shadow: var(--sp-shadow); }
+.sp-card:hover { transform: translateY(-4px); }
+.sp-card:hover .sp-card-media { box-shadow: var(--sp-shadow); border-color: var(--sp-brand); }
 .sp-card.sp-highlight .sp-card-media { outline: 3px solid var(--sp-brand); outline-offset: 2px; }
 /* Voice-synced glow: the overlay adds .sp-card-glowing to the card matching the
    product the assistant is currently narrating (highlight_card /
-   active_product_index events). Purple border + halo + subtle lift. */
+   active_product_index events). Rose border + halo + subtle lift. */
+.sp-card-glowing .sp-card-media {
+  border-color: var(--sp-brand) !important;
+  box-shadow: 0 0 28px var(--sp-brand-glow) !important;
+}
 .sp-card-glowing {
-  border: 2px solid #7C3AED !important;
-  box-shadow: 0 0 24px rgba(124, 58, 237, 0.6) !important;
   transform: scale(1.02);
   transition: all 0.3s ease;
   z-index: 2;
@@ -448,7 +514,8 @@
   border-radius: var(--sp-radius-card);
   overflow: hidden;
   background: var(--sp-card);
-  transition: box-shadow 0.18s ease;
+  border: 1px solid var(--sp-border-soft);
+  transition: box-shadow 0.18s ease, border-color 0.18s ease;
 }
 .sp-card img {
   width: 100%;
@@ -457,90 +524,116 @@
   display: block;
   background: var(--sp-card);
 }
-.sp-card .sp-card-body { padding: 10px 4px 4px; flex: 1; display: flex; flex-direction: column; }
+.sp-card .sp-card-body { padding: 11px 4px 4px; flex: 1; display: flex; flex-direction: column; }
 .sp-card .sp-card-title { font-size: 14px; font-weight: 600; line-height: 1.35; letter-spacing: -0.01em; max-height: 38px; overflow: hidden; }
-.sp-card .sp-card-vendor { font-size: 11px; color: var(--sp-muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
+.sp-card .sp-card-vendor { font-size: 10.5px; color: var(--sp-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
 .sp-card .sp-card-rating { display: flex; align-items: center; gap: 4px; margin-top: 6px; font-size: 11px; color: var(--sp-muted); }
 .sp-card .sp-card-rating .sp-stars { font-size: 12px; }
-.sp-card .sp-card-pricerow { display: flex; align-items: baseline; gap: 7px; margin-top: 7px; flex-wrap: wrap; }
+.sp-card .sp-card-pricerow { display: flex; align-items: baseline; gap: 7px; margin-top: 8px; flex-wrap: wrap; }
 .sp-card .sp-card-price { font-size: 15px; font-weight: 800; color: var(--sp-fg); font-variant-numeric: tabular-nums; }
 .sp-card .sp-card-compare { font-size: 12px; color: var(--sp-muted); text-decoration: line-through; font-variant-numeric: tabular-nums; }
 .sp-card .sp-card-empty {
   display: flex; align-items: center; justify-content: center; aspect-ratio: 1/1;
   background: var(--sp-card); color: var(--sp-muted); font-size: 12px;
 }
-/* Discount / % OFF badge on card media — mint green per spec. */
+/* Discount / % OFF badge on card media — signature gradient. */
 .sp-badge-sale {
   position: absolute;
   top: 10px;
   left: 10px;
-  background: var(--sp-sale-bg);
-  color: var(--sp-sale-fg);
-  font-size: 12px;
-  font-weight: 600;
+  background: var(--sp-grad);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
   padding: 4px 10px;
   border-radius: var(--sp-radius-pill);
-  letter-spacing: 0.01em;
+  letter-spacing: 0.02em;
+  box-shadow: 0 4px 14px var(--sp-brand-glow);
+  z-index: 1;
 }
+/* Informational status tag (NEW IN / SOLD OUT) — glass label, top-left slot. */
+.sp-card-tag {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: var(--sp-glass-2);
+  color: var(--sp-fg);
+  border: 1px solid var(--sp-border);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: var(--sp-radius-pill);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 1;
+}
+.sp-card-tag.sold { color: var(--sp-muted); }
 /* Quick compare toggle on card. */
 .sp-card-compare-toggle {
   position: absolute;
   top: 10px;
   right: 10px;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   border: 0;
-  background: rgba(255, 255, 255, 0.94);
-  color: var(--sp-brand);
+  background: var(--sp-glass-2);
+  color: var(--sp-fg);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 14px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--sp-border);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   opacity: 0;
-  transition: opacity 0.15s ease, background 0.15s ease;
+  transition: opacity 0.15s ease, background 0.15s ease, transform 0.12s ease;
+  z-index: 1;
 }
 .sp-card:hover .sp-card-compare-toggle,
 .sp-card-compare-toggle.active { opacity: 1; }
-.sp-card-compare-toggle.active { background: var(--sp-grad); color: #fff; }
+.sp-card-compare-toggle:hover { transform: scale(1.08); }
+.sp-card-compare-toggle.active { background: var(--sp-grad); color: #fff; border-color: transparent; }
 
-/* Conversational answer line — Aria's reply above a product grid (Images 2/3). */
+/* Conversational answer line — Aria's reply above a product grid. */
 .sp-answer {
   display: flex;
-  gap: 10px;
+  gap: 11px;
   align-items: flex-start;
   margin: 2px 0 18px;
-  font-size: 15px;
+  font-size: 15.5px;
   line-height: 1.55;
   color: var(--sp-fg);
 }
 .sp-answer .sp-answer-avatar {
   flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: var(--sp-grad);
   color: #fff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 8px var(--sp-brand-glow);
+  box-shadow: 0 3px 12px var(--sp-brand-glow);
 }
-.sp-answer .sp-answer-avatar svg { width: 15px; height: 15px; }
+.sp-answer .sp-answer-avatar svg { width: 16px; height: 16px; }
 .sp-answer strong { font-weight: 700; }
-.sp-answer small { display: block; color: var(--sp-muted); font-size: 13px; margin-top: 2px; }
+.sp-answer small, .sp-answer .sp-answer-sub { display: block; color: var(--sp-muted); font-size: 13px; margin-top: 3px; }
 
-/* Grouped collection rows (carousel-per-theme, like the reference UI). */
-.sp-collection { margin-bottom: 26px; }
-.sp-collection-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; gap: 12px; }
-.sp-collection-title { font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
-.sp-collection-title small { display: block; font-size: 12px; font-weight: 500; color: var(--sp-muted); margin-top: 3px; letter-spacing: 0; }
+/* Grouped collection rows (carousel-per-theme). */
+.sp-collection { margin-bottom: 28px; }
+.sp-collection-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; gap: 12px; }
+.sp-collection-title { font-family: var(--sp-font-display); font-size: 21px; font-weight: 600; letter-spacing: -0.01em; }
+.sp-collection-title small { display: block; font-family: var(--sp-font); font-size: 12px; font-weight: 500; color: var(--sp-muted); margin-top: 4px; letter-spacing: 0; }
 .sp-collection-more { flex: 0 0 auto; font-size: 13px; font-weight: 600; color: var(--sp-brand); background: none; border: 0; cursor: pointer; }
 .sp-hrow {
   display: flex;
-  gap: 14px;
+  gap: 16px;
   overflow-x: auto;
   scrollbar-width: none;
   scroll-snap-type: x mandatory;
@@ -550,10 +643,17 @@
   padding-right: 16px;
 }
 .sp-hrow::-webkit-scrollbar { display: none; }
-.sp-hrow .sp-card { flex: 0 0 168px; scroll-snap-align: start; }
+.sp-hrow .sp-card { flex: 0 0 170px; scroll-snap-align: start; }
 
 /* ── Product detail view (rich PDP) ── */
-.sp-pdp { max-width: 720px; margin: 0 auto; width: 100%; }
+.sp-pdp { max-width: 900px; margin: 0 auto; width: 100%; }
+
+/* Two-column on wider viewports: gallery left, buy-box right. */
+@media (min-width: 760px) {
+  .sp-pdp { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; align-items: start; }
+  .sp-pdp .sp-gallery { position: sticky; top: 8px; }
+  .sp-pdp .sp-accordions { grid-column: 1 / -1; }
+}
 
 /* Swipeable gallery with zoom. */
 .sp-gallery { position: relative; }
@@ -561,9 +661,10 @@
   position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
-  border-radius: var(--sp-radius);
+  border-radius: var(--sp-radius-card);
   overflow: hidden;
   background: var(--sp-card);
+  border: 1px solid var(--sp-border-soft);
   display: flex;
   scroll-snap-type: x mandatory;
   overflow-x: auto;
@@ -579,16 +680,16 @@
   cursor: zoom-in;
   background: var(--sp-card);
 }
-.sp-gallery-dots { display: flex; gap: 6px; justify-content: center; margin-top: 10px; }
+.sp-gallery-dots { display: flex; gap: 6px; justify-content: center; margin-top: 12px; }
 .sp-gallery-dots .sp-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--sp-border); cursor: pointer; transition: all 0.15s ease;
 }
-.sp-gallery-dots .sp-dot.active { background: var(--sp-brand); width: 20px; border-radius: 4px; }
-.sp-gallery-thumbs { display: flex; gap: 8px; margin-top: 10px; overflow-x: auto; scrollbar-width: none; }
+.sp-gallery-dots .sp-dot.active { background: var(--sp-brand); width: 22px; border-radius: 4px; }
+.sp-gallery-thumbs { display: flex; gap: 8px; margin-top: 12px; overflow-x: auto; scrollbar-width: none; }
 .sp-gallery-thumbs::-webkit-scrollbar { display: none; }
 .sp-gallery-thumbs img {
-  width: 56px; height: 56px; flex: 0 0 56px; border-radius: var(--sp-radius-btn);
+  width: 58px; height: 58px; flex: 0 0 58px; border-radius: var(--sp-radius-btn);
   object-fit: cover; cursor: pointer; border: 2px solid transparent; background: var(--sp-card);
 }
 .sp-gallery-thumbs img.active { border-color: var(--sp-brand); }
@@ -598,7 +699,7 @@
   position: fixed;
   inset: 0;
   z-index: 6;
-  background: rgba(0, 0, 0, 0.92);
+  background: rgba(0, 0, 0, 0.94);
   display: none;
   align-items: center;
   justify-content: center;
@@ -628,16 +729,16 @@
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   color: var(--sp-brand);
   background: var(--sp-brand-soft);
-  padding: 3px 10px;
+  padding: 4px 12px;
   border-radius: var(--sp-radius-pill);
 }
-.sp-pdp-title { font-size: 23px; font-weight: 800; margin-top: 10px; line-height: 1.25; }
+.sp-pdp-title { font-family: var(--sp-font-display); font-optical-sizing: auto; font-size: 28px; font-weight: 600; margin-top: 12px; line-height: 1.15; letter-spacing: -0.015em; }
 
 /* Star rating block. */
-.sp-rating { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.sp-rating { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .sp-stars { position: relative; display: inline-block; font-size: 16px; line-height: 1; letter-spacing: 1px; }
 .sp-stars .sp-stars-bg { color: var(--sp-border); }
 .sp-stars .sp-stars-fg {
@@ -649,98 +750,101 @@
 .sp-rating-count a { color: var(--sp-brand); text-decoration: none; }
 
 /* Pricing block with struck compare + Save badge. */
-.sp-pdp-pricing { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
-.sp-pdp-price { font-size: 26px; font-weight: 800; color: var(--sp-fg); }
-.sp-pdp-compare { font-size: 17px; color: var(--sp-muted); text-decoration: line-through; }
+.sp-pdp-pricing { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.sp-pdp-price { font-size: 28px; font-weight: 800; color: var(--sp-fg); font-variant-numeric: tabular-nums; }
+.sp-pdp-compare { font-size: 17px; color: var(--sp-muted); text-decoration: line-through; font-variant-numeric: tabular-nums; }
 .sp-save-badge {
-  background: rgba(22, 163, 74, 0.12);
-  color: var(--sp-ok);
+  background: var(--sp-grad);
+  color: #fff;
   font-size: 12px;
   font-weight: 800;
-  padding: 4px 10px;
+  padding: 4px 11px;
   border-radius: var(--sp-radius-pill);
+  box-shadow: 0 3px 12px var(--sp-brand-glow);
 }
 
 /* Variant selection groups. */
-.sp-option-group { margin-top: 18px; }
-.sp-option-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sp-muted); margin-bottom: 8px; }
+.sp-option-group { margin-top: 20px; }
+.sp-option-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sp-muted); margin-bottom: 9px; }
 .sp-option-label .sp-option-value { color: var(--sp-fg); margin-left: 6px; text-transform: none; letter-spacing: 0; }
 .sp-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
 .sp-swatch {
   border: 1.5px solid var(--sp-border);
   border-radius: var(--sp-radius-btn);
-  padding: 8px 14px;
+  padding: 9px 15px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  background: var(--sp-bg);
+  background: var(--sp-bg-2);
   color: var(--sp-fg);
   transition: all 0.12s ease;
   position: relative;
 }
 .sp-swatch:hover:not(.disabled) { border-color: var(--sp-brand-lite); }
-.sp-swatch.active { border-color: var(--sp-brand); background: var(--sp-brand-soft); color: var(--sp-brand-2); }
+.sp-swatch.active { border-color: var(--sp-brand); background: var(--sp-brand-soft); color: var(--sp-fg); }
 .sp-swatch.disabled { opacity: 0.4; cursor: not-allowed; text-decoration: line-through; }
 /* Color swatch pills (round). */
 .sp-swatch.sp-swatch-color {
-  width: 34px; height: 34px; padding: 0; border-radius: 50%;
+  width: 36px; height: 36px; padding: 0; border-radius: 50%;
   overflow: hidden; text-indent: -9999px;
 }
 .sp-swatch.sp-swatch-color.active { box-shadow: 0 0 0 2px var(--sp-bg), 0 0 0 4px var(--sp-brand); border-color: transparent; }
 /* Size pills (rounded). */
-.sp-swatch.sp-swatch-size { min-width: 44px; text-align: center; border-radius: var(--sp-radius-pill); }
+.sp-swatch.sp-swatch-size { min-width: 46px; text-align: center; border-radius: var(--sp-radius-pill); }
 .sp-option-select {
   width: 100%;
-  height: 44px;
+  height: 46px;
   border: 1.5px solid var(--sp-border);
   border-radius: var(--sp-radius-btn);
   padding: 0 12px;
   font-size: 14px;
-  background: var(--sp-bg);
+  background: var(--sp-bg-2);
   color: var(--sp-fg);
 }
 
 /* Stock pill. */
-.sp-stock { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; padding: 4px 12px; border-radius: var(--sp-radius-pill); font-size: 12px; font-weight: 700; }
-.sp-stock.in { background: rgba(22, 163, 74, 0.12); color: var(--sp-ok); }
-.sp-stock.low { background: rgba(245, 158, 11, 0.14); color: var(--sp-warn); }
-.sp-stock.out { background: rgba(220, 38, 38, 0.12); color: var(--sp-err); }
+.sp-stock { display: inline-flex; align-items: center; gap: 6px; margin-top: 16px; padding: 5px 13px; border-radius: var(--sp-radius-pill); font-size: 12px; font-weight: 700; }
+.sp-stock::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.sp-stock.in { background: rgba(52, 211, 153, 0.14); color: var(--sp-ok); }
+.sp-stock.low { background: rgba(251, 191, 36, 0.16); color: var(--sp-warn); }
+.sp-stock.out { background: rgba(251, 113, 133, 0.14); color: var(--sp-err); }
 
 /* Quantity stepper. */
-.sp-qty-row { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+.sp-qty-row { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
 .sp-qty-label { font-size: 13px; font-weight: 600; color: var(--sp-muted); }
 .sp-qty-stepper { display: inline-flex; align-items: center; border: 1.5px solid var(--sp-border); border-radius: var(--sp-radius-pill); overflow: hidden; }
 .sp-qty-btn {
-  width: 40px; height: 40px;
+  width: 42px; height: 42px;
   border: 0;
-  background: var(--sp-bg);
+  background: var(--sp-bg-2);
   color: var(--sp-fg);
   font-size: 20px;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease;
 }
 .sp-qty-btn:hover { background: var(--sp-brand-soft); color: var(--sp-brand); }
-.sp-qty-val { font-size: 15px; font-weight: 700; min-width: 36px; text-align: center; }
+.sp-qty-val { font-size: 15px; font-weight: 700; min-width: 38px; text-align: center; font-variant-numeric: tabular-nums; }
 
-/* Action buttons — Add to cart + Buy It Now. */
-.sp-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 20px; }
+/* Action buttons — Add to bag + Buy It Now. */
+.sp-actions { display: flex; flex-direction: column; gap: 10px; margin-top: 22px; }
 .sp-add {
   width: 100%;
-  height: 52px;
+  height: 54px;
   border: 1.5px solid var(--sp-brand);
   border-radius: var(--sp-radius-btn);
-  background: var(--sp-bg);
+  background: transparent;
   color: var(--sp-brand);
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
+  font-variant-numeric: tabular-nums;
   transition: all 0.15s ease;
 }
 .sp-add:disabled { border-color: var(--sp-border); background: var(--sp-card); color: var(--sp-muted); cursor: not-allowed; }
 .sp-add:hover:not(:disabled) { background: var(--sp-brand-soft); }
 .sp-buy-now {
   width: 100%;
-  height: 52px;
+  height: 54px;
   border: 0;
   border-radius: var(--sp-radius-btn);
   background: var(--sp-grad);
@@ -748,15 +852,43 @@
   font-size: 15px;
   font-weight: 800;
   cursor: pointer;
-  box-shadow: 0 8px 24px var(--sp-brand-glow);
+  box-shadow: var(--sp-glow);
   transition: filter 0.15s ease, transform 0.1s ease;
 }
 .sp-buy-now:hover:not(:disabled) { filter: brightness(1.08); }
 .sp-buy-now:active:not(:disabled) { transform: translateY(1px); }
 .sp-buy-now:disabled { background: var(--sp-muted); box-shadow: none; cursor: not-allowed; }
 
+/* Ask-Aria concierge card — ties the voice pipeline into the PDP. */
+.sp-aria-assist {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--sp-border);
+  border-radius: var(--sp-radius);
+  background: var(--sp-grad-soft);
+  color: var(--sp-fg);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, transform 0.12s ease;
+}
+.sp-aria-assist:hover { border-color: var(--sp-brand); transform: translateY(-1px); }
+.sp-aria-assist .sp-aria-orb {
+  flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%;
+  background: var(--sp-grad); color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 14px var(--sp-brand-glow);
+}
+.sp-aria-assist .sp-aria-orb svg { width: 20px; height: 20px; }
+.sp-aria-assist .sp-aria-copy { flex: 1; min-width: 0; }
+.sp-aria-assist .sp-aria-copy strong { display: block; font-size: 14px; font-weight: 700; }
+.sp-aria-assist .sp-aria-copy span { display: block; font-size: 12.5px; color: var(--sp-muted); margin-top: 1px; }
+
 /* Accordion tabs (Description / Shipping / Returns / Specifications). */
-.sp-accordions { margin-top: 24px; border-top: 1px solid var(--sp-border); }
+.sp-accordions { margin-top: 26px; border-top: 1px solid var(--sp-border); }
 .sp-accordion { border-bottom: 1px solid var(--sp-border); }
 .sp-accordion-head {
   width: 100%;
@@ -787,11 +919,11 @@
 .sp-accordion-body img, .sp-accordion-body video { max-width: 100%; border-radius: 8px; }
 .sp-specs { width: 100%; border-collapse: collapse; }
 .sp-specs tr { border-bottom: 1px solid var(--sp-border); }
-.sp-specs td { padding: 8px 4px; font-size: 13px; }
+.sp-specs td { padding: 9px 4px; font-size: 13px; }
 .sp-specs td:first-child { font-weight: 600; color: var(--sp-fg); width: 40%; }
 
 /* Legacy PDP fields kept for back-compat. */
-.sp-pdp-desc { margin-top: 10px; font-size: 13px; color: var(--sp-muted); line-height: 1.6; }
+.sp-pdp-desc { margin-top: 10px; font-size: 14px; color: var(--sp-muted); line-height: 1.7; }
 .sp-pdp-desc img, .sp-pdp-desc video { max-width: 100%; border-radius: 8px; }
 
 /* ── Compare view ── */
@@ -807,21 +939,21 @@
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius);
   overflow: hidden;
-  background: var(--sp-bg);
+  background: var(--sp-card);
   display: flex;
   flex-direction: column;
 }
 .sp-compare-col img { width: 100%; aspect-ratio: 1/1; object-fit: cover; background: var(--sp-card); }
 .sp-compare-col .sp-cmp-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .sp-cmp-title { font-size: 14px; font-weight: 700; line-height: 1.3; }
-.sp-cmp-price { font-size: 16px; font-weight: 800; }
+.sp-cmp-price { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .sp-cmp-price .sp-card-compare { font-size: 12px; margin-left: 6px; }
 .sp-cmp-attr { font-size: 12px; color: var(--sp-muted); display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-top: 1px dashed var(--sp-border); }
 .sp-cmp-attr b { color: var(--sp-fg); font-weight: 600; text-align: right; }
 .sp-cmp-view {
   margin-top: auto;
   border: 0; border-radius: var(--sp-radius-btn); background: var(--sp-grad); color: #fff;
-  padding: 10px; font-size: 13px; font-weight: 700; cursor: pointer;
+  padding: 11px; font-size: 13px; font-weight: 700; cursor: pointer;
 }
 .sp-compare-bar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
@@ -829,13 +961,14 @@
 }
 .sp-compare-bar .sp-cmp-chip {
   display: inline-flex; align-items: center; gap: 6px;
-  background: var(--sp-brand-soft); color: var(--sp-brand-2);
+  background: var(--sp-brand-soft); color: var(--sp-fg);
+  border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius-pill); padding: 5px 6px 5px 12px; font-size: 12px; font-weight: 600;
 }
 .sp-compare-bar .sp-cmp-chip button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; }
 .sp-compare-bar .sp-cmp-go {
   border: 0; border-radius: var(--sp-radius-pill); background: var(--sp-grad); color: #fff;
-  padding: 6px 16px; font-size: 12px; font-weight: 700; cursor: pointer;
+  padding: 7px 17px; font-size: 12px; font-weight: 700; cursor: pointer;
 }
 
 /* ── Cart view ── */
@@ -845,16 +978,16 @@
   align-items: center;
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius);
-  padding: 10px;
+  padding: 11px;
   margin-bottom: 10px;
-  background: var(--sp-bg);
+  background: var(--sp-card);
 }
 .sp-cart-line img {
   width: 64px;
   height: 64px;
   object-fit: cover;
   border-radius: var(--sp-radius-btn);
-  background: var(--sp-card);
+  background: var(--sp-bg-2);
 }
 .sp-cart-line .sp-cl-body { flex: 1; min-width: 0; }
 .sp-cart-line .sp-cl-title { font-size: 13px; font-weight: 600; line-height: 1.3; }
@@ -863,39 +996,39 @@
 .sp-cart-line .sp-cl-qty button {
   width: 26px; height: 26px;
   border: 1px solid var(--sp-border);
-  background: var(--sp-bg);
-  border-radius: 6px;
+  background: var(--sp-bg-2);
+  border-radius: 8px;
   cursor: pointer;
   font-size: 14px;
   color: var(--sp-fg);
 }
-.sp-cart-line .sp-cl-price { font-size: 14px; font-weight: 700; }
+.sp-cart-line .sp-cl-price { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .sp-cart-line .sp-cl-remove { color: var(--sp-err); font-size: 12px; cursor: pointer; background: none; border: 0; }
 
 .sp-cart-summary {
   margin-top: 8px;
-  padding: 14px;
+  padding: 16px;
   border: 1px solid var(--sp-border);
   border-radius: var(--sp-radius);
   background: var(--sp-card);
 }
-.sp-cart-summary .sp-row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
-.sp-cart-summary .sp-row.total { font-weight: 800; font-size: 16px; margin-top: 8px; border-top: 1px solid var(--sp-border); padding-top: 8px; }
+.sp-cart-summary .sp-row { display: flex; justify-content: space-between; margin: 5px 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.sp-cart-summary .sp-row.total { font-weight: 800; font-size: 16px; margin-top: 8px; border-top: 1px solid var(--sp-border); padding-top: 10px; }
 
 .sp-discount-row { display: flex; gap: 8px; margin-top: 12px; }
 .sp-discount-row input {
-  flex: 1; height: 44px; border: 1px solid var(--sp-border); border-radius: var(--sp-radius-btn); padding: 0 12px;
-  font-size: 13px; background: var(--sp-bg); color: var(--sp-fg); text-transform: uppercase;
+  flex: 1; height: 46px; border: 1px solid var(--sp-border); border-radius: var(--sp-radius-btn); padding: 0 12px;
+  font-size: 13px; background: var(--sp-bg-2); color: var(--sp-fg); text-transform: uppercase;
 }
 .sp-discount-row button {
-  height: 44px; padding: 0 16px; border: 0; border-radius: var(--sp-radius-btn);
+  height: 46px; padding: 0 18px; border: 0; border-radius: var(--sp-radius-btn);
   background: var(--sp-brand); color: #fff; font-weight: 600; cursor: pointer; font-size: 13px;
 }
 
 .sp-checkout {
   margin-top: 14px;
   width: 100%;
-  height: 52px;
+  height: 54px;
   border: 0;
   border-radius: var(--sp-radius-btn);
   background: var(--sp-grad);
@@ -903,13 +1036,13 @@
   font-size: 15px;
   font-weight: 800;
   cursor: pointer;
-  box-shadow: 0 8px 24px var(--sp-brand-glow);
+  box-shadow: var(--sp-glow);
 }
 .sp-checkout:disabled { background: var(--sp-muted); box-shadow: none; cursor: not-allowed; }
 .sp-email-row { margin-top: 10px; }
 .sp-email-row input {
-  width: 100%; height: 44px; border: 1px solid var(--sp-border); border-radius: var(--sp-radius-btn); padding: 0 12px;
-  font-size: 14px; background: var(--sp-bg); color: var(--sp-fg);
+  width: 100%; height: 46px; border: 1px solid var(--sp-border); border-radius: var(--sp-radius-btn); padding: 0 12px;
+  font-size: 14px; background: var(--sp-bg-2); color: var(--sp-fg);
 }
 
 .sp-empty {
@@ -941,22 +1074,29 @@
 }
 .sp-toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
 .sp-toast.err { background: var(--sp-err); color: #fff; }
-.sp-toast.ok { background: var(--sp-ok); color: #fff; }
+.sp-toast.ok { background: var(--sp-ok); color: #05271b; }
 
 .sp-spinner {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   border: 3px solid var(--sp-border);
   border-top-color: var(--sp-brand);
   animation: sp-spin 0.8s linear infinite;
-  margin: 40px auto;
+  margin: 44px auto;
 }
 @keyframes sp-spin { to { transform: rotate(360deg); } }
 
-.sp-section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--sp-muted); margin: 14px 0 8px; }
+.sp-section-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--sp-muted); margin: 14px 0 8px; }
 
 .speako-root ::placeholder { color: var(--sp-muted); opacity: 0.7; }
+
+/* Keyboard focus — visible ring on every interactive element (a11y). */
+.speako-root :focus-visible {
+  outline: 2px solid var(--sp-brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
 
 /* ══ NATIVE PRODUCT PAGE LAYER (light DOM → theme CSS applies) — opt-in only ══ */
 #speako-native-pdp {
@@ -1006,7 +1146,7 @@
   min-width: 16px;
   height: 16px;
   border-radius: 8px;
-  background: var(--sp-brand, #7c3aed);
+  background: var(--sp-brand, #ec4899);
   color: #fff;
   font-size: 10px;
   font-weight: 700;
