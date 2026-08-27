@@ -6,7 +6,7 @@
     rest_url: '',
     nonce: '',
     store_name: 'Store',
-    primary_color: '#ec4899',
+    primary_color: '#8b5cff',
     widget_position: 'bottom-right',
     enable_voice: true,
     language: 'en',
@@ -65,7 +65,7 @@
           store_name: CFG.store_name,
           currency: CFG.currency,
           nativePdp: CFG.native_pdp || 'on',
-          primary_color: CFG.primary_color || '#ec4899'
+          primary_color: CFG.primary_color || '#8b5cff'
         });
         console.log('[WooAgent Overlay] bridge.setConfig() called OK');
       } else {
@@ -215,7 +215,7 @@
     const m = (x, y) => Math.round(x * f + y * (1 - f));
     return `rgb(${m(ca.r, cb.r)},${m(ca.g, cb.g)},${m(ca.b, cb.b)})`;
   }
-  const PC = CFG.primary_color || '#ec4899';
+  const PC = CFG.primary_color || '#8b5cff';
 
   const host = document.createElement('div');
   host.id = '_wooagent_root';
@@ -234,7 +234,7 @@
       --p-lo: ${_waAlpha(PC, 14)};
       --p-md: ${_waAlpha(PC, 30)};
       /* Signature gradient — derived from the merchant's colour so it always
-         re-tints, defaulting to Speako's rose→deep-magenta. */
+         re-tints, defaulting to Speako's iris→azure violet. */
       --grad: linear-gradient(135deg, var(--p-hi) 0%, var(--p) 54%, var(--p2) 100%);
       /* ── Midnight Concierge dark theme (default) ── */
       --bg0:  #0b0712;
@@ -347,7 +347,7 @@
     /* Ambient pulsing ring — subtle at idle, energetic while listening. */
     .wa-fab-orb::before {
       content:''; position: absolute; inset: 0;
-      border-radius: 50%; border: 1.5px solid var(--p, #ec4899);
+      border-radius: 50%; border: 1.5px solid var(--p, #8b5cff);
       opacity: 0; animation: wa-ripple 3.5s ease-out infinite;
       pointer-events: none;
     }
@@ -1396,11 +1396,9 @@
 
     <button class="wa-fab" id="wa-fab" aria-label="Talk with our AI" aria-expanded="false">
       <span class="wa-fab-orb">
-        <svg class="wa-fab-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect x="9" y="2.5" width="6" height="11" rx="3" fill="white"/>
-          <path d="M5.5 11a6.5 6.5 0 0 0 13 0" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
-          <line x1="12" y1="17.5" x2="12" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
-          <line x1="8.5" y1="21" x2="15.5" y2="21" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+        <svg class="wa-fab-icon" width="22" height="22" viewBox="0 0 24 24" fill="white" aria-hidden="true">
+          <path d="M12.5 3c.5 5.5 1 6 6.5 6.5-5.5.5-6 1-6.5 6.5-.5-5.5-1-6-6.5-6.5 5.5-.5 6-1 6.5-6.5z"/>
+          <path d="M6.3 15c.2 3 .3 3.1 3.3 3.3-3 .2-3.1.3-3.3 3.3-.2-3-.3-3.1-3.3-3.3 3-.2 3.1-.3 3.3-3.3z"/>
         </svg>
       </span>
       <span class="wa-fab-label">Talk with our AI</span>
@@ -1903,6 +1901,31 @@
             kick();
           });
         }
+        // Overlay Add-to-cart (PDP button OR chat) → the SAME native theme cart
+        // the customer sees at /cart. Registered UNCONDITIONALLY (not behind the
+        // voice gate) so every overlay add lands in the real cart. The overlay
+        // shows an optimistic toast; we push the authoritative count back so its
+        // header badge matches /cart exactly. Never opens the theme drawer — the
+        // fullscreen overlay is on top, so a drawer would be hidden.
+        _ovVoice.on('addtocart', (data) => {
+          (async () => {
+            try {
+              await addToCartDispatch(data || {});
+              if (IS_SHOPIFY) {
+                await new Promise(r => setTimeout(r, 250));
+                await fetchCartShopify(false);
+              }
+              const snap = S.cartSnapshot || {};
+              const n = (snap.item_count != null) ? snap.item_count
+                      : (snap.count != null ? snap.count : 0);
+              try { if (_ovVoice.nativeCartCount) _ovVoice.nativeCartCount(n); } catch (_e) {}
+            } catch (e) {
+              const msg = (e && e.message) ? String(e.message) : 'Could not add to cart.';
+              console.error('[WooAgent A2C] overlay add-to-cart failed:', msg);
+              try { if (_ovVoice.nativeCartError) _ovVoice.nativeCartError(msg); } catch (_e) {}
+            }
+          })();
+        });
       }
     } catch (e) {}
   }
@@ -2204,7 +2227,7 @@ try {
           const h = Math.max(3, val * 28);
           const y = (32 - h) / 2;
           const alpha = 0.4 + val * 0.6;
-          c.fillStyle = hexToRgba(CFG.primary_color || '#ec4899', alpha);
+          c.fillStyle = hexToRgba(CFG.primary_color || '#8b5cff', alpha);
           drawRounded(c, i * (barW + gap), y, barW, h, 2);
         }
       })();
@@ -3255,7 +3278,7 @@ try {
               try { c.removeAttribute('data-wa-glowed'); } catch (_e) {}
             });
             target.style.outline = 'none';
-            target.style.border = '2px solid ' + (CFG.primary_color || '#ec4899');
+            target.style.border = '2px solid ' + (CFG.primary_color || '#8b5cff');
             target.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
             target.style.transition = 'all 0.3s ease-in-out';
             try { target.setAttribute('data-wa-glowed', '1'); } catch (_e) {}
@@ -3299,7 +3322,7 @@ try {
           if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
             window.scrollBy({ top: -90, behavior: 'instant' });
-            el.style.outline = '3px solid ' + (CFG.primary_color || '#ec4899');
+            el.style.outline = '3px solid ' + (CFG.primary_color || '#8b5cff');
             el.style.boxShadow = '0 0 20px rgba(99, 102, 241, 0.85)';
             el.style.transition = 'all 0.3s ease-in-out';
             setTimeout(() => {
@@ -7622,7 +7645,7 @@ if (statusTxt) statusTxt.textContent = text;
         const _glowStyle = (card, on) => {
           if (!card) return;
           card.style.outline = on ? 'none' : '';
-          card.style.border = on ? ('2px solid ' + (CFG.primary_color || '#ec4899')) : '';
+          card.style.border = on ? ('2px solid ' + (CFG.primary_color || '#8b5cff')) : '';
           card.style.boxShadow = on ? '0 0 20px rgba(99, 102, 241, 0.85)' : '';
           card.style.transition = 'all 0.3s ease-in-out';
           if (on) card.setAttribute('data-wa-glowed', '1');

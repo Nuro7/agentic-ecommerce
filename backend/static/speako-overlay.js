@@ -555,8 +555,7 @@
         }
         case 'show_cart':
         case 'cart_updated':
-          _this.open('cart', {});
-          return _this._loadCart();
+          return _this._showCartExits();
         case 'compare_products': {
           // Accept handles from payload.handles, payload.products[].handle, or
           // whatever is already staged in the compare tray.
@@ -569,8 +568,7 @@
           return _this._loadCompare(reqHandles);
         }
         case 'apply_discount_code':
-          _this.open('cart', { applyCode: p.code || p.discount_code || '' });
-          return _this._loadCart();
+          return _this._showCartExits({ code: p.code || p.discount_code || '' });
         case 'highlight_card':
           _this._highlightCard(p);
           return;
@@ -713,8 +711,10 @@
       var q = (_this._els.voiceInput.value || '').trim();
       if (!q) return;
       _this._els.voiceInput.value = '';
-      _this.pushView('search', { query: q });
-      _this._loadSearch(q);
+      // Typed text is a conversation with Aria (the Brain), not a bare catalog
+      // lookup: it shares the live-voice memory (same session id) and handles
+      // arbitrary input — greetings, questions, "no such product" — gracefully.
+      _this._chat(q);
     };
     this._els.voiceInput.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); submitVoice(); }
@@ -901,6 +901,235 @@
     });
   };
 
+  /* ── Conversational chat → the Brain (POST /api/v1/chat) ──
+     Text typed in the overlay talks to the full agent, NOT the stateless
+     /overlay/search. Memory is shared with live voice because both read the
+     SAME session id from localStorage('_wa_sid_v2') — the widget bridge owns
+     that key for the voice WebSocket. One id ⇒ one Redis session ⇒ Aria
+     remembers across voice + text + navigation. */
+  proto._sid = function () {
+    var mk = function () {
+      return 's_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+    };
+    try {
+      var id = localStorage.getItem('_wa_sid_v2');
+      if (!id) { id = mk(); localStorage.setItem('_wa_sid_v2', id); }
+      return id;
+    } catch (e) {
+      if (!this.__sid) this.__sid = mk();
+      return this.__sid;
+    }
+  };
+
+  // Coerce a Brain product (show_products payload) into the card shape the grid
+  // renderer expects, tolerating scalar prices / image arrays. Products come
+  // from the same store client as /overlay/search, so this is mostly a no-op —
+  // it exists so a shape drift never blanks the shelf.
+  proto._normProduct = function (p) {
+    if (!p || typeof p !== 'object') return p;
+    var money = function (v) { return v == null ? null : (typeof v === 'object' ? v : { amount: v }); };
+    var out = {};
+    for (var k in p) { if (Object.prototype.hasOwnProperty.call(p, k)) out[k] = p[k]; }
+    if (out.price != null) out.price = money(out.price);
+    if (out.compare_at_price != null) out.compare_at_price = money(out.compare_at_price);
+    if (!out.image) {
+      var img = p.featured_image || p.thumbnail || '';
+      if (!img && Array.isArray(p.images) && p.images.length) {
+        var f = p.images[0];
+        img = typeof f === 'string' ? f : (f && (f.src || f.url)) || '';
+      }
+      if (!img && p.image && typeof p.image === 'object') img = p.image.src || p.image.url || '';
+      out.image = img || '';
+    }
+    return out;
+  };
+
+  proto._chat = function (message) {
+    var _this = this;
+    var msg = String(message || '').trim();
+    if (!msg) return Promise.resolve();
+    if (this._chatBusy) return Promise.resolve();
+    this._chatBusy = true;
+
+    // Optimistic: show the question + a typing shimmer the instant they send.
+    this._showChat({ user: msg, thinking: true });
+
+    var base = this.cfg.apiBase || '';
+    var url = base + '/api/v1/chat';
+    if (this.cfg.shop) url += '?shop=' + encodeURIComponent(this.cfg.shop);
+    var payload = {
+      session_id: this._sid(),
+      message: msg,
+      message_type: 'text',
+      language: this.cfg.language || 'en',
+      store_name: this.cfg.storeName || '',
+      store_url: (typeof location !== 'undefined' ? location.origin : ''),
+      current_page: (typeof location !== 'undefined')
+        ? { url: location.href, title: (typeof document !== 'undefined' ? document.title : '') }
+        : {}
+    };
+
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function (resp) {
+      return resp.json().catch(function () { return {}; }).then(function (data) {
+        if (!resp.ok) {
+          var e = new Error((data && data.detail) || ('Chat failed (' + resp.status + ')'));
+          e.status = resp.status;
+          throw e;
+        }
+        return data;
+      });
+    }).then(function (r) {
+      _this._chatBusy = false;
+      _this._applyChatResponse(msg, r || {});
+    }).catch(function (err) {
+      _this._chatBusy = false;
+      _this._showChat({
+        user: msg,
+        aria: 'I had trouble reaching the store just now. Mind trying that again?',
+        suggestions: []
+      });
+      _this.emit('storefailure', { message: msg, error: (err && err.message) || String(err) });
+    });
+  };
+
+  // Turn a /chat response into overlay UI. A product list drives the concierge
+  // shelf (search view) with Aria's line as the answer copy; product-detail /
+  // cart / compare / redirect reuse the existing action dispatcher so they work
+  // from text too; anything else is a plain conversational reply — so "hi",
+  // "what's your return policy", or "no such product" read like a real
+  // assistant instead of a jarring "0 results".
+  proto._applyChatResponse = function (userMsg, r) {
+    var _this = this;
+    var text = (r.text || r.response_text || '').toString();
+    var actions = r.ui_actions || r.actions || [];
+    if (!Array.isArray(actions)) actions = [];
+    var suggestions = (r.suggested_replies || r.suggestions || []);
+    if (!Array.isArray(suggestions)) suggestions = [];
+    suggestions = suggestions.map(function (s) {
+      return typeof s === 'string' ? s : (s && (s.title || s.label || s.text || s.reply)) || '';
+    }).filter(Boolean);
+
+    var find = function (types) {
+      for (var i = 0; i < actions.length; i++) {
+        if (actions[i] && types.indexOf(actions[i].type) !== -1) return actions[i];
+      }
+      return null;
+    };
+    // Drop the transient "thinking" chat card before navigating to a real view,
+    // so Back never lands on a stale typing bubble.
+    var dropThinking = function () {
+      var top = _this._stack.top();
+      if (top && top.view === 'chat') _this._stack.pop();
+    };
+
+    // A) Product shelf — render directly so Aria's copy becomes the answer line.
+    var listAct = find(['show_products']);
+    if (listAct) {
+      var payload = listAct.payload || {};
+      var prods = (payload.products || []).map(function (p) { return _this._normProduct(p); });
+      var q = payload.query || userMsg;
+      dropThinking();
+      _this.open('search', { query: q, products: prods });
+      _this._render('search', { query: q, products: prods, message: text || null, filters: payload.filters || {} });
+      return;
+    }
+
+    // B) A single product / availability card.
+    var detailAct = find(['show_product_detail', 'show_availability']);
+    if (detailAct) { dropThinking(); if (text) _this._toast(text); return _this.handle(detailAct); }
+
+    // C) Add-to-cart from chat → forward to the NATIVE cart the customer sees
+    //    (the bridge owns /cart/add.js), then confirm in-thread and let them
+    //    keep browsing. We never surface the overlay's own cart page.
+    var addAct = find(['add_to_cart']);
+    if (addAct) {
+      var ap = addAct.payload || {};
+      _this.emit('addtocart', {
+        variant_id: _this._nativeAddId(ap.variation_id || ap.variant_id || ''),
+        quantity: ap.quantity || 1,
+        product_id: ap.product_id != null ? ap.product_id : null,
+        handle: ap.handle || null
+      });
+      return _this._showChat({
+        user: userMsg,
+        aria: text || 'Added to your cart. Want to keep looking, or head to checkout?',
+        suggestions: suggestions.length ? suggestions : ['Show my cart', 'Keep shopping']
+      });
+    }
+
+    // D) "Show my cart" / cart changed / discount → the two Shopify-native exits
+    //    (View Cart + Checkout). No in-overlay cart or checkout page.
+    var cartAct = find(['show_cart', 'cart_updated', 'apply_discount_code']);
+    if (cartAct) {
+      dropThinking();
+      if (text) _this._toast(text);
+      var cp = cartAct.payload || {};
+      return _this._showCartExits(
+        cartAct.type === 'apply_discount_code'
+          ? { code: cp.code || cp.discount_code || '' }
+          : {}
+      );
+    }
+
+    // D/E/F) Compare / redirect / explicit search → existing dispatcher.
+    var viewAct = find(['compare_products', 'redirect', 'redirect_checkout', 'redirect_checkout_with_address', 'search']);
+    if (viewAct) { dropThinking(); if (text) _this._toast(text); return _this.handle(viewAct); }
+
+    // G) Pure conversation — a proper concierge reply, in place.
+    _this._showChat({
+      user: userMsg,
+      aria: text || 'I’m right here. Tell me what you’re after — a product, your cart, or an order.',
+      suggestions: suggestions
+    });
+  };
+
+  // Push (or update in place) the conversational chat view.
+  proto._showChat = function (params) {
+    var top = this._stack.top();
+    if (top && top.view === 'chat') { top.params = params; this._render('chat', params); }
+    else { this.pushView('chat', params); }
+  };
+
+  proto._renderChat = function (params) {
+    var _this = this;
+    params = params || {};
+    var user = params.user || '';
+    var aria = params.aria || '';
+    var thinking = !!params.thinking;
+    var suggestions = params.suggestions || [];
+
+    var userHtml = user
+      ? '<div class="sp-msg sp-msg-user"><div class="sp-bubble">' + escapeHtml(user) + '</div></div>'
+      : '';
+
+    var ariaInner = thinking
+      ? '<div class="sp-typing"><span></span><span></span><span></span></div>'
+      : escapeHtml(aria).replace(/\n/g, '<br>');
+    var ariaHtml = (aria || thinking)
+      ? '<div class="sp-msg sp-msg-aria">' +
+          '<span class="sp-msg-avatar">' + SVG.sparkles + '</span>' +
+          '<div class="sp-bubble">' + ariaInner + '</div>' +
+        '</div>'
+      : '';
+
+    var chips = '';
+    if (!thinking && suggestions.length) {
+      chips = '<div class="sp-chat-suggest">' + suggestions.slice(0, 4).map(function (s) {
+        return '<button class="sp-chat-chip" data-chat-suggest="' + escapeAttr(s) + '">' + escapeHtml(s) + '</button>';
+      }).join('') + '</div>';
+    }
+
+    this._els.body.innerHTML = '<div class="sp-chat">' + userHtml + ariaHtml + chips + '</div>';
+
+    this._els.body.querySelectorAll('[data-chat-suggest]').forEach(function (btn) {
+      btn.addEventListener('click', function () { _this._chat(btn.getAttribute('data-chat-suggest')); });
+    });
+  };
+
   proto._loadSearch = function (query, filters) {
     var _this = this;
     if (!query) {
@@ -1033,6 +1262,139 @@
     if (this._els && this._els.badge) this._els.badge.textContent = String(count || 0);
   };
 
+  /* ── Native Shopify cart (the ONE cart the customer sees at /cart) ────────
+   * The overlay never keeps its own cart page. Adds are forwarded to the
+   * widget bridge, which owns the native theme cart (/cart/add.js etc.); the
+   * bridge pushes the authoritative count back via nativeCartCount(). "Show
+   * cart" opens a two-exit screen (View Cart + Checkout) that hard-navigates
+   * to the store's own /cart and /checkout — no in-overlay cart or checkout. */
+
+  // Storefront variant GIDs carry the numeric theme/AJAX variant id as their
+  // suffix (gid://shopify/ProductVariant/123 → 123), which is exactly what
+  // /cart/add.js needs; a bare numeric id passes through unchanged.
+  proto._nativeAddId = function (variantId) {
+    var s = String(variantId == null ? '' : variantId);
+    var tail = (s.indexOf('/') !== -1 ? s.split('/').pop() : s).split('?')[0];
+    var m = tail.match(/\d+/);
+    return m ? m[0] : '';
+  };
+
+  // Forward an add to the widget bridge (native cart). Optimistic toast now;
+  // the bridge confirms with the real count via nativeCartCount().
+  proto._nativeAdd = function (variantId, quantity, extra) {
+    var id = this._nativeAddId(variantId);
+    extra = extra || {};
+    if (!id) { this._toast('Choose a variant first.', true); return; }
+    this._pendingAdd = true;
+    this._toast('Adding to cart…');
+    this.emit('addtocart', {
+      variant_id: id,
+      quantity: Math.max(1, parseInt(quantity, 10) || 1),
+      product_id: extra.product_id != null ? extra.product_id : null,
+      handle: extra.handle || null,
+      permalink: extra.permalink || null
+    });
+  };
+
+  // Two-exit "show cart" screen. Opens the overlay on the cartexit view and
+  // reads the live native cart for a summary; both buttons leave to the store.
+  proto._showCartExits = function (params) {
+    params = params || {};
+    var top = this._stack && this._stack.top && this._stack.top();
+    if (this._open && top && top.view === 'cartexit') {
+      top.params = params;
+      this._render('cartexit', params);
+    } else {
+      this.open('cartexit', params);
+    }
+    return this._loadNativeCart();
+  };
+
+  // Read the native theme cart same-origin (/cart.js) for the exit-screen
+  // summary + header badge. Never throws into the UI.
+  proto._loadNativeCart = function () {
+    var _this = this;
+    if (typeof fetch === 'undefined') { return Promise.resolve(); }
+    return fetch('/cart.js', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r && r.ok ? r.json() : null; })
+      .catch(function () { return null; })
+      .then(function (cart) {
+        _this._nativeCart = cart || null;
+        if (cart && cart.item_count != null) _this._badge(cart.item_count);
+        var top = _this._stack && _this._stack.top && _this._stack.top();
+        if (top && top.view === 'cartexit') _this._render('cartexit', { cart: cart });
+      });
+  };
+
+  proto._renderCartExits = function (params) {
+    var _this = this;
+    params = params || {};
+    var cart = params.cart || this._nativeCart || null;
+    var origin = (typeof location !== 'undefined') ? location.origin : '';
+    var count = (cart && cart.item_count != null) ? cart.item_count : null;
+    var money = function (cents) {
+      var cur = (cart && cart.currency) || (_this.cfg && _this.cfg.currency) || '';
+      return (cur ? cur + ' ' : '') + ((Number(cents) || 0) / 100).toFixed(2);
+    };
+    var summary;
+    if (count === 0) {
+      summary = '<p class="sp-cartx-empty">Your cart is empty — add something you love and it’ll show up here.</p>';
+    } else if (count == null) {
+      summary = '<p class="sp-cartx-sub">Your cart is ready on the store.</p>';
+    } else {
+      var items = (cart.items || []).slice(0, 4).map(function (it) {
+        var img = it.image
+          ? '<img class="sp-cartx-thumb" src="' + escapeAttr(it.image) + '" alt="" loading="lazy">'
+          : '<span class="sp-cartx-thumb sp-cartx-thumb-ph"></span>';
+        return '<li class="sp-cartx-item">' + img +
+          '<span class="sp-cartx-name">' + escapeHtml(it.product_title || it.title || 'Item') + '</span>' +
+          '<span class="sp-cartx-qty">×' + (it.quantity || 1) + '</span></li>';
+      }).join('');
+      var more = (cart.items && cart.items.length > 4)
+        ? '<li class="sp-cartx-more">+' + (cart.items.length - 4) + ' more</li>' : '';
+      summary = '<p class="sp-cartx-sub">' + count + (count === 1 ? ' item' : ' items') +
+        ' · <strong>' + money(cart.total_price) + '</strong></p>' +
+        '<ul class="sp-cartx-items">' + items + more + '</ul>';
+    }
+    var note = params.code
+      ? '<p class="sp-cartx-note">Enter code <strong>' + escapeHtml(params.code) + '</strong> at checkout to apply it.</p>'
+      : '<p class="sp-cartx-note">You’ll continue on the store’s own secure pages.</p>';
+    this._els.body.innerHTML =
+      '<div class="sp-cartx">' +
+        '<div class="sp-cartx-orb">' + SVG.sparkles + '</div>' +
+        '<h2 class="sp-cartx-title">Your cart</h2>' +
+        summary +
+        '<div class="sp-cartx-actions">' +
+          '<button class="sp-btn sp-cartx-view" data-cartx="cart">View Cart</button>' +
+          '<button class="sp-btn sp-cartx-checkout" data-cartx="checkout">Checkout</button>' +
+        '</div>' +
+        note +
+      '</div>';
+    var go = function (path) {
+      if (!origin) return;
+      try { _this.beginCheckoutRedirect({ message: 'Taking you to the store…' }); } catch (e) {}
+      try { location.href = origin + path; } catch (e) {}
+    };
+    var vc = this._els.body.querySelector('[data-cartx="cart"]');
+    var co = this._els.body.querySelector('[data-cartx="checkout"]');
+    if (vc) vc.addEventListener('click', function () { go('/cart'); });
+    if (co) co.addEventListener('click', function () { go('/checkout'); });
+  };
+
+  // Pushed IN from the widget bridge after a native add settles: authoritative
+  // count → header badge, and confirm the optimistic add.
+  proto.nativeCartCount = function (n) {
+    this._badge(n || 0);
+    if (this._pendingAdd) { this._pendingAdd = false; this._toast('Added to cart ✓'); this._popCart(); }
+    var top = this._stack && this._stack.top && this._stack.top();
+    if (top && top.view === 'cartexit') this._loadNativeCart();
+  };
+
+  proto.nativeCartError = function (msg) {
+    this._pendingAdd = false;
+    this._toast(msg || 'Could not add to cart.', true);
+  };
+
   // The visible PDP hero image, used as the source of the fly-to-cart clone.
   proto._pdpHeroImg = function () {
     if (!this._els || !this._els.body) return null;
@@ -1078,13 +1440,13 @@
       clone.setAttribute('aria-hidden', 'true');
       clone.style.cssText =
         'position:fixed;z-index:2147483647;pointer-events:none;border-radius:14px;' +
-        'background:#fff center/cover no-repeat;box-shadow:0 10px 30px rgba(236,72,153,0.5);' +
+        'background:#fff center/cover no-repeat;box-shadow:0 10px 30px rgba(139,92,255,0.5);' +
         'transition:transform 0.72s cubic-bezier(0.22,0.68,0.3,1),opacity 0.72s ease;' +
         'left:' + (s.left + s.width / 2 - size / 2) + 'px;' +
         'top:' + (s.top + s.height / 2 - size / 2) + 'px;' +
         'width:' + size + 'px;height:' + size + 'px;';
       if (imgUrl) clone.style.backgroundImage = 'url("' + imgUrl.replace(/"/g, '\\"') + '")';
-      else clone.style.background = 'var(--sp-brand, #ec4899)';
+      else clone.style.background = 'var(--sp-brand, #8b5cff)';
       document.body.appendChild(clone);
 
       var dx = (t.left + t.width / 2) - (s.left + s.width / 2);
@@ -1139,6 +1501,8 @@
       else if (view === 'pdp') t = (params.product && params.product.title) || 'Product';
       else if (view === 'cart') t = 'Your cart';
       else if (view === 'compare') t = 'Compare';
+      else if (view === 'chat') t = 'Aria';
+      else if (view === 'cartexit') t = 'Your cart';
       titleEl.textContent = t;
     }
     if (view === 'home') this._renderHome(params);
@@ -1146,6 +1510,8 @@
     else if (view === 'pdp') this._renderPdp(params);
     else if (view === 'cart') this._renderCart(params);
     else if (view === 'compare') this._renderCompare(params);
+    else if (view === 'chat') this._renderChat(params);
+    else if (view === 'cartexit') this._renderCartExits(params);
     this._els.transcript = body.querySelector('[data-transcript]') || null;
   };
 
@@ -1452,7 +1818,14 @@
     }
 
     // ── Options (color swatches / size pills / dropdown) ──
-    var optionsHtml = (product.options || []).map(function (opt) {
+    // Shopify models a no-variant product as one option {name:"Title",
+    // values:["Default Title"]}; drop it so it never leaks into the UI.
+    var realOptions = (product.options || []).filter(function (opt) {
+      var ov = opt.values || [];
+      if (ov.length === 1 && String(ov[0]).trim().toLowerCase() === 'default title') return false;
+      return ov.length > 0;
+    });
+    var optionsHtml = realOptions.map(function (opt) {
       var name = opt.name || '';
       var lname = name.toLowerCase();
       var vals = opt.values || [];
@@ -1479,7 +1852,7 @@
     // ── Accordions ──
     var descBody = product.description_html || (product.description ? escapeHtml(product.description) : 'No description available.');
     var specsRows = '';
-    (product.options || []).forEach(function (opt) {
+    realOptions.forEach(function (opt) {
       if (opt.values && opt.values.length) specsRows += '<tr><td>' + escapeHtml(opt.name || '') + '</td><td>' + escapeHtml(opt.values.join(', ')) + '</td></tr>';
     });
     if (product.vendor) specsRows = '<tr><td>Brand</td><td>' + escapeHtml(product.vendor) + '</td></tr>' + specsRows;
@@ -1641,7 +2014,10 @@
       if (!v) { _this._toast('Select a variant first.', true); return; }
       if (v.available_for_sale === false) { _this._toast('This variant is out of stock.', true); return; }
       _this._flyToCart(_this._pdpHeroImg());
-      _this._addLine(v.id, qty);
+      _this._nativeAdd(v.id, qty, {
+        product_id: (_this._currentProduct && (_this._currentProduct.id || _this._currentProduct.product_id)) || null,
+        handle: (_this._currentProduct && _this._currentProduct.handle) || null
+      });
     });
 
     // ── Buy It Now → deferred single-transition checkout ──
@@ -1940,7 +2316,9 @@
       }
       if (!v || !v.id) { _this._toast('Choose a variant first.', true); return; }
       _this._flyToCart(_this._pdpHeroImg());
-      _this._addLine(v.id, qty);
+      // Native theme form: input[name="id"] is already the numeric variant id;
+      // the bridge resolves the handle from the URL when needed.
+      _this._nativeAdd(v.id, qty, { handle: (handle || null) });
     });
 
     this._bindNativeOptions(section, handle, product);
@@ -2339,6 +2717,8 @@
     startVoice: function () { instance.startVoice(); return bridge; },
     on: function (event, cb) { instance.on(event, cb); return bridge; },
     emit: function (event, data) { instance.emit(event, data); },
+    nativeCartCount: function (n) { instance.nativeCartCount(n); return bridge; },
+    nativeCartError: function (msg) { instance.nativeCartError(msg); return bridge; },
     setConfig: function (cfg) { instance.setConfig(cfg); return bridge; }
   };
 
