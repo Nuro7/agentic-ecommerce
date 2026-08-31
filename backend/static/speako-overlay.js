@@ -676,7 +676,10 @@
     refs._root.innerHTML = '' +
       '<div class="speako-header">' +
         '<button class="sp-btn" data-act="back" aria-label="Back">&#8592;</button>' +
-        '<div class="sp-title">' + escapeHtml(this.cfg.storeName || 'Speako') + '</div>' +
+        '<div class="sp-title-wrap">' +
+          '<div class="sp-title">' + escapeHtml(this.cfg.storeName || 'Speako') + '</div>' +
+          '<div class="sp-subtitle" data-header-subtitle></div>' +
+        '</div>' +
         '<button class="sp-btn speako-cart-badge" data-act="cart" aria-label="Cart">' +
           '&#128722;<span class="sp-badge" data-badge>0</span></button>' +
         '<button class="sp-btn" data-act="close" aria-label="Close">&#10005;</button>' +
@@ -686,8 +689,9 @@
         '<div class="sp-voicebar-field">' +
           '<span class="sp-wave" data-wave>' +
             '<span></span><span></span><span></span><span></span><span></span><span></span><span></span></span>' +
-          '<input data-voice-input placeholder="Ask me anything else…" aria-label="Ask Speako">' +
-          '<button class="sp-mic-btn" data-act="mic" aria-label="Talk to Speako">' + SVG.mic + '</button>' +
+          '<input data-voice-input placeholder="Ask Aria or find your style…" aria-label="Ask Aria">' +
+          '<span class="sp-voicebar-label">Voice active</span>' +
+          '<button class="sp-mic-btn" data-act="mic" aria-label="Talk to Aria">' + SVG.mic + '</button>' +
         '</div>' +
       '</div>' +
       '<div class="sp-toast" data-toast></div>';
@@ -698,6 +702,7 @@
       cartBtn: refs._root.querySelector('[data-act="cart"]'),
       closeBtn: refs._root.querySelector('[data-act="close"]'),
       badge: refs._root.querySelector('[data-badge]'),
+      subtitle: refs._root.querySelector('[data-header-subtitle]'),
       body: refs._root.querySelector('[data-body]'),
       voicebar: refs._root.querySelector('.sp-voicebar'),
       voiceInput: refs._root.querySelector('[data-voice-input]'),
@@ -1512,6 +1517,10 @@
     else if (view === 'compare') this._renderCompare(params);
     else if (view === 'chat') this._renderChat(params);
     else if (view === 'cartexit') this._renderCartExits(params);
+    /* View transition — trigger fade-in on body content. */
+    body.classList.remove('sp-view-enter');
+    void body.offsetWidth;
+    body.classList.add('sp-view-enter');
     this._els.transcript = body.querySelector('[data-transcript]') || null;
   };
 
@@ -1886,10 +1895,13 @@
           '<button class="sp-add" id="sp-btn-add-cart" data-add>Add to Cart</button>' +
           '<button class="sp-buy-now" id="sp-btn-buy-now" data-buynow>Buy It Now</button>' +
         '</div>' +
-        '<button class="sp-aria-assist" data-ask-aria type="button">' +
-          '<span class="sp-aria-orb">' + SVG.sparkles + '</span>' +
-          '<span class="sp-aria-copy"><strong>Ask Aria about this</strong>' +
-            '<span>Fit, materials, styling, or how it compares — just ask.</span></span>' +
+        '<button class="sp-voice-prompt" data-voice-prompt type="button">' +
+          '<span class="sp-voice-prompt-orb">' + SVG.mic + '</span>' +
+          '<span class="sp-voice-prompt-copy"><strong>"Aria, does this run true to size?"</strong>' +
+            '<span>Tap to speak · answers in ~1s</span></span>' +
+          '<span class="sp-voice-prompt-wave sp-wave" data-voice-wave>' +
+            '<span></span><span></span><span></span><span></span><span></span>' +
+          '</span>' +
         '</button>' +
         accordions +
       '</div>' +
@@ -1901,6 +1913,10 @@
     // greeting orb) so the concierge card is always a real, working control.
     var askAria = _this._els.body.querySelector('[data-ask-aria]');
     if (askAria) askAria.addEventListener('click', function () { _this._toggleVoice(); });
+
+    // Voice prompt card — suggested voice command on PDP.
+    var voicePrompt = _this._els.body.querySelector('[data-voice-prompt]');
+    if (voicePrompt) voicePrompt.addEventListener('click', function () { _this._toggleVoice(); });
 
     // ── Pricing + stock repaint for the active variant ──
     var paint = function () {
@@ -1919,12 +1935,17 @@
       var oos = v && v.available_for_sale === false;
       var qa = v && typeof v.quantity_available === 'number' ? v.quantity_available : null;
       var stockCls = oos ? 'out' : (qa !== null && qa > 0 && qa <= 5 ? 'low' : 'in');
-      var stockTxt = oos ? 'Out of stock' : (stockCls === 'low' ? ('Only ' + qa + ' left') : 'In stock');
+      var variantName = '';
+      if (v && v.selected_options) {
+        var colorOpt = v.selected_options.find(function(o) { return /colou?r/i.test(o.name); });
+        if (colorOpt) variantName = colorOpt.value;
+      }
+      var stockTxt = oos ? 'Out of stock' : (stockCls === 'low' ? ('Live stock: only ' + qa + ' left' + (variantName ? ' in ' + variantName : '')) : 'In stock');
       var sw = _this._els.body.querySelector('[data-stockwrap]');
       if (sw) sw.innerHTML = '<span class="sp-stock ' + stockCls + '">' + stockTxt + '</span>';
       var addBtn = _this._els.body.querySelector('[data-add]');
       var buyBtn = _this._els.body.querySelector('[data-buynow]');
-      if (addBtn) { addBtn.disabled = !!oos; addBtn.textContent = oos ? 'Out of stock' : ('Add to bag · ' + formatMoney(price, cur)); }
+      if (addBtn) { addBtn.disabled = !!oos; addBtn.textContent = oos ? 'Out of stock' : ('Add to Cart · ' + formatMoney(price, cur)); }
       if (buyBtn) buyBtn.disabled = !!oos;
     };
 
