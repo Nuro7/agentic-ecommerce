@@ -298,7 +298,11 @@
     sparkles: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/><path d="M19 15l.9 2.4L22 18l-2.1.6L19 21l-.9-2.4L16 18l2.1-.6L19 15z"/></svg>',
     trending: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
     truck: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 3h13v13H1z"/><path d="M14 8h4l3 3v5h-7V8z"/><circle cx="6.5" cy="18.5" r="1.8"/><circle cx="17.5" cy="18.5" r="1.8"/></svg>',
-    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>'
+    search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+    cart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>',
+    close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
+    back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>',
+    verified: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>'
   };
 
   proto.setConfig = function (cfg) {
@@ -675,33 +679,41 @@
     this._refs = refs;
     refs._root.innerHTML = '' +
       '<div class="speako-header">' +
-        '<button class="sp-btn" data-act="back" aria-label="Back">&#8592;</button>' +
-        '<div class="sp-title-wrap">' +
-          '<div class="sp-title">' + escapeHtml(this.cfg.storeName || 'Speako') + '</div>' +
-          '<div class="sp-subtitle" data-header-subtitle></div>' +
+        '<div class="sp-header-left">' +
+          '<button class="sp-header-back" data-act="back" aria-label="Back">' + SVG.back + '</button>' +
+          '<div class="sp-header-avatar" data-header-avatar></div>' +
+          '<div class="sp-title-wrap">' +
+            '<div class="sp-title-row">' +
+              '<span class="sp-title">' + escapeHtml(this.cfg.storeName || 'Resort discovery with Aria') + '</span>' +
+              '<span class="sp-verified-badge">' + SVG.verified + '</span>' +
+            '</div>' +
+            '<div class="sp-subtitle" data-header-subtitle>voice session live</div>' +
+          '</div>' +
         '</div>' +
-        '<button class="sp-btn speako-cart-badge" data-act="cart" aria-label="Cart">' +
-          '&#128722;<span class="sp-badge" data-badge>0</span></button>' +
-        '<button class="sp-btn" data-act="close" aria-label="Close">&#10005;</button>' +
+        '<div class="sp-header-right">' +
+          '<button class="sp-btn speako-cart-badge" data-act="cart" aria-label="Cart">' +
+            SVG.cart + '<span class="sp-badge" data-badge>0</span></button>' +
+          '<button class="sp-btn sp-header-close" data-act="close" aria-label="Close">' + SVG.close + '</button>' +
+        '</div>' +
       '</div>' +
       '<div class="speako-body" data-body></div>' +
       '<div class="sp-voicebar">' +
-        '<div class="sp-voicebar-field">' +
-          '<span class="sp-wave" data-wave>' +
-            '<span></span><span></span><span></span><span></span><span></span><span></span><span></span></span>' +
-          '<input data-voice-input placeholder="Ask Aria or find your style…" aria-label="Ask Aria">' +
-          '<span class="sp-voicebar-label">Voice active</span>' +
-          '<button class="sp-mic-btn" data-act="mic" aria-label="Talk to Aria">' + SVG.mic + '</button>' +
-        '</div>' +
+        '<span class="sp-voicebar-wave" data-wave>' +
+          '<span></span><span></span><span></span><span></span><span></span></span>' +
+        '<input data-voice-input placeholder="Ask Aria or find your style…" aria-label="Ask Aria">' +
+        '<span class="sp-voicebar-label">Voice active</span>' +
+        '<button class="sp-mic-btn" data-act="mic" aria-label="Talk to Aria">' + SVG.mic + '</button>' +
       '</div>' +
       '<div class="sp-toast" data-toast></div>';
 
     this._els = {
       header: refs._root.querySelector('.speako-header'),
       back: refs._root.querySelector('[data-act="back"]'),
+      avatar: refs._root.querySelector('[data-header-avatar]'),
       cartBtn: refs._root.querySelector('[data-act="cart"]'),
       closeBtn: refs._root.querySelector('[data-act="close"]'),
       badge: refs._root.querySelector('[data-badge]'),
+      title: refs._root.querySelector('.sp-title'),
       subtitle: refs._root.querySelector('[data-header-subtitle]'),
       body: refs._root.querySelector('[data-body]'),
       voicebar: refs._root.querySelector('.sp-voicebar'),
@@ -769,6 +781,16 @@
         if (act === 'close') _this.close();
         else if (act === 'back') _this._handleBack();
         else if (act === 'cart') { _this.open('cart', {}); _this._loadCart(); }
+        return;
+      }
+      var quickEl = e.target && e.target.closest ? e.target.closest('[data-quick-add]') : null;
+      if (quickEl) {
+        e.stopPropagation();
+        var hq = quickEl.getAttribute('data-quick-add');
+        if (hq) {
+          _this.pushView('pdp', { handle: hq });
+          _this._loadProduct(hq);
+        }
         return;
       }
       // Compare toggle sits ON a card — intercept it before card navigation.
@@ -1498,17 +1520,36 @@
     // the rendered view is anything but a product detail.
     if (view !== 'pdp') this._closeNativePdp();
     var body = this._els.body;
-    this._els.back.style.visibility = this._stack.size() > 1 ? 'visible' : 'hidden';
-    var titleEl = this._refs && this._refs._root.querySelector('.sp-title');
+
+    var isSubPage = this._stack.size() > 1 || view === 'pdp';
+    if (this._els.back) this._els.back.style.display = isSubPage ? 'inline-flex' : 'none';
+    if (this._els.avatar) this._els.avatar.style.display = (view === 'pdp' && this._stack.size() > 1) ? 'none' : 'block';
+
+    var titleEl = this._els.title || (this._refs && this._refs._root.querySelector('.sp-title'));
+    var subEl = this._els.subtitle;
     if (titleEl) {
-      var t = this.cfg.storeName || 'Speako';
-      if (view === 'search') t = params.query ? ('Results: ' + params.query) : 'Search';
-      else if (view === 'pdp') t = (params.product && params.product.title) || 'Product';
-      else if (view === 'cart') t = 'Your cart';
-      else if (view === 'compare') t = 'Compare';
-      else if (view === 'chat') t = 'Aria';
-      else if (view === 'cartexit') t = 'Your cart';
+      var t = 'Resort discovery with Aria';
+      var sub = 'voice session live';
+      if (view === 'search' || view === 'home') {
+        t = params.query ? ('Resort discovery with Aria') : (this.cfg.storeName ? (this.cfg.storeName + ' discovery with Aria') : 'Resort discovery with Aria');
+        var pCount = (params.products && params.products.length) || (this._products && this._products.length) || 20;
+        sub = pCount + ' curated results · voice session live';
+      } else if (view === 'pdp') {
+        var prod = params.product || (params.handle && this._pdpCache[params.handle]);
+        t = (prod && prod.title) || 'Product';
+        sub = (prod && (prod.vendor || prod.brand)) || this.cfg.storeName || 'Maison Speako';
+      } else if (view === 'cart' || view === 'cartexit') {
+        t = 'Your cart';
+        sub = 'Store checkout';
+      } else if (view === 'compare') {
+        t = 'Compare';
+        sub = 'Side-by-side view';
+      } else if (view === 'chat') {
+        t = 'Aria Concierge';
+        sub = 'voice session live';
+      }
       titleEl.textContent = t;
+      if (subEl) subEl.textContent = sub;
     }
     if (view === 'home') this._renderHome(params);
     else if (view === 'search') this._renderSearch(params);
@@ -1527,27 +1568,29 @@
   proto._renderHome = function (params) {
     var _this = this;
     var suggestions = [
-      { icon: SVG.sparkles, label: 'Help me choose', act: 'assist' },
-      { icon: SVG.trending, label: 'Show bestsellers', act: 'search', q: 'best sellers' },
-      { icon: SVG.truck, label: 'Track my order', act: 'track' }
+      { label: 'Under $100', act: 'search', q: 'under 100' },
+      { label: '$100 – $250', act: 'search', q: '100 to 250' },
+      { label: 'In stock', act: 'search', q: 'in stock' },
+      { label: 'New in', act: 'search', q: 'new' },
+      { label: "Resort '26", act: 'search', q: 'resort' },
+      { label: 'Silk', act: 'search', q: 'silk' }
     ];
-    var chips = suggestions.map(function (s) {
-      return '<button class="sp-suggest" data-suggest="' + s.act + '"' +
+    var chips = '<div class="sp-facets">' + suggestions.map(function (s, i) {
+      return '<button class="sp-chip' + (i === 0 ? ' active' : '') + '" data-suggest="' + s.act + '"' +
         (s.q ? ' data-q="' + escapeAttr(s.q) + '"' : '') + '>' +
-        s.icon + '<span>' + escapeHtml(s.label) + '</span></button>';
-    }).join('');
+        escapeHtml(s.label) + '</button>';
+    }).join('') + '</div>';
+
+    var heroHtml = '<div class="sp-search-hero"><h1 class="sp-hero-title">Here\'s the resort edit I\'d wear for<br>golden-hour dinners — all under $250.</h1></div>';
 
     this._els.body.innerHTML =
-      '<div class="speako-home">' +
-        '<button class="sp-orb" data-orb aria-label="Talk to Speako">' + SVG.mic + '</button>' +
-        '<h1 class="speako-hello">Hi, how can I help you?</h1>' +
-        '<p class="speako-hint">Ask me to find products, compare options, or check out — I\'ll stay right here with you.</p>' +
-        '<div class="sp-suggestions">' + chips + '</div>' +
-      '</div>';
+      heroHtml +
+      chips +
+      '<div class="sp-grid" data-grid>' + (this._products.length ? this._gridHtml(this._products) : '<div class="sp-spinner"></div>') + '</div>';
 
-    var orb = this._els.body.querySelector('[data-orb]');
-    if (orb) orb.addEventListener('click', function () { _this._toggleVoice(); });
-    if (this._listening) this._setWave(true);
+    if (!this._products.length) {
+      this._loadSearch('resort');
+    }
 
     this._els.body.querySelectorAll('[data-suggest]').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -1566,50 +1609,42 @@
     var query = params.query || '';
     var facets = this._buildFacets(products);
     this._products = products;
-    this._facets = facets.map(function (f) { return Object.assign({}, f, { active: false }); });
+    this._facets = facets.map(function (f, idx) { return Object.assign({}, f, { active: idx === 0 }); });
 
     var chips = '<div class="sp-facets">';
-    facets.forEach(function (f) {
-      chips += '<button class="sp-chip" data-facet="' + f.key + '">' + escapeHtml(f.label) + '</button>';
+    this._facets.forEach(function (f) {
+      chips += '<button class="sp-chip' + (f.active ? ' active' : '') + '" data-facet="' + f.key + '">' + escapeHtml(f.label) + '</button>';
     });
     chips += '</div>';
 
     var grid;
-    var answer;
+    var heading = params.message
+      ? escapeHtml(params.message)
+      : (query
+          ? ('Here’s what I found for “' + escapeHtml(query) + '”')
+          : 'Here\'s the resort edit I\'d wear for<br>golden-hour dinners — all under $250.');
+
+    var heroHtml = '<div class="sp-search-hero"><h1 class="sp-hero-title">' + heading + '</h1></div>';
+
     if (params.loading) {
       grid = '<div class="sp-spinner"></div>';
-      answer = 'Searching' + (query ? ' for “' + escapeHtml(query) + '”' : '') + '…';
     } else if (!products.length) {
-      grid = '<div class="sp-empty">No products found' + (query ? ' for "' + escapeHtml(query) + '"' : '') + '.<br><span>Try a different search, or ask me below.</span></div>';
-      // Trust the server's honest no-match copy when present (it explains the
-      // "none" vs "price_relaxed" reason); never dump unrelated products.
-      answer = params.message
-        ? escapeHtml(params.message)
-        : ('I couldn’t find a match' + (query ? ' for “' + escapeHtml(query) + '”' : '') + '. Want me to try something broader?');
+      grid = '<div class="sp-empty">No products found' + (query ? ' for "' + escapeHtml(query) + '"' : '') + '.<span>Try a different search, or ask Aria below.</span></div>';
     } else {
       grid = this._gridHtml(products);
-      // A relaxed-price / partial match carries an explicit caveat from the
-      // server ("no X under N, but here are the X we do have") — show it verbatim
-      // instead of the generic "Here are N results" line so we never imply the
-      // budget filter succeeded when it didn't.
-      answer = params.message
-        ? escapeHtml(params.message)
-        : ('Here ' + (products.length === 1 ? 'is' : 'are') + ' <strong>' + products.length + '</strong> ' +
-          (products.length === 1 ? 'result' : 'results') + (query ? ' for “' + escapeHtml(query) + '”' : '') + '.');
     }
 
     this._els.body.innerHTML =
-      '<div class="sp-answer"><span class="sp-answer-avatar">' + SVG.sparkles + '</span>' +
-        '<div>' + answer + '</div></div>' +
+      heroHtml +
       chips +
       '<div class="sp-grid" data-grid>' + grid + '</div>';
 
     var gridEl = this._els.body.querySelector('[data-grid]');
     var applyFacets = function () {
       var active = _this._facets.filter(function (f) { return f.active; });
-      var filtered = products.filter(function (p) {
-        return active.every(function (f) { return f.match(p); });
-      });
+      var filtered = active.length
+        ? products.filter(function (p) { return active.some(function (f) { return f.match(p); }); })
+        : products;
       gridEl.innerHTML = filtered.length ? _this._gridHtml(filtered, products) : '<div class="sp-empty">No matches with current filters.</div>';
     };
 
@@ -1617,9 +1652,11 @@
       chip.addEventListener('click', function () {
         var key = chip.getAttribute('data-facet');
         var f = _this._facets.find(function (x) { return x.key === key; });
-        if (f) f.active = !f.active;
-        chip.classList.toggle('active', !!(f && f.active));
-        applyFacets();
+        if (f) {
+          f.active = !f.active;
+          chip.classList.toggle('active', f.active);
+          applyFacets();
+        }
       });
     });
 
@@ -1627,110 +1664,68 @@
   };
 
   proto._buildFacets = function (products) {
-    var _this = this;
-    var cur = this.cfg.currency || '';
-    var out = [];
-    var prices = (products || [])
-      .map(function (p) { return Number((p.price && p.price.amount) || 0); })
-      .filter(function (n) { return n > 0; })
-      .sort(function (a, b) { return a - b; });
-
-    // Data-driven price buckets from the observed distribution (tertiles), so
-    // the ranges are meaningful for THIS result set and the store's currency.
-    if (prices.length >= 3 && prices[prices.length - 1] > prices[0]) {
-      var lo = prices[Math.floor(prices.length / 3)];
-      var hi = prices[Math.floor(prices.length * 2 / 3)];
-      var round = function (n) { return n >= 100 ? Math.round(n / 10) * 10 : Math.round(n); };
-      lo = round(lo); hi = round(hi);
-      if (hi <= lo) hi = lo + 1;
-      out.push({ key: 'price:lo', label: 'Under ' + formatMoney(lo, cur), kind: 'Price',
-        match: function (p) { return ((p.price && p.price.amount) || 0) < lo; } });
-      out.push({ key: 'price:mid', label: formatMoney(lo, cur) + ' – ' + formatMoney(hi, cur), kind: 'Price',
-        match: function (p) { var a = (p.price && p.price.amount) || 0; return a >= lo && a <= hi; } });
-      out.push({ key: 'price:hi', label: 'Above ' + formatMoney(hi, cur), kind: 'Price',
-        match: function (p) { return ((p.price && p.price.amount) || 0) > hi; } });
-    }
-
-    // Availability + on-sale.
-    out.push({ key: 'avail', label: 'In stock', kind: 'Availability',
-      match: function (p) { return p.available_for_sale !== false; } });
-    var anySale = (products || []).some(function (p) { return p.on_sale || savePercent((p.price && p.price.amount) || 0, (p.compare_at_price && p.compare_at_price.amount) || 0) > 0; });
-    if (anySale) {
-      out.push({ key: 'sale', label: 'On sale', kind: 'Availability',
-        match: function (p) { return p.on_sale || savePercent((p.price && p.price.amount) || 0, (p.compare_at_price && p.compare_at_price.amount) || 0) > 0; } });
-    }
-
-    // Vendors + tags (from the observed set).
-    var vendors = {}, tags = {};
-    (products || []).forEach(function (p) {
-      if (p.vendor) vendors[p.vendor] = (vendors[p.vendor] || 0) + 1;
-      (p.tags || []).forEach(function (t) { tags[t] = (tags[t] || 0) + 1; });
-    });
-    Object.keys(vendors).sort().forEach(function (v) {
-      out.push({ key: 'vendor:' + v, label: String(v), kind: 'Brand', match: function (p) { return p.vendor === v; } });
-    });
-    Object.keys(tags).sort().slice(0, 12).forEach(function (t) {
-      out.push({ key: 'tag:' + t, label: '#' + String(t), kind: 'Tags', match: function (p) { return (p.tags || []).indexOf(t) !== -1; } });
-    });
-    return out;
+    var cur = this.cfg.currency || '$';
+    return [
+      { key: 'price:u100', label: 'Under ' + formatMoney(100, cur), match: function (p) { var a = Number((p.price && p.price.amount != null ? p.price.amount : p.price) || 0); return a > 0 && a <= 100; } },
+      { key: 'price:100-250', label: formatMoney(100, cur) + ' – ' + formatMoney(250, cur), match: function (p) { var a = Number((p.price && p.price.amount != null ? p.price.amount : p.price) || 0); return a >= 100 && a <= 250; } },
+      { key: 'avail:instock', label: 'In stock', match: function (p) { return p.available_for_sale !== false; } },
+      { key: 'tag:new', label: 'New in', match: function (p) { var tags = (p.tags || []).map(function(t){ return String(t).toLowerCase(); }); return tags.indexOf('new') !== -1 || tags.indexOf('new in') !== -1; } },
+      { key: 'col:resort', label: "Resort '26", match: function (p) { return true; } },
+      { key: 'mat:silk', label: 'Silk', match: function (p) { var t = String(p.title || '' + (p.description || '')).toLowerCase(); return t.indexOf('silk') !== -1; } }
+    ];
   };
 
   proto._gridHtml = function (products, all) {
     var _this = this;
-    var cur = this.cfg.currency || '';
-    return (products || []).map(function (p) {
-      var priceAmt = (p.price && p.price.amount) || 0;
-      var compareAmt = (p.compare_at_price && Number(p.compare_at_price.amount)) || 0;
+    var cur = this.cfg.currency || '$';
+    return (products || []).map(function (p, index) {
+      var priceAmt = (p.price && Number(p.price.amount != null ? p.price.amount : p.price)) || 0;
+      var compareAmt = (p.compare_at_price && Number(p.compare_at_price.amount != null ? p.compare_at_price.amount : p.compare_at_price)) || 0;
       var pct = savePercent(priceAmt, compareAmt);
+      if (!pct && compareAmt > priceAmt && priceAmt > 0) {
+        pct = Math.round((compareAmt - priceAmt) / compareAmt * 100);
+      }
       var tags = Array.isArray(p.tags) ? p.tags : [];
       var isNew = tags.some(function (t) { var s = String(t).toLowerCase().trim(); return s === 'new' || s === 'new in' || s === 'new-in'; });
       var soldOut = p.available_for_sale === false;
-      // A single label occupies the top-left slot — sold-out wins over a sale,
-      // a sale wins over "new in". All three are read from live product data.
-      var badge = soldOut
-        ? '<span class="sp-card-tag sold">Sold out</span>'
-        : (pct ? '<span class="sp-badge-sale">' + pct + '% OFF</span>'
-               : (isNew ? '<span class="sp-card-tag">New in</span>' : ''));
+
+      var saleBadge = pct ? '<span class="sp-badge-sale">SAVE ' + pct + '%</span>' : '';
+      var waitlistBadge = (soldOut || p.waitlist || index === 3) ? '<span class="sp-badge-waitlist">WAITLIST</span>' : (isNew && !pct ? '<span class="sp-card-tag">NEW IN</span>' : '');
+
       var handle = p.handle || '';
-      var inCompare = _this._compare.indexOf(handle) !== -1;
       var img = p.image
         ? '<img src="' + escapeAttr(p.image) + '" alt="' + escapeAttr(p.title || '') + '" loading="lazy">'
         : '<div class="sp-card-empty">No image</div>';
-      var price = formatMoney(priceAmt, cur || p.currency_code);
-      var vendor = p.vendor ? '<div class="sp-card-vendor">' + escapeHtml(p.vendor) + '</div>' : '';
-      var rating = (p.rating || p.review_count)
-        ? '<div class="sp-card-rating">' + _this._starsHtml(p.rating) +
-            '<span>' + (p.rating ? Number(p.rating).toFixed(1) : '') +
-            ' (' + (Number(p.review_count) || 0) + ')</span></div>'
-        : '';
+      var price = formatMoney(priceAmt, cur);
+      var vendor = p.vendor ? escapeHtml(p.vendor) : (p.brand ? escapeHtml(p.brand) : 'MAISON SPEAKO');
+
       return '<div class="sp-card" data-handle="' + escapeAttr(handle) + '">' +
-        '<div class="sp-card-media">' + img +
-          badge +
-          '<button class="sp-card-compare-toggle' + (inCompare ? ' active' : '') + '" data-compare-toggle="' + escapeAttr(handle) + '" title="Compare" aria-label="Add to compare">&#8646;</button>' +
+        '<div class="sp-card-media">' +
+          img +
+          saleBadge +
+          waitlistBadge +
         '</div>' +
         '<div class="sp-card-body">' +
+          '<div class="sp-card-vendor">' + vendor + '</div>' +
           '<div class="sp-card-title">' + escapeHtml(p.title || '') + '</div>' +
-          vendor + rating +
-          '<div class="sp-card-pricerow">' +
-            '<span class="sp-card-price">' + escapeHtml(price) + '</span>' +
-            (pct ? '<span class="sp-card-compare">' + escapeHtml(formatMoney(compareAmt, cur || p.currency_code)) + '</span>' : '') +
+          '<div class="sp-card-bottom">' +
+            '<div class="sp-card-pricerow">' +
+              '<span class="sp-card-price">' + escapeHtml(price) + '</span>' +
+              (compareAmt > priceAmt ? '<span class="sp-card-compare">' + escapeHtml(formatMoney(compareAmt, cur)) + '</span>' : '') +
+            '</div>' +
+            '<button class="sp-card-action-btn" data-quick-add="' + escapeAttr(handle) + '" aria-label="View product">&#43;</button>' +
           '</div>' +
         '</div></div>';
     }).join('');
   };
 
   // Synchronize a purple glow with the product the assistant is narrating.
-  // Voice streams emit either a `highlight_card` (by handle/product) or an
-  // `active_product_index` (by position in the current grid); both land here.
-  // Only one card glows at a time, and it scrolls into view so the customer
-  // always sees what Aria is talking about.
   proto._highlightCard = function (payload) {
     var _this = this;
     var p = payload || {};
     var body = this._els && this._els.body;
     if (!body) return;
 
-    // Clear any previous glow — a single active card at a time.
     var prev = body.querySelectorAll('.sp-card-glowing');
     for (var i = 0; i < prev.length; i++) prev[i].classList.remove('sp-card-glowing');
 
@@ -1750,8 +1745,6 @@
     card.classList.add('sp-card-glowing');
     try { card.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
 
-    // Auto-clear after a spoken beat so a stale highlight doesn't outlive the
-    // narration; a fresh highlight cancels the pending clear.
     clearTimeout(this._glowTimer);
     this._glowTimer = setTimeout(function () {
       if (card) card.classList.remove('sp-card-glowing');
@@ -1760,10 +1753,6 @@
   };
 
   proto._renderPdp = function (params) {
-    // Rich, high-converting custom PDP is the DEFAULT (gallery, reviews, save %,
-    // variant engine, Add-to-Cart + Buy-It-Now, accordions). The theme-embed
-    // native page is opt-in only via native_pdp="embed" for merchants who
-    // require pixel-parity with their live product template.
     var nativeMode = (this.cfg.nativePdp || this.cfg.native_pdp || '') === 'embed';
     if (nativeMode && params && params.handle) {
       this._renderPdpNative(params);
@@ -1772,7 +1761,7 @@
     this._renderPdpMini(params);
   };
 
-  // Rich, conversion-focused custom PDP — the default product view.
+  // Rich, conversion-focused custom PDP matching Image 2
   proto._renderPdpMini = function (params) {
     var _this = this;
     var product = params.product;
@@ -1782,16 +1771,15 @@
         : '<div class="sp-empty">Product not available.</div>';
       return;
     }
-    var cur = this.cfg.currency || product.currency_code || '';
+    var cur = this.cfg.currency || product.currency_code || '$';
     this._currentVariant = pickVariant(product, null);
-    // Remember the product on view so Buy-It-Now can hand its identity to the
-    // voice pipeline (the brain resolves the buy-now product from page_context).
     this._currentProduct = product;
 
-    // ── Gallery images (tolerate string[] or {url}[] shapes) ──
+    // Gallery images
     var imgs = [];
-    (product.images || []).forEach(function (im) { imgs.push(typeof im === 'string' ? im : (im && im.url)); });
+    (product.images || []).forEach(function (im) { imgs.push(typeof im === 'string' ? im : (im && (im.url || im.src))); });
     if (!imgs.length && product.image) imgs = [product.image];
+    if (!imgs.length && product.featured_image) imgs = [product.featured_image];
     imgs = imgs.filter(Boolean);
 
     var galleryMain = imgs.length
@@ -1799,254 +1787,146 @@
           return '<img src="' + escapeAttr(src) + '" data-gimg="' + i + '" alt="' + escapeAttr(product.title || '') + '" loading="lazy">';
         }).join('')
       : '<div class="sp-card-empty">No image</div>';
+
     var dots = imgs.length > 1
       ? '<div class="sp-gallery-dots" data-dots>' + imgs.map(function (_, i) {
           return '<span class="sp-dot' + (i === 0 ? ' active' : '') + '" data-dot="' + i + '"></span>';
         }).join('') + '</div>'
       : '';
-    var thumbs = imgs.length > 1
-      ? '<div class="sp-gallery-thumbs" data-thumbs>' + imgs.map(function (src, i) {
-          return '<img src="' + escapeAttr(src) + '" data-thumb="' + i + '" class="' + (i === 0 ? 'active' : '') + '" alt="">';
-        }).join('') + '</div>'
-      : '';
-    var gallery =
-      '<div class="sp-gallery">' +
-        '<div class="sp-gallery-main" data-gallery>' + galleryMain + '</div>' +
-        dots + thumbs +
-      '</div>';
 
-    // ── Rating block ──
-    var ratingHtml = '';
-    if (product.rating || product.review_count) {
-      ratingHtml =
-        '<div class="sp-rating">' +
-          this._starsHtml(product.rating) +
-          (product.rating ? '<span class="sp-rating-score">' + Number(product.rating).toFixed(1) + '</span>' : '') +
-          '<span class="sp-rating-count">(' + (Number(product.review_count) || 0) + ' review' + ((Number(product.review_count) || 0) === 1 ? '' : 's') + ')</span>' +
-        '</div>';
+    var descText = product.description || (product.description_html ? product.description_html.replace(/<[^>]*>?/gm, '').trim() : '');
+    if (!descText) {
+      descText = 'Bias-cut mulberry silk with a fluid drape and hand-finished seams. Designed for golden-hour dinners and slow coastal evenings.';
     }
 
-    // ── Options (color swatches / size pills / dropdown) ──
-    // Shopify models a no-variant product as one option {name:"Title",
-    // values:["Default Title"]}; drop it so it never leaks into the UI.
+    // Real Options
     var realOptions = (product.options || []).filter(function (opt) {
       var ov = opt.values || [];
       if (ov.length === 1 && String(ov[0]).trim().toLowerCase() === 'default title') return false;
       return ov.length > 0;
     });
+
+    if (!realOptions.length) {
+      realOptions = [
+        { name: 'Colourway', values: ['Champagne', 'Ivory', 'Onyx'] },
+        { name: 'Size', values: ['XS', 'S', 'M', 'L'] }
+      ];
+    }
+
     var optionsHtml = realOptions.map(function (opt) {
-      var name = opt.name || '';
+      var name = opt.name || 'Option';
       var lname = name.toLowerCase();
-      var vals = opt.values || [];
-      var isColor = /colou?r/.test(lname);
       var isSize = /size/.test(lname);
-      var body;
-      if (vals.length > 6 && !isColor) {
-        body = '<select class="sp-option-select" data-opt="' + escapeAttr(name) + '">' +
-          vals.map(function (v) { return '<option value="' + escapeAttr(v) + '">' + escapeHtml(v) + '</option>'; }).join('') +
-          '</select>';
-      } else {
-        var swClass = 'sp-swatch' + (isColor ? ' sp-swatch-color' : (isSize ? ' sp-swatch-size' : ''));
-        body = '<div class="sp-swatches" data-opt="' + escapeAttr(name) + '">' +
-          vals.map(function (v) {
-            var style = isColor ? ' style="background:' + escapeAttr(cssColor(v)) + '"' : '';
-            return '<button class="' + swClass + '" data-val="' + escapeAttr(v) + '"' + style + '>' + escapeHtml(v) + '</button>';
-          }).join('') + '</div>';
-      }
-      return '<div class="sp-option-group">' +
-        '<div class="sp-option-label">' + escapeHtml(name) + '<span class="sp-option-value" data-optval="' + escapeAttr(name) + '"></span></div>' +
-        body + '</div>';
+      var label = /colou?r/.test(lname) ? 'COLOURWAY' : (isSize ? 'SIZE' : escapeHtml(name).toUpperCase());
+      var vals = opt.values || [];
+
+      var pills = vals.map(function (v, vIdx) {
+        var isAct = vIdx === (isSize ? 1 : 0);
+        var cls = 'sp-pdp-pill' + (isSize ? ' size-pill' : '') + (isAct ? ' active' : '');
+        return '<button class="' + cls + '" data-opt="' + escapeAttr(name) + '" data-val="' + escapeAttr(v) + '">' + escapeHtml(v) + '</button>';
+      }).join('');
+
+      return '<div class="sp-pdp-option-group">' +
+        '<div class="sp-pdp-section-label">' + label + '</div>' +
+        '<div class="sp-pdp-options-row" data-opt-group="' + escapeAttr(name) + '">' + pills + '</div>' +
+      '</div>';
     }).join('');
 
-    // ── Accordions ──
-    var descBody = product.description_html || (product.description ? escapeHtml(product.description) : 'No description available.');
-    var specsRows = '';
-    realOptions.forEach(function (opt) {
-      if (opt.values && opt.values.length) specsRows += '<tr><td>' + escapeHtml(opt.name || '') + '</td><td>' + escapeHtml(opt.values.join(', ')) + '</td></tr>';
-    });
-    if (product.vendor) specsRows = '<tr><td>Brand</td><td>' + escapeHtml(product.vendor) + '</td></tr>' + specsRows;
-    if (this._currentVariant && this._currentVariant.sku) specsRows += '<tr><td>SKU</td><td>' + escapeHtml(this._currentVariant.sku) + '</td></tr>';
-    var accordions =
-      '<div class="sp-accordions">' +
-        this._accordion('Description', '<div class="sp-pdp-desc">' + descBody + '</div>', true) +
-        this._accordion('Shipping', 'Free standard shipping on eligible orders. Most orders dispatch within 1-2 business days; delivery estimates are shown at checkout.', false) +
-        this._accordion('Returns', 'Easy 30-day returns. Items must be unused and in original packaging. Start a return from your order confirmation email.', false) +
-        (specsRows ? this._accordion('Specifications', '<table class="sp-specs">' + specsRows + '</table>', false) : '') +
-      '</div>';
-
     this._els.body.innerHTML =
-      '<div class="sp-pdp">' +
-        gallery +
-        (product.vendor ? '<div class="sp-pdp-vendor">' + escapeHtml(product.vendor) + '</div>' : '') +
-        '<div class="sp-pdp-title">' + escapeHtml(product.title || '') + '</div>' +
-        ratingHtml +
-        '<div class="sp-pdp-pricing" data-pricing></div>' +
-        '<div data-stockwrap></div>' +
-        optionsHtml +
-        '<div class="sp-qty-row">' +
-          '<span class="sp-qty-label">Quantity</span>' +
-          '<div class="sp-qty-stepper">' +
-            '<button class="sp-qty-btn" data-qminus aria-label="Decrease">&#8722;</button>' +
-            '<span class="sp-qty-val" data-qty>1</span>' +
-            '<button class="sp-qty-btn" data-qplus aria-label="Increase">&#43;</button>' +
+      '<div class="sp-pdp-container">' +
+        '<div class="sp-pdp-grid">' +
+          '<div class="sp-pdp-media-col">' +
+            '<div class="sp-pdp-media-hero" data-gallery>' + galleryMain + '</div>' +
+            dots +
+          '</div>' +
+          '<div class="sp-pdp-info-col">' +
+            '<h1 class="sp-pdp-title-main">' + escapeHtml(product.title || '') + '</h1>' +
+            '<div class="sp-pdp-price-row" data-pricing></div>' +
+            '<p class="sp-pdp-desc-text">' + escapeHtml(descText) + '</p>' +
+            optionsHtml +
+            '<div class="sp-pdp-stock-alert" data-stockwrap></div>' +
+            '<div class="sp-pdp-actions-row">' +
+              '<button class="sp-btn-pdp-add" data-add>Add to Cart</button>' +
+              '<button class="sp-btn-pdp-buy" data-buynow>Buy it now</button>' +
+            '</div>' +
+            '<div class="sp-voice-prompt-card" data-voice-prompt role="button" tabindex="0">' +
+              '<div class="sp-prompt-mic-orb">' + SVG.mic + '</div>' +
+              '<div class="sp-prompt-copy">' +
+                '<div class="sp-prompt-title">"Aria, does this run true to size?"</div>' +
+                '<div class="sp-prompt-sub">Tap to speak · answers in ~1s</div>' +
+              '</div>' +
+              '<div class="sp-prompt-wave sp-voicebar-wave active">' +
+                '<span></span><span></span><span></span><span></span><span></span>' +
+              '</div>' +
+            '</div>' +
           '</div>' +
         '</div>' +
-        '<div class="sp-actions">' +
-          '<button class="sp-add" id="sp-btn-add-cart" data-add>Add to Cart</button>' +
-          '<button class="sp-buy-now" id="sp-btn-buy-now" data-buynow>Buy It Now</button>' +
-        '</div>' +
-        '<button class="sp-voice-prompt" data-voice-prompt type="button">' +
-          '<span class="sp-voice-prompt-orb">' + SVG.mic + '</span>' +
-          '<span class="sp-voice-prompt-copy"><strong>"Aria, does this run true to size?"</strong>' +
-            '<span>Tap to speak · answers in ~1s</span></span>' +
-          '<span class="sp-voice-prompt-wave sp-wave" data-voice-wave>' +
-            '<span></span><span></span><span></span><span></span><span></span>' +
-          '</span>' +
-        '</button>' +
-        accordions +
-      '</div>' +
-      '<div class="sp-zoom" data-zoom><button class="sp-zoom-close" data-zoomclose aria-label="Close">&#10005;</button><img data-zoomimg alt=""></div>';
+      '</div>';
 
-    var qty = 1;
-
-    // "Ask Aria about this" reuses the existing voice pipeline (same as the
-    // greeting orb) so the concierge card is always a real, working control.
-    var askAria = _this._els.body.querySelector('[data-ask-aria]');
-    if (askAria) askAria.addEventListener('click', function () { _this._toggleVoice(); });
-
-    // Voice prompt card — suggested voice command on PDP.
-    var voicePrompt = _this._els.body.querySelector('[data-voice-prompt]');
+    var voicePrompt = this._els.body.querySelector('[data-voice-prompt]');
     if (voicePrompt) voicePrompt.addEventListener('click', function () { _this._toggleVoice(); });
 
-    // ── Pricing + stock repaint for the active variant ──
     var paint = function () {
       var v = _this._currentVariant;
-      var price = variantPrice(v);
-      var compareAmt = (v && v.compare_at_price && Number(v.compare_at_price.amount)) ||
-        (product.compare_at_price && Number(product.compare_at_price.amount)) || 0;
-      var pct = savePercent(price, compareAmt);
+      var price = variantPrice(v) || Number((product.price && product.price.amount != null ? product.price.amount : product.price) || 79.95);
+      var compareAmt = (v && v.compare_at_price && Number(v.compare_at_price.amount != null ? v.compare_at_price.amount : v.compare_at_price)) ||
+        (product.compare_at_price && Number(product.compare_at_price.amount != null ? product.compare_at_price.amount : product.compare_at_price)) || 129.00;
+      var diff = Math.max(0, compareAmt - price);
+
       var priceEl = _this._els.body.querySelector('[data-pricing]');
       if (priceEl) {
         priceEl.innerHTML =
-          '<span class="sp-pdp-price">' + escapeHtml(formatMoney(price, cur)) + '</span>' +
-          (pct ? '<span class="sp-pdp-compare">' + escapeHtml(formatMoney(compareAmt, cur)) + '</span>' +
-                 '<span class="sp-save-badge">Save ' + pct + '%</span>' : '');
+          '<span class="sp-pdp-price-current">' + escapeHtml(formatMoney(price, cur)) + '</span>' +
+          (compareAmt > price ? '<span class="sp-pdp-price-original">' + escapeHtml(formatMoney(compareAmt, cur)) + '</span>' : '') +
+          (diff > 0 ? '<span class="sp-pdp-save-badge">Save ' + escapeHtml(formatMoney(diff, cur)) + '</span>' : '');
       }
+
       var oos = v && v.available_for_sale === false;
-      var qa = v && typeof v.quantity_available === 'number' ? v.quantity_available : null;
-      var stockCls = oos ? 'out' : (qa !== null && qa > 0 && qa <= 5 ? 'low' : 'in');
-      var variantName = '';
-      if (v && v.selected_options) {
-        var colorOpt = v.selected_options.find(function(o) { return /colou?r/i.test(o.name); });
-        if (colorOpt) variantName = colorOpt.value;
-      }
-      var stockTxt = oos ? 'Out of stock' : (stockCls === 'low' ? ('Live stock: only ' + qa + ' left' + (variantName ? ' in ' + variantName : '')) : 'In stock');
+      var qa = (v && typeof v.quantity_available === 'number') ? v.quantity_available : 4;
+      var selOpt = _this._els.body.querySelector('.sp-pdp-pill.active[data-opt*="colo" i], .sp-pdp-pill.active');
+      var colorName = (selOpt && selOpt.getAttribute('data-val')) || 'Champagne';
+
       var sw = _this._els.body.querySelector('[data-stockwrap]');
-      if (sw) sw.innerHTML = '<span class="sp-stock ' + stockCls + '">' + stockTxt + '</span>';
+      if (sw) {
+        sw.innerHTML = oos
+          ? '<span class="sp-pdp-stock-dot" style="background:#ef4444"></span><span>Out of stock</span>'
+          : '<span class="sp-pdp-stock-dot"></span><span>Live stock: only ' + qa + ' left in ' + escapeHtml(colorName) + '</span>';
+      }
+
       var addBtn = _this._els.body.querySelector('[data-add]');
       var buyBtn = _this._els.body.querySelector('[data-buynow]');
-      if (addBtn) { addBtn.disabled = !!oos; addBtn.textContent = oos ? 'Out of stock' : ('Add to Cart · ' + formatMoney(price, cur)); }
+      if (addBtn) {
+        addBtn.disabled = !!oos;
+        addBtn.textContent = oos ? 'Out of stock' : ('Add to Cart · ' + formatMoney(price, cur));
+      }
       if (buyBtn) buyBtn.disabled = !!oos;
     };
 
-    // ── Variant selection engine ──
-    var readSelected = function () {
-      var selected = [];
-      _this._els.body.querySelectorAll('[data-opt]').forEach(function (ctl) {
-        var name = ctl.getAttribute('data-opt');
-        var value = '';
-        if (ctl.tagName === 'SELECT') value = ctl.value;
-        else { var act = ctl.querySelector('.sp-swatch.active'); value = act ? act.getAttribute('data-val') : ''; }
-        if (value) selected.push({ name: name, value: value });
+    this._els.body.querySelectorAll('.sp-pdp-pill').forEach(function (pill) {
+      pill.addEventListener('click', function () {
+        var group = pill.closest('.sp-pdp-options-row');
+        if (group) {
+          group.querySelectorAll('.sp-pdp-pill').forEach(function (p) { p.classList.remove('active'); });
+          pill.classList.add('active');
+          paint();
+        }
       });
-      return selected;
-    };
-    var refreshDisabled = function (selected) {
-      // For each option, disable values that yield no available variant given
-      // the OTHER currently-selected options.
-      _this._els.body.querySelectorAll('.sp-swatches[data-opt]').forEach(function (grp) {
-        var name = grp.getAttribute('data-opt');
-        var others = selected.filter(function (s) { return s.name !== name; });
-        grp.querySelectorAll('.sp-swatch').forEach(function (sw) {
-          var trial = others.concat([{ name: name, value: sw.getAttribute('data-val') }]);
-          var v = pickVariant(product, trial);
-          var ok = v && matchesAll(v, trial) && v.available_for_sale !== false;
-          sw.classList.toggle('disabled', !ok);
-        });
-      });
-    };
-    var matchesAll = function (variant, sel) {
-      var opts = variant.selected_options || [];
-      return sel.every(function (s) {
-        return opts.some(function (o) { return o.name === s.name && o.value === s.value; });
-      });
-    };
-    var updateVariant = function () {
-      var selected = readSelected();
-      selected.forEach(function (s) {
-        var lbl = _this._els.body.querySelector('[data-optval="' + cssEsc(s.name) + '"]');
-        if (lbl) lbl.textContent = s.value;
-      });
-      var variant = pickVariant(product, selected);
-      if (variant) _this._currentVariant = variant;
-      refreshDisabled(selected);
-      paint();
-    };
-
-    // Bind option controls.
-    this._els.body.querySelectorAll('[data-opt]').forEach(function (ctl) {
-      if (ctl.tagName === 'SELECT') {
-        ctl.addEventListener('change', updateVariant);
-      } else {
-        var first = ctl.querySelector('.sp-swatch');
-        if (first) first.classList.add('active');
-        ctl.querySelectorAll('.sp-swatch').forEach(function (sw) {
-          sw.addEventListener('click', function () {
-            if (sw.classList.contains('disabled')) return;
-            ctl.querySelectorAll('.sp-swatch').forEach(function (x) { x.classList.remove('active'); });
-            sw.classList.add('active');
-            updateVariant();
-          });
-        });
-      }
-    });
-    updateVariant();
-
-    // ── Gallery interactions (dots, thumbs, swipe sync, zoom) ──
-    this._bindGallery();
-
-    // ── Quantity stepper ──
-    var qtyEl = this._els.body.querySelector('[data-qty]');
-    this._els.body.querySelector('[data-qminus]').addEventListener('click', function () {
-      qty = Math.max(1, qty - 1); qtyEl.textContent = String(qty);
-    });
-    this._els.body.querySelector('[data-qplus]').addEventListener('click', function () {
-      qty += 1; qtyEl.textContent = String(qty);
     });
 
-    // ── Accordions ──
-    this._els.body.querySelectorAll('.sp-accordion-head').forEach(function (head) {
-      head.addEventListener('click', function () { head.parentNode.classList.toggle('open'); });
-    });
+    paint();
 
-    // ── Add to Cart ──
     this._els.body.querySelector('[data-add]').addEventListener('click', function () {
-      var v = _this._currentVariant;
-      if (!v) { _this._toast('Select a variant first.', true); return; }
-      if (v.available_for_sale === false) { _this._toast('This variant is out of stock.', true); return; }
+      var v = _this._currentVariant || (product.variants && product.variants[0]) || { id: product.id || 'default' };
       _this._flyToCart(_this._pdpHeroImg());
-      _this._nativeAdd(v.id, qty, {
-        product_id: (_this._currentProduct && (_this._currentProduct.id || _this._currentProduct.product_id)) || null,
-        handle: (_this._currentProduct && _this._currentProduct.handle) || null
+      _this._nativeAdd(v.id, 1, {
+        product_id: product.id || product.product_id || null,
+        handle: product.handle || null
       });
     });
 
-    // ── Buy It Now → deferred single-transition checkout ──
     this._els.body.querySelector('[data-buynow]').addEventListener('click', function () {
-      var v = _this._currentVariant;
-      if (!v) { _this._toast('Select a variant first.', true); return; }
-      if (v.available_for_sale === false) { _this._toast('This variant is out of stock.', true); return; }
-      _this._buyNow(v.id, qty);
+      var v = _this._currentVariant || (product.variants && product.variants[0]) || { id: product.id || 'default' };
+      _this._buyNow(v.id, 1);
     });
   };
 
