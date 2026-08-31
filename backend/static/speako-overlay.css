@@ -58,13 +58,13 @@
   --sp-glow: 0 10px 40px var(--sp-brand-glow);
 
   /* Glassmorphism system — frosted glass surfaces with depth lighting. */
-  --sp-glass-bg: rgba(21, 12, 34, 0.45);
-  --sp-glass-blur: blur(20px);
-  --sp-glass-border: rgba(255, 255, 255, 0.08);
-  --sp-glass-highlight: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, transparent 38%);
-  --sp-glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --sp-ambient-glow: rgba(139, 92, 255, 0.08);
-  --sp-ambient-glow-2: rgba(46, 123, 255, 0.06);
+  --sp-glass-bg: rgba(21, 12, 34, 0.72);
+  --sp-glass-blur: blur(24px);
+  --sp-glass-border: rgba(255, 255, 255, 0.12);
+  --sp-glass-highlight: linear-gradient(180deg, rgba(255, 255, 255, 0.10) 0%, transparent 38%);
+  --sp-glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --sp-ambient-glow: rgba(139, 92, 255, 0.22);
+  --sp-ambient-glow-2: rgba(46, 123, 255, 0.18);
 
   /* Radii — generous, premium rounding. */
   --sp-radius: 16px;
@@ -83,8 +83,9 @@
   z-index: 2147483647;
   height: 100dvh; /* modern viewport */
   background:
-    radial-gradient(120% 78% at 12% -12%, rgba(139, 92, 255, 0.16), transparent 58%),
-    radial-gradient(120% 80% at 102% 0%, rgba(46, 123, 255, 0.15), transparent 55%),
+    radial-gradient(130% 80% at 10% -10%, rgba(139, 92, 255, 0.24), transparent 55%),
+    radial-gradient(130% 85% at 105% 0%, rgba(46, 123, 255, 0.20), transparent 50%),
+    radial-gradient(80% 60% at 50% 100%, rgba(139, 92, 255, 0.10), transparent 60%),
     var(--sp-bg);
   color: var(--sp-fg);
   font-family: var(--sp-font);
@@ -103,21 +104,21 @@
   border-radius: 50%;
   pointer-events: none;
   z-index: 0;
-  filter: blur(80px);
+  filter: blur(60px);
 }
 .speako-root::before {
-  top: -18%;
-  left: -12%;
-  width: 52%;
-  height: 52%;
-  background: radial-gradient(circle, var(--sp-ambient-glow) 0%, transparent 70%);
+  top: -15%;
+  left: -10%;
+  width: 55%;
+  height: 55%;
+  background: radial-gradient(circle, rgba(139, 92, 255, 0.28) 0%, transparent 70%);
 }
 .speako-root::after {
-  bottom: -14%;
-  right: -10%;
-  width: 48%;
-  height: 48%;
-  background: radial-gradient(circle, var(--sp-ambient-glow-2) 0%, transparent 70%);
+  bottom: -12%;
+  right: -8%;
+  width: 50%;
+  height: 50%;
+  background: radial-gradient(circle, rgba(46, 123, 255, 0.22) 0%, transparent 70%);
 }
 
 @supports not (height: 100dvh) {
@@ -149,13 +150,13 @@
   --sp-shadow: 0 12px 30px rgba(26, 17, 32, 0.12);
   --sp-shadow-lg: 0 26px 60px rgba(26, 17, 32, 0.20);
   /* Glass tokens — light mode variants. */
-  --sp-glass-bg: rgba(255, 255, 255, 0.55);
-  --sp-glass-blur: blur(20px);
-  --sp-glass-border: rgba(0, 0, 0, 0.06);
-  --sp-glass-highlight: linear-gradient(180deg, rgba(255, 255, 255, 0.8) 0%, transparent 38%);
-  --sp-glass-shadow: 0 8px 32px rgba(26, 17, 32, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  --sp-ambient-glow: rgba(139, 92, 255, 0.06);
-  --sp-ambient-glow-2: rgba(46, 123, 255, 0.05);
+  --sp-glass-bg: rgba(255, 255, 255, 0.72);
+  --sp-glass-blur: blur(24px);
+  --sp-glass-border: rgba(0, 0, 0, 0.08);
+  --sp-glass-highlight: linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, transparent 38%);
+  --sp-glass-shadow: 0 8px 32px rgba(26, 17, 32, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  --sp-ambient-glow: rgba(139, 92, 255, 0.12);
+  --sp-ambient-glow-2: rgba(46, 123, 255, 0.10);
   background:
     radial-gradient(120% 78% at 12% -12%, rgba(139, 92, 255, 0.10), transparent 60%),
     radial-gradient(120% 80% at 102% 0%, rgba(46, 123, 255, 0.09), transparent 56%),
@@ -168,11 +169,11 @@
   align-items: center;
   gap: 6px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--sp-glass-border);
-  background: var(--sp-bar);
-  backdrop-filter: saturate(180%) blur(24px);
-  -webkit-backdrop-filter: saturate(180%) blur(24px);
-  box-shadow: inset 0 -1px 0 rgba(139, 92, 255, 0.12), 0 4px 24px rgba(0, 0, 0, 0.35);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(11, 7, 18, 0.82);
+  backdrop-filter: saturate(200%) blur(28px);
+  -webkit-backdrop-filter: saturate(200%) blur(28px);
+  box-shadow: inset 0 -1px 0 rgba(139, 92, 255, 0.18), 0 4px 28px rgba(0, 0, 0, 0.45);
   flex: 0 0 auto;
   position: relative;
   z-index: 3;
@@ -251,9 +252,12 @@
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 16px 16px 24px;
+  padding: 20px 24px 28px;
   position: relative;
   z-index: 1;
+  background: rgba(11, 7, 18, 0.35);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
 }
 /* View transition — fade + slide up on content change. */
 .speako-body.sp-view-enter {
@@ -340,27 +344,28 @@
 .sp-suggestions {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
-  max-width: 400px;
-  margin-top: 16px;
+  max-width: 460px;
+  margin-top: 20px;
 }
 .sp-suggest {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   width: 100%;
-  border: 1px solid var(--sp-glass-border);
-  background: rgba(21, 12, 34, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(21, 12, 34, 0.65);
   color: var(--sp-fg);
   border-radius: var(--sp-radius-pill);
-  padding: 14px 20px;
-  font-size: 14.5px;
+  padding: 16px 22px;
+  font-size: 15px;
   font-weight: 500;
   text-align: left;
   cursor: pointer;
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
   transition: border-color 0.18s ease, background 0.18s ease, transform 0.12s ease, box-shadow 0.18s ease;
   position: relative;
   overflow: hidden;
@@ -433,13 +438,13 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+  gap: 12px;
+  padding: 14px 20px calc(14px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--sp-glass-border);
-  background: var(--sp-bar);
-  backdrop-filter: saturate(180%) blur(24px);
-  -webkit-backdrop-filter: saturate(180%) blur(24px);
-  box-shadow: inset 0 1px 0 rgba(139, 92, 255, 0.12), 0 -4px 24px rgba(0, 0, 0, 0.3);
+  background: rgba(11, 7, 18, 0.82);
+  backdrop-filter: saturate(200%) blur(28px);
+  -webkit-backdrop-filter: saturate(200%) blur(28px);
+  box-shadow: inset 0 1px 0 rgba(139, 92, 255, 0.18), 0 -6px 32px rgba(0, 0, 0, 0.4);
   position: relative;
   z-index: 4;
 }
@@ -447,15 +452,15 @@
   flex: 1 1 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 54px;
-  padding: 0 6px 0 20px;
-  background: rgba(21, 12, 34, 0.5);
-  border: 1px solid var(--sp-glass-border);
+  gap: 10px;
+  height: 58px;
+  padding: 0 8px 0 22px;
+  background: rgba(21, 12, 34, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--sp-radius-pill);
-  box-shadow: var(--sp-glass-shadow);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
   position: relative;
   overflow: hidden;
@@ -496,8 +501,8 @@
 /* Gradient circular mic button embedded at the field's right edge. */
 .sp-mic-btn {
   flex: 0 0 auto;
-  width: 42px;
-  height: 42px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   border: 0;
   background: var(--sp-grad);
@@ -506,11 +511,11 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 4px 16px var(--sp-brand-glow);
+  box-shadow: 0 4px 20px var(--sp-brand-glow), 0 0 40px rgba(139, 92, 255, 0.3);
   transition: transform 0.12s ease, box-shadow 0.15s ease;
 }
-.sp-mic-btn svg { width: 20px; height: 20px; }
-.sp-mic-btn:hover { transform: scale(1.06); }
+.sp-mic-btn svg { width: 22px; height: 22px; }
+.sp-mic-btn:hover { transform: scale(1.08); box-shadow: 0 6px 28px var(--sp-brand-glow), 0 0 50px rgba(139, 92, 255, 0.35); }
 .sp-mic-btn:active { transform: scale(0.94); }
 .sp-mic-btn.listening { animation: sp-mic-pulse 1.4s ease-in-out infinite; }
 @keyframes sp-mic-pulse {
@@ -608,12 +613,12 @@
   gap: 24px 18px;
 }
 .sp-card {
-  border: 1px solid var(--sp-glass-border);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--sp-radius-card);
-  background: var(--sp-glass-bg);
-  backdrop-filter: var(--sp-glass-blur);
-  -webkit-backdrop-filter: var(--sp-glass-blur);
-  box-shadow: var(--sp-glass-shadow);
+  background: rgba(21, 12, 34, 0.72);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s ease, border-color 0.22s ease;
   cursor: pointer;
   position: relative;
@@ -825,13 +830,13 @@
   box-shadow: var(--sp-shadow-sm), 0 6px 24px var(--sp-brand-glow);
 }
 .sp-msg-aria .sp-bubble {
-  background: rgba(21, 12, 34, 0.5);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(21, 12, 34, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   color: var(--sp-fg);
-  border: 1px solid var(--sp-glass-border);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--sp-radius) var(--sp-radius) var(--sp-radius) 4px;
-  box-shadow: var(--sp-glass-shadow);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
   position: relative;
   overflow: hidden;
 }
@@ -948,12 +953,12 @@
 /* Swipeable gallery with zoom — glass panel. */
 .sp-gallery {
   position: relative;
-  background: var(--sp-glass-bg);
-  backdrop-filter: var(--sp-glass-blur);
-  -webkit-backdrop-filter: var(--sp-glass-blur);
-  border: 1px solid var(--sp-glass-border);
+  background: rgba(21, 12, 34, 0.75);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--sp-radius-card);
-  box-shadow: var(--sp-glass-shadow);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   padding: 12px;
   overflow: hidden;
 }
@@ -1092,14 +1097,15 @@
 /* Variant selection groups — glass panels. */
 .sp-option-group {
   margin-top: 20px;
-  padding: 14px;
-  background: var(--sp-glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--sp-glass-border);
+  padding: 16px;
+  background: rgba(21, 12, 34, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--sp-radius);
   position: relative;
   overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 .sp-option-group::before {
   content: "";
@@ -1311,17 +1317,18 @@
   width: 100%;
   margin-top: 16px;
   padding: 16px;
-  border: 1px solid var(--sp-glass-border);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--sp-radius);
-  background: rgba(21, 12, 34, 0.45);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: rgba(21, 12, 34, 0.65);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   color: var(--sp-fg);
   cursor: pointer;
   text-align: left;
   transition: border-color 0.18s ease, transform 0.12s ease, box-shadow 0.18s ease;
   position: relative;
   overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
   animation: sp-glow-pulse 3s ease-in-out infinite;
 }
 /* Glass highlight. */
@@ -1398,12 +1405,14 @@
 .sp-accordion.open .sp-accordion-body { max-height: 1600px; }
 .sp-accordion-body-inner {
   padding: 0 4px 18px;
-  background: rgba(21, 12, 34, 0.3);
+  background: rgba(21, 12, 34, 0.5);
   border-radius: 0 0 var(--sp-radius) var(--sp-radius);
   padding: 14px;
   margin-top: 4px;
-  border: 1px solid var(--sp-glass-border);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-top: 0;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 .sp-accordion-body img, .sp-accordion-body video { max-width: 100%; border-radius: 8px; }
 .sp-specs { width: 100%; border-collapse: collapse; }
@@ -1425,13 +1434,13 @@
   grid-auto-columns: minmax(200px, 1fr);
 }
 .sp-compare-col {
-  border: 1px solid var(--sp-glass-border);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--sp-radius);
   overflow: hidden;
-  background: var(--sp-glass-bg);
-  backdrop-filter: var(--sp-glass-blur);
-  -webkit-backdrop-filter: var(--sp-glass-blur);
-  box-shadow: var(--sp-glass-shadow);
+  background: rgba(21, 12, 34, 0.72);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   display: flex;
   flex-direction: column;
   position: relative;
@@ -1484,15 +1493,16 @@
   display: flex;
   gap: 12px;
   align-items: center;
-  border: 1px solid var(--sp-glass-border);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--sp-radius);
-  padding: 11px;
+  padding: 12px;
   margin-bottom: 10px;
-  background: var(--sp-glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(21, 12, 34, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   position: relative;
   overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 .sp-cart-line::before {
   content: "";
@@ -1536,13 +1546,14 @@
 .sp-cart-summary {
   margin-top: 8px;
   padding: 16px;
-  border: 1px solid var(--sp-glass-border);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--sp-radius);
-  background: var(--sp-glass-bg);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(21, 12, 34, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   position: relative;
   overflow: hidden;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 .sp-cart-summary::before {
   content: "";
