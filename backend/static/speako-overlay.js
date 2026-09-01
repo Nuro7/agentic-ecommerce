@@ -56,7 +56,9 @@
     if (document.getElementById('speako-overlay-host')) return;
     var host = document.createElement('div');
     host.id = 'speako-overlay-host';
+    host.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647;display:none;';
     document.documentElement.appendChild(host);
+    this.host = host;
     this.shadow = host.attachShadow({ mode: 'open' });
 
     // Stylesheet injection + fallback dynamic link
@@ -155,6 +157,7 @@
 
   /* ── View Navigation ── */
   proto.open = function (view, params) {
+    if (this.host) this.host.style.display = 'block';
     this.root.classList.add('sp-visible');
     document.documentElement.style.overflow = 'hidden';
     document.body.style.overflow = 'hidden';
@@ -162,6 +165,7 @@
   };
 
   proto.close = function () {
+    if (this.host) this.host.style.display = 'none';
     this.root.classList.remove('sp-visible');
     document.documentElement.style.overflow = '';
     document.body.style.overflow = '';

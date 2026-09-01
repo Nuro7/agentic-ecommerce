@@ -1,10 +1,33 @@
 /* Speako Fullscreen Luxury Dark Glassmorphic Design System */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
+:host {
+  all: initial;
+}
+
 .speako-root, .speako-root * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+/* ── Hide all browser scrollbars completely (Smooth scroll enabled, zero visible white bars) ── */
+.speako-root,
+.speako-root *,
+.speako-body,
+.speako-body * {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+.speako-root::-webkit-scrollbar,
+.speako-root *::-webkit-scrollbar,
+.speako-body::-webkit-scrollbar,
+.speako-body *::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
 }
 
 .speako-root {
@@ -18,7 +41,7 @@
   --sp-fg: #ffffff;
   --sp-muted: #9ca3af;
   --sp-faint: #6b7280;
-  --sp-card-bg: rgba(18, 22, 32, 0.85);
+  --sp-card-bg: rgba(18, 22, 32, 0.88);
   --sp-card-border: rgba(255, 255, 255, 0.08);
   --sp-glass-blur: blur(28px) saturate(190%);
   
@@ -36,13 +59,13 @@
   opacity: 0;
   transition: opacity 0.24s ease;
   
-  /* Solid Opaque Luxury Midnight Base with Atmospheric Lighting (Zero Page Bleedthrough) */
-  background-color: #090b10;
+  /* 100% Solid Opaque Luxury Midnight Canvas (Zero background page bleed-through) */
+  background-color: #090b10 !important;
   background-image:
-    radial-gradient(100% 70% at 50% -10%, rgba(37, 99, 235, 0.25), transparent 65%),
-    radial-gradient(80% 50% at 90% 20%, rgba(139, 92, 255, 0.18), transparent 55%),
-    radial-gradient(80% 50% at 10% 80%, rgba(56, 189, 248, 0.15), transparent 55%),
-    radial-gradient(circle at 50% 50%, rgba(15, 18, 26, 0.95), #090b10 100%);
+    radial-gradient(100% 70% at 50% -10%, rgba(37, 99, 235, 0.28), transparent 65%),
+    radial-gradient(80% 50% at 90% 20%, rgba(139, 92, 255, 0.20), transparent 55%),
+    radial-gradient(80% 50% at 10% 80%, rgba(56, 189, 248, 0.16), transparent 55%),
+    radial-gradient(circle at 50% 50%, rgba(15, 18, 26, 0.98), #090b10 100%) !important;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -76,39 +99,16 @@
   background: radial-gradient(circle, rgba(147, 51, 234, 0.22) 0%, rgba(56, 189, 248, 0.10) 50%, transparent 70%);
 }
 
-/* ── Custom Sleek Minimal Scrollbar ── */
-.speako-body::-webkit-scrollbar,
-.speako-root::-webkit-scrollbar {
-  width: 5px;
-}
-.speako-body::-webkit-scrollbar-track,
-.speako-root::-webkit-scrollbar-track {
-  background: transparent;
-}
-.speako-body::-webkit-scrollbar-thumb,
-.speako-root::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.16);
-  border-radius: 9999px;
-}
-.speako-body::-webkit-scrollbar-thumb:hover,
-.speako-root::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.32);
-}
-.speako-body {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
-}
-
 /* ── Top Header Bar ── */
 .speako-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 16px 28px;
-  background: rgba(10, 12, 18, 0.85);
+  background: rgba(10, 12, 18, 0.88);
   backdrop-filter: blur(24px) saturate(180%);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   position: relative;
   z-index: 10;
 }
