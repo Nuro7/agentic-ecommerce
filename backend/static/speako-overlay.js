@@ -352,7 +352,8 @@
     this.conversationHistory = [];
     this.toast('Conversation history cleared.');
     this._updateHistoryAffordance();
-    this.popView();
+    this.stack = [];
+    this.pushView('welcome');
   };
 
   /* ── Shell Navigation Control (Never Destroys Audio or Session) ── */
@@ -890,7 +891,16 @@
             '<h1 class="sp-history-title">Current Conversation</h1>',
             '<p class="sp-history-subtitle">Questions and recommendations from your current session.</p>',
           '</div>',
-          (items.length ? '<button class="sp-btn-clear-history" data-act-clear title="Clear conversation">' + SVG.trash + ' Clear</button>' : ''),
+          (items.length ? [
+            '<div class="sp-history-clear-wrap">',
+              '<button class="sp-btn-clear-history" data-act-clear title="Clear conversation">' + SVG.trash + ' Clear</button>',
+              '<div class="sp-clear-confirm" data-clear-confirm style="display:none;">',
+                '<span class="sp-clear-msg">Clear this conversation?</span>',
+                '<button class="sp-btn-clear-cancel" data-act-clear-cancel>Cancel</button>',
+                '<button class="sp-btn-clear-confirm" data-act-clear-confirm>Clear</button>',
+              '</div>',
+            '</div>'
+          ].join('') : ''),
         '</div>',
 
         (items.length ? [
@@ -921,11 +931,20 @@
     ].join('');
 
     var clearBtn = this.els.body.querySelector('[data-act-clear]');
-    if (clearBtn) {
+    var confirmBox = this.els.body.querySelector('[data-clear-confirm]');
+    if (clearBtn && confirmBox) {
       clearBtn.addEventListener('click', function () {
-        if (confirm('Clear this conversation?')) {
-          _this.clearConversation();
-        }
+        clearBtn.style.display = 'none';
+        confirmBox.style.display = 'flex';
+      });
+      var cancelBtn = this.els.body.querySelector('[data-act-clear-cancel]');
+      var confirmBtn = this.els.body.querySelector('[data-act-clear-confirm]');
+      cancelBtn.addEventListener('click', function () {
+        confirmBox.style.display = 'none';
+        clearBtn.style.display = 'flex';
+      });
+      confirmBtn.addEventListener('click', function () {
+        _this.clearConversation();
       });
     }
 

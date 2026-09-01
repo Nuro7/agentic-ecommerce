@@ -1201,12 +1201,58 @@
   cursor: pointer;
   transition: all 0.15s ease;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 .sp-btn-clear-history:hover {
-  background: rgba(239, 68, 68, 0.22);
-  border-color: rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #ffffff;
 }
 .sp-btn-clear-history svg { width: 14px; height: 14px; }
+
+.sp-history-clear-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sp-clear-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(14, 18, 26, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 6px 10px 6px 14px;
+  border-radius: 8px;
+  animation: sp-fade-in 0.2s ease;
+}
+.sp-clear-msg {
+  font-size: 13px;
+  color: #d1d5db;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.sp-btn-clear-cancel {
+  background: transparent;
+  color: #9ca3af;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.sp-btn-clear-cancel:hover { color: #fff; background: rgba(255,255,255,0.06); }
+.sp-btn-clear-confirm {
+  background: #ef4444;
+  color: #ffffff;
+  border: none;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.sp-btn-clear-confirm:hover { background: #dc2626; }
 
 .sp-history-list {
   display: flex;
