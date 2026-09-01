@@ -27,7 +27,9 @@
     sparkles: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0l2.5 8.5L23 11l-8.5 2.5L12 22l-2.5-8.5L1 11l8.5-2.5z"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
     compare: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
-    tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>'
+    tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>',
+    history: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>'
   };
 
   /**
@@ -132,6 +134,9 @@
           '</div>',
         '</div>',
         '<div class="sp-header-right">',
+          '<button class="sp-btn sp-history-btn" data-act="history" title="Current Conversation" aria-label="View Current Conversation">',
+            SVG.history,
+          '</button>',
           '<button class="sp-btn sp-cart-badge-btn" data-act="cart" aria-label="View Cart">',
             SVG.cart,
             '<span class="sp-badge" data-badge>0</span>',
@@ -189,6 +194,7 @@
       var act = actEl.getAttribute('data-act');
       if (act === 'close') _this.close();
       if (act === 'back') _this.popView();
+      if (act === 'history') _this.openHistory();
       if (act === 'cart') _this.openCart();
       if (act === 'mic') _this.toggleVoice();
       if (act === 'compare') {
@@ -296,6 +302,29 @@
     }
   };
 
+  /* ── Current-Session Conversation Tracking ── */
+  proto._addConversationMessage = function (role, text, mode) {
+    if (!text) return;
+    var currentProdTitle = (this.currentProduct && this.stack.some(function(s){return s.view === 'pdp';})) ? this.currentProduct.title : null;
+    this.conversationHistory.push({
+      role: role,
+      text: text,
+      mode: mode || (role === 'user' ? 'text' : 'system'),
+      productContext: role === 'user' ? currentProdTitle : null,
+      time: Date.now()
+    });
+  };
+
+  proto.openHistory = function () {
+    this.pushView('history');
+  };
+
+  proto.clearConversation = function () {
+    this.conversationHistory = [];
+    this.toast('Conversation history cleared.');
+    this.popView();
+  };
+
   /* ── Shell Navigation Control (Never Destroys Audio or Session) ── */
   proto.open = function (view, params) {
     if (this.host) this.host.style.display = 'block';
@@ -345,6 +374,9 @@
     if (top.view === 'welcome') {
       this.els.backLabel.textContent = 'Back';
       this.renderWelcome(top.params);
+    } else if (top.view === 'history') {
+      this.els.backLabel.textContent = 'Back to shopping';
+      this.renderHistory(top.params);
     } else if (top.view === 'pdp') {
       this.els.backLabel.textContent = 'Back to recommendations';
       this.renderPDP(top.params);
@@ -812,6 +844,74 @@
     }
   };
 
+  /* ══════════════════════════════════════════════════════════
+     5. CONVERSATION HISTORY VIEW (Current Session Only)
+     ══════════════════════════════════════════════════════════ */
+  proto.renderHistory = function () {
+    var _this = this;
+    var items = this.conversationHistory || [];
+
+    this.els.body.innerHTML = [
+      '<div class="sp-history-container">',
+        '<div class="sp-history-header-bar">',
+          '<div>',
+            '<h1 class="sp-history-title">Current Conversation</h1>',
+            '<p class="sp-history-subtitle">Questions and recommendations from your current session.</p>',
+          '</div>',
+          (items.length ? '<button class="sp-btn-clear-history" data-act-clear title="Clear conversation">' + SVG.trash + ' Clear</button>' : ''),
+        '</div>',
+
+        (items.length ? [
+          '<div class="sp-history-list">',
+            items.map(function (turn) {
+              var isUser = turn.role === 'user';
+              var modeIcon = turn.mode === 'voice' ? '<span class="sp-history-turn-mode" title="Voice query">' + SVG.mic + '</span>' : '';
+              var contextBadge = turn.productContext ? '<div class="sp-history-prod-context">Viewing: ' + turn.productContext + '</div>' : '';
+
+              return [
+                '<div class="sp-history-turn ' + (isUser ? 'sp-turn-user' : 'sp-turn-speako') + '">',
+                  '<div class="sp-turn-meta">',
+                    '<span class="sp-turn-author">' + (isUser ? 'You' : (_this.cfg.agentName || 'Speako')) + '</span>',
+                    modeIcon,
+                  '</div>',
+                  contextBadge,
+                  '<div class="sp-turn-content">' + turn.text + '</div>',
+                '</div>'
+              ].join('');
+            }).join(''),
+          '</div>'
+        ].join('') : '<div class="sp-history-empty">No conversation turns recorded yet. Speak or type to start shopping with Speako!</div>'),
+
+        '<div class="sp-history-footer">',
+          '<button class="sp-btn-return-shop" data-act-backshop>Return to shopping</button>',
+        '</div>',
+      '</div>'
+    ].join('');
+
+    var clearBtn = this.els.body.querySelector('[data-act-clear]');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', function () {
+        if (confirm('Clear this conversation?')) {
+          _this.clearConversation();
+        }
+      });
+    }
+
+    var backShopBtn = this.els.body.querySelector('[data-act-backshop]');
+    if (backShopBtn) {
+      backShopBtn.addEventListener('click', function () {
+        _this.popView();
+      });
+    }
+
+    var listEl = this.els.body.querySelector('.sp-history-list');
+    if (listEl) {
+      setTimeout(function () {
+        listEl.scrollTop = listEl.scrollHeight;
+      }, 50);
+    }
+  };
+
   /* ── Shopify Storefront Cart Operations ── */
   proto.addToCart = function (product, quantity, variantTitle) {
     var _this = this;
@@ -893,11 +993,18 @@
   };
 
   /* ── Conversational Intelligence & Voice Processing ── */
-  proto.chat = function (message) {
+  proto.chat = function (message, mode) {
     var _this = this;
-    this._addConversationMessage('user', message);
+    this._addConversationMessage('user', message, mode || 'text');
+    this.showTranscript('“' + message + '”');
     this.setVoiceState('thinking', 'Checking that for you…');
     
+    // If user is currently on history view, update the view
+    var isHistoryOpen = this.stack.length && this.stack[this.stack.length - 1].view === 'history';
+    if (isHistoryOpen) {
+      this.renderHistory();
+    }
+
     // Check for local conversational refinements
     var lMsg = message.toLowerCase();
     if (lMsg.indexOf('less flashy') !== -1 || lMsg.indexOf('minimal') !== -1) {
@@ -922,8 +1029,11 @@
       var speechText = res.text || res.response_text || "Here's what I found for you.";
       _this._addConversationMessage('speako', speechText);
       _this.setVoiceState('speaking', speechText);
+      _this.showTranscript(speechText, 6000);
       
-      if (res.products && res.products.length) {
+      if (isHistoryOpen) {
+        _this.renderHistory();
+      } else if (res.products && res.products.length) {
         _this.products = res.products;
         _this.pushView('discovery', {
           products: res.products,
@@ -936,7 +1046,10 @@
       var fallbackText = "Based on what you told me, I found a few options that fit your request.";
       _this._addConversationMessage('speako', fallbackText);
       _this.setVoiceState('speaking', fallbackText);
-      if (!_this.products || !_this.products.length) {
+      _this.showTranscript(fallbackText, 6000);
+      if (isHistoryOpen) {
+        _this.renderHistory();
+      } else if (!_this.products || !_this.products.length) {
         _this.pushView('discovery', {
           headline: _this.activeHeadline,
           intentChips: _this.intentChips

@@ -1159,6 +1159,141 @@
 .sp-cartx-checkout { background: #2563eb; color: #fff; border: none; box-shadow: 0 8px 32px rgba(37, 99, 235, 0.5); }
 .sp-cart-empty { color: #9ca3af; font-size: 14px; padding: 32px 0; }
 
+/* ── Current-Session Conversation History View ── */
+.sp-history-container {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 10px 0 40px;
+  display: flex;
+  flex-direction: column;
+  animation: sp-fade-in 0.25s ease;
+}
+.sp-history-header-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 20px;
+}
+.sp-history-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #ffffff;
+  margin-bottom: 4px;
+}
+.sp-history-subtitle {
+  font-size: 13.5px;
+  color: #9ca3af;
+}
+.sp-btn-clear-history {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.sp-btn-clear-history:hover {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.sp-btn-clear-history svg { width: 14px; height: 14px; }
+
+.sp-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 52vh;
+  overflow-y: auto;
+  padding-right: 4px;
+  margin-bottom: 24px;
+}
+.sp-history-empty {
+  font-size: 14px;
+  color: #9ca3af;
+  text-align: center;
+  padding: 40px 0;
+}
+.sp-history-turn {
+  padding: 14px 18px;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sp-turn-user {
+  background: rgba(37, 99, 235, 0.14);
+  border: 1px solid rgba(59, 130, 246, 0.28);
+  align-self: flex-end;
+  max-width: 85%;
+}
+.sp-turn-speako {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  align-self: flex-start;
+  max-width: 90%;
+}
+.sp-turn-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sp-turn-author {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #93c5fd;
+}
+.sp-turn-speako .sp-turn-author {
+  color: #c084fc;
+}
+.sp-history-turn-mode {
+  color: #93c5fd;
+  display: inline-flex;
+}
+.sp-history-turn-mode svg { width: 12px; height: 12px; }
+.sp-history-prod-context {
+  font-size: 11.5px;
+  color: #38bdf8;
+  font-weight: 500;
+}
+.sp-turn-content {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #f3f4f6;
+  word-break: break-word;
+}
+
+.sp-history-footer {
+  display: flex;
+  justify-content: center;
+}
+.sp-btn-return-shop {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  padding: 10px 24px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.sp-btn-return-shop:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
 /* ── Persistent Voice Dock Layer ── */
 .sp-voice-dock-container {
   position: fixed;
