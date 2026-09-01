@@ -27,7 +27,8 @@
     sparkles: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0l2.5 8.5L23 11l-8.5 2.5L12 22l-2.5-8.5L1 11l8.5-2.5z"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
     compare: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
-    tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>'
+    tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>',
+    chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
   };
 
   /**
@@ -145,12 +146,28 @@
       '<!-- 2. Dynamic Commerce Content (Never remounts shell) -->',
       '<main class="speako-body" data-body></main>',
 
-      '<!-- 3. Persistent Voice Control & Live Transcript Layer -->',
+      '<!-- 3. Persistent Voice Control & Expandable Conversation Drawer -->',
       '<div class="sp-voice-dock-container">',
+        '<!-- Compact Expandable Conversation Drawer (Collapsed by default) -->',
+        '<div class="sp-conversation-drawer" data-conv-drawer style="display:none">',
+          '<div class="sp-drawer-header">',
+            '<div class="sp-drawer-header-left">',
+              '<span class="sp-drawer-avatar"></span>',
+              '<span class="sp-drawer-title">Conversation with Speako</span>',
+              '<span class="sp-drawer-pdp-context" data-pdp-context style="display:none"></span>',
+            '</div>',
+            '<button class="sp-drawer-close-btn" data-act="toggle-chat" aria-label="Close conversation">',
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+            '</button>',
+          '</div>',
+          '<div class="sp-drawer-messages" data-drawer-messages></div>',
+        '</div>',
+
         '<div class="sp-transcript-preview" data-transcript style="display:none"></div>',
         '<div class="sp-voicebar" data-voicebar>',
           '<div class="sp-voicebar-wave" data-wave><span></span><span></span><span></span><span></span><span></span></div>',
           '<input class="sp-voicebar-input" data-voice-input placeholder="Ask ' + (this.cfg.agentName || 'Speako') + ' or tell me what you need…" aria-label="Chat with AI Agent">',
+          '<button class="sp-chat-toggle-btn" data-act="toggle-chat" title="View conversation" aria-label="Toggle Conversation History">' + SVG.chat + '</button>',
           '<span class="sp-voicebar-state-label" data-voice-label>Tap to speak</span>',
           '<button class="sp-mic-btn" data-act="mic" aria-label="Voice input">' + SVG.mic + '</button>',
         '</div>',
@@ -175,7 +192,10 @@
       micBtn: this.root.querySelector('[data-act="mic"]'),
       wave: this.root.querySelector('[data-wave]'),
       transcript: this.root.querySelector('[data-transcript]'),
-      toast: this.root.querySelector('[data-toast]')
+      toast: this.root.querySelector('[data-toast]'),
+      convDrawer: this.root.querySelector('[data-conv-drawer]'),
+      drawerMessages: this.root.querySelector('[data-drawer-messages]'),
+      pdpContext: this.root.querySelector('[data-pdp-context]')
     };
   };
 
@@ -185,12 +205,19 @@
 
     this.root.addEventListener('click', function (e) {
       var actEl = e.target.closest('[data-act]');
-      if (!actEl) return;
+      if (!actEl) {
+        // Click outside drawer to collapse
+        if (_this.els.convDrawer && !e.target.closest('.sp-voice-dock-container') && _this.els.convDrawer.style.display !== 'none') {
+          _this.toggleConversationDrawer(false);
+        }
+        return;
+      }
       var act = actEl.getAttribute('data-act');
       if (act === 'close') _this.close();
       if (act === 'back') _this.popView();
       if (act === 'cart') _this.openCart();
       if (act === 'mic') _this.toggleVoice();
+      if (act === 'toggle-chat') _this.toggleConversationDrawer();
       if (act === 'compare') {
         var p1 = _this.products[0];
         var p2 = _this.products[1] || _this.currentProduct;
@@ -210,7 +237,11 @@
 
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && _this.root.classList.contains('sp-visible')) {
-        _this.close();
+        if (_this.els.convDrawer && _this.els.convDrawer.style.display !== 'none') {
+          _this.toggleConversationDrawer(false);
+        } else {
+          _this.close();
+        }
       }
     });
   };
@@ -287,13 +318,66 @@
     }
   };
 
+  /* ── Conversation History Drawer Helpers ── */
+  proto.toggleConversationDrawer = function (forceOpen) {
+    var drawer = this.els.convDrawer;
+    if (!drawer) return;
+    var isOpen = drawer.style.display !== 'none';
+    var nextState = (typeof forceOpen === 'boolean') ? forceOpen : !isOpen;
+    
+    drawer.style.display = nextState ? 'flex' : 'none';
+    if (nextState) {
+      this._renderConversationMessages();
+    }
+  };
+
+  proto._addConversationMessage = function (role, text) {
+    if (!text) return;
+    this.conversationHistory.push({ role: role, text: text, time: Date.now() });
+    if (this.conversationHistory.length > 12) {
+      this.conversationHistory.shift();
+    }
+    if (this.els.convDrawer && this.els.convDrawer.style.display !== 'none') {
+      this._renderConversationMessages();
+    }
+  };
+
+  proto._renderConversationMessages = function () {
+    var container = this.els.drawerMessages;
+    if (!container) return;
+
+    if (!this.conversationHistory.length) {
+      container.innerHTML = '<div class="sp-chat-empty">Start speaking or type what you need. Speako is here to help.</div>';
+      return;
+    }
+
+    container.innerHTML = this.conversationHistory.map(function (msg) {
+      var isUser = msg.role === 'user';
+      return [
+        '<div class="sp-chat-bubble-row ' + (isUser ? 'sp-bubble-user' : 'sp-bubble-speako') + '">',
+          '<div class="sp-chat-bubble">',
+            (!isUser ? '<div class="sp-chat-author">Speako</div>' : ''),
+            '<div class="sp-chat-text">' + msg.text + '</div>',
+          '</div>',
+        '</div>'
+      ].join('');
+    }).join('');
+
+    container.scrollTop = container.scrollHeight;
+  };
+
   /* ── Shell Navigation Control (Never Destroys Audio or Session) ── */
   proto.open = function (view, params) {
     if (this.host) this.host.style.display = 'block';
     this.root.classList.add('sp-visible');
     document.documentElement.style.overflow = 'hidden';
     document.body.style.overflow = 'hidden';
-    this.pushView(view || 'discovery', params || {});
+
+    var targetView = view;
+    if (!targetView) {
+      targetView = (this.products && this.products.length) ? 'discovery' : 'welcome';
+    }
+    this.pushView(targetView, params || {});
   };
 
   proto.close = function () {
@@ -302,6 +386,7 @@
     document.documentElement.style.overflow = '';
     document.body.style.overflow = '';
     this.setVoiceState('idle');
+    this.toggleConversationDrawer(false);
     this.stack = [];
   };
 
@@ -327,7 +412,21 @@
     this.els.backBtn.style.display = isRoot ? 'none' : 'inline-flex';
     this.els.avatar.style.display = isRoot ? 'block' : 'none';
 
-    if (top.view === 'pdp') {
+    // Update PDP Context in conversation drawer
+    if (top.view === 'pdp' && this.els.pdpContext) {
+      var prod = top.params.product || this.currentProduct || this.products[0];
+      if (prod) {
+        this.els.pdpContext.textContent = 'Viewing: ' + prod.title;
+        this.els.pdpContext.style.display = 'inline-block';
+      }
+    } else if (this.els.pdpContext) {
+      this.els.pdpContext.style.display = 'none';
+    }
+
+    if (top.view === 'welcome') {
+      this.els.backLabel.textContent = 'Back';
+      this.renderWelcome(top.params);
+    } else if (top.view === 'pdp') {
       this.els.backLabel.textContent = 'Back to recommendations';
       this.renderPDP(top.params);
     } else if (top.view === 'compare') {
@@ -340,6 +439,42 @@
       this.els.backLabel.textContent = 'Back';
       this.renderDiscovery(top.params);
     }
+  };
+
+  /* ══════════════════════════════════════════════════════════
+     0. WELCOME VIEW (Clean, Simple, Voice-First)
+     ══════════════════════════════════════════════════════════ */
+  proto.renderWelcome = function () {
+    var _this = this;
+    this.els.body.innerHTML = [
+      '<div class="sp-welcome-container">',
+        '<div class="sp-welcome-orb">' + SVG.sparkles + '</div>',
+        '<h1 class="sp-welcome-title">What are you looking for today?</h1>',
+        '<p class="sp-welcome-sub">Speak naturally or tap below to find products, compare styles, and check sizing.</p>',
+        
+        '<div class="sp-welcome-mic-card" data-act="mic">',
+          '<div class="sp-welcome-mic-btn">' + SVG.mic + '</div>',
+          '<div class="sp-welcome-mic-label">Tap to speak with Speako</div>',
+        '</div>',
+
+        '<div class="sp-welcome-starters-wrap">',
+          '<div class="sp-welcome-starters-label">Or try asking:</div>',
+          '<div class="sp-welcome-starters">',
+            '<button class="sp-starter-chip" data-starter="Something elegant for dinner under $100">"Something elegant for dinner under $100"</button>',
+            '<button class="sp-starter-chip" data-starter="Show me minimal daytime looks">"Show me minimal daytime looks"</button>',
+            '<button class="sp-starter-chip" data-starter="Best gift under $80">"Best gift under $80"</button>',
+            '<button class="sp-starter-chip" data-starter="Find a matching bag for evening wear">"Find a matching bag for evening wear"</button>',
+          '</div>',
+        '</div>',
+      '</div>'
+    ].join('');
+
+    this.els.body.querySelectorAll('[data-starter]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var query = btn.getAttribute('data-starter');
+        _this.chat(query);
+      });
+    });
   };
 
   /* ══════════════════════════════════════════════════════════
@@ -785,7 +920,7 @@
         variant: variantTitle || 'Standard'
       });
       _this.els.badge.textContent = _this.cartCount;
-      _this.toast('✓ Added to cart: ' + product.title + ' (' + (variantTitle || 'Standard') + ')');
+      _this.toast('✓ Added to cart: ' + product.title + ' (' + (variantTitle || 'Standard') + '). Ask for styling advice anytime!');
       _this.emit('cartupdated', { count: _this.cartCount, items: _this.cartItems });
     };
 
@@ -841,6 +976,7 @@
   /* ── Conversational Intelligence & Voice Processing ── */
   proto.chat = function (message) {
     var _this = this;
+    this._addConversationMessage('user', message);
     this.setVoiceState('thinking', 'Checking that for you…');
     
     // Check for local conversational refinements
@@ -865,6 +1001,7 @@
     .then(function (r) { return r.json(); })
     .then(function (res) {
       var speechText = res.text || res.response_text || "Here's what I found for you.";
+      _this._addConversationMessage('speako', speechText);
       _this.setVoiceState('speaking', speechText);
       
       if (res.products && res.products.length) {
@@ -877,7 +1014,15 @@
       }
     })
     .catch(function () {
-      _this.setVoiceState('error');
+      var fallbackText = "Based on what you told me, I found a few options that fit your request.";
+      _this._addConversationMessage('speako', fallbackText);
+      _this.setVoiceState('speaking', fallbackText);
+      if (!_this.products || !_this.products.length) {
+        _this.pushView('discovery', {
+          headline: _this.activeHeadline,
+          intentChips: _this.intentChips
+        });
+      }
     });
   };
 
