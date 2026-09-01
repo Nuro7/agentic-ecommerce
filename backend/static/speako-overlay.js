@@ -435,7 +435,7 @@
                 pickReasons.map(function (r) { return '<li>' + SVG.check + ' ' + r + '</li>'; }).join(''),
               '</ul>',
             '</div>',
-            (offerText ? '<div class="sp-offer-subtle">Pairs well with this: ' + offerText + '</div>' : ''),
+            (offerText ? '<div class="sp-offer-subtle">' + SVG.tag + ' Pairs well with this: ' + offerText + '</div>' : ''),
             '<div class="sp-pick-actions">',
               '<button class="sp-btn-pick-view">View details</button>',
               '<button class="sp-btn-pick-add-secondary" data-quick-add="' + pickItem.handle + '">Add to cart</button>',
@@ -507,6 +507,7 @@
     var priceNum = Number(p.price || 79.95);
     var compNum = Number(p.compare || 129.00);
     var saveAmount = compNum > priceNum ? (compNum - priceNum) : 0;
+    var offerText = p.offer ? p.offer.replace('Bundle with ', '') : '';
 
     this.els.body.innerHTML = [
       '<div class="sp-pdp-container">',
@@ -519,7 +520,6 @@
 
           '<!-- Right: Product Decision Panel -->',
           '<div class="sp-pdp-info-col">',
-            '<div class="sp-pdp-vendor-tag">' + (p.vendor || this.cfg.storeName) + '</div>',
             '<h1 class="sp-pdp-title-main">' + p.title + '</h1>',
             
             '<div class="sp-pdp-price-row">',
@@ -528,12 +528,13 @@
               (saveAmount > 0 ? '<span class="sp-pdp-save-badge">Save $' + saveAmount.toFixed(2) + '</span>' : ''),
             '</div>',
 
-            '<!-- Merchant Bundle / Combo Offer -->',
-            (p.offer ? '<div class="sp-offer-callout">' + SVG.tag + ' ' + p.offer + '</div>' : ''),
+            '<!-- Helpful Advice Bundle / Combo Offer -->',
+            (offerText ? '<div class="sp-offer-subtle">' + SVG.tag + ' Pairs well with this: ' + offerText + '</div>' : ''),
 
             '<!-- AI Sales Advisor Take -->',
             '<div class="sp-advisor-take-card">',
-              '<p class="sp-advisor-text">"I\'d choose this for the dinner look you described — mulberry silk with fluid drape and a relaxed fit that pairs perfectly with sandals."</p>',
+              '<div class="sp-advisor-badge">' + SVG.sparkles + ' SPEAKO\'S TAKE</div>',
+              '<p class="sp-advisor-text">"I\'d choose this for the dinner look you described — mulberry silk with fluid drape and a relaxed fit that pairs perfectly with sandals or mules."</p>',
             '</div>',
 
             '<!-- "Why This One" Structured Reasoning -->',
@@ -541,7 +542,7 @@
               '<div class="sp-reasons-title">Why this one</div>',
               '<ul class="sp-reasons-list">',
                 '<li>' + SVG.check + ' Perfect for the dinner you described</li>',
-                '<li>' + SVG.check + ' Within your requested budget</li>',
+                '<li>' + SVG.check + ' Within your $100 budget</li>',
                 '<li>' + SVG.check + ' Available in your size</li>',
               '</ul>',
             '</div>',
@@ -549,7 +550,7 @@
             '<!-- Authentic Product Store Details -->',
             '<div class="sp-store-details-section">',
               '<div class="sp-details-heading">Product Details</div>',
-              '<p class="sp-pdp-desc-text">Bias-cut mulberry silk with a fluid drape and hand-finished seams. Designed for golden-hour dinners and slow coastal evenings.</p>',
+              '<p class="sp-pdp-desc-text">' + (p.description || 'Bias-cut mulberry silk with a fluid drape and hand-finished seams. Designed for golden-hour dinners and slow coastal evenings.') + '</p>',
             '</div>',
             
             '<!-- Colourway Selector -->',
