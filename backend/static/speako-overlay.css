@@ -368,7 +368,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 .sp-pick-price {
   font-size: 22px;
@@ -389,6 +389,22 @@
   font-size: 11.5px;
   font-weight: 700;
 }
+
+/* Merchant Bundle & Offer Callout */
+.sp-offer-callout {
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #fbbf24;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.sp-offer-callout svg { width: 14px; height: 14px; }
 
 .sp-pick-reasons-box {
   background: rgba(255, 255, 255, 0.03);
@@ -667,7 +683,7 @@
   border: 1px solid rgba(59, 130, 246, 0.3);
   border-radius: 14px;
   padding: 12px 16px;
-  margin: 16px 0;
+  margin: 14px 0 10px;
 }
 .sp-advisor-badge {
   font-size: 10.5px;
@@ -686,11 +702,50 @@
   color: #e0f2fe;
 }
 
+/* "Why This One" Structured Reasoning */
+.sp-why-this-box {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+}
+.sp-why-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #93c5fd;
+  margin-bottom: 6px;
+}
+.sp-why-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.sp-why-items span {
+  font-size: 12.5px;
+  color: #d1d5db;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.sp-why-items span svg { width: 13px; height: 13px; color: #34d399; }
+
+/* Store Details Section */
+.sp-store-details-section {
+  margin-bottom: 18px;
+}
+.sp-details-heading {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #9ca3af;
+  margin-bottom: 6px;
+}
 .sp-pdp-desc-text {
   color: #9ca3af;
-  font-size: 14px;
+  font-size: 13.5px;
   line-height: 1.6;
-  margin-bottom: 20px;
 }
 
 .sp-pdp-section-label {
@@ -705,7 +760,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 .sp-pdp-pill {
   border: 1px solid rgba(255, 255, 255, 0.10);
@@ -747,7 +802,7 @@
   gap: 8px;
   font-size: 13px;
   color: #d1d5db;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 .sp-pdp-stock-dot {
   width: 7px;
@@ -760,7 +815,7 @@
 .sp-pdp-actions-row {
   display: flex;
   gap: 12px;
-  margin-bottom: 22px;
+  margin-bottom: 20px;
 }
 .sp-btn-pdp-add {
   flex: 1;
@@ -860,7 +915,26 @@
   padding: 16px;
   display: flex;
   flex-direction: column;
+  position: relative;
 }
+.sp-comp-featured {
+  border-color: rgba(59, 130, 246, 0.45);
+  box-shadow: 0 0 24px rgba(37, 99, 235, 0.25);
+}
+.sp-comp-badge {
+  background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%);
+  color: #ffffff;
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 12px;
+  align-self: flex-start;
+}
+.sp-comp-badge svg { width: 13px; height: 13px; }
 .sp-comp-media {
   border-radius: 12px;
   overflow: hidden;

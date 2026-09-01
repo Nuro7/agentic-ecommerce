@@ -1,12 +1,18 @@
 /**
  * Speako — Production-Grade AI Voice Sales Agent & Persistent Commerce Shell
  *
- * Architecture:
- * - Persistent Root Shell (Header, Voice Layer, Audio Session, State & Memory)
- * - Dynamic Commerce Views (Discovery w/ Speako Pick, PDP w/ AI Decision Support,
- *   Side-by-Side Compare, and Real Shopify Cart Confirmation)
- * - Zero remounts / mic drops during internal navigation
- * - Multi-tenant, brand-agnostic & vertical-agnostic (Fashion, Tech, Beauty, Home, etc.)
+ * Full Enterprise Feature Matrix:
+ * - Persistent Root Shell (Voice Engine, Audio Session, WebSocket Bridge, State & Memory)
+ * - 7-State Voice State Machine (IDLE, LISTENING, THINKING, SPEAKING, INTERRUPTED, ERROR, MUTED)
+ * - Real-time Live Transcript Layer
+ * - Conversational Intent Memory & Dynamic Refinement Chips
+ * - Discovery View with "Speako's Pick", "Why I Picked This" Reasoning, and Alternatives Grid
+ * - PDP View with AI Decision Support ("Speako's Take" vs Store Facts, Sizing & Variant Sync, Question Accelerators, Merchant Offers/Bundles)
+ * - Side-by-Side Attribute Comparison with Speako Recommendation
+ * - Real Shopify Cart Integration (/cart/add.js, /cart.js) & Native Checkout Handoff
+ * - Humanized Error Recovery & Contextual Loading States
+ * - Multi-Tenant & Multi-Vertical Architecture
+ * - Frosted Glass Bokeh Scrim & Responsive Mobile UI
  */
 (function (window, document) {
   'use strict';
@@ -16,12 +22,12 @@
     back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>',
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
     cart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>',
-    verified: '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
+    verified: '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
     mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>',
     sparkles: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 0l2.5 8.5L23 11l-8.5 2.5L12 22l-2.5-8.5L1 11l8.5-2.5z"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
     compare: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>',
-    message: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+    tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>'
   };
 
   /**
@@ -44,15 +50,16 @@
     this.stack = []; // Navigation view stack
     this.products = [];
     this.currentProduct = null;
-    this.currentVariant = null;
+    this.currentVariant = { color: 'Default', size: 'M' };
     this.cartCount = 0;
     this.cartItems = [];
     
     // Conversational & Voice State
     this.voiceState = 'idle'; // idle | listening | thinking | speaking | interrupted | error | muted
     this.transcriptText = '';
-    this.intentChips = []; // e.g. ['Under $100', 'Minimal', 'Dinner']
+    this.intentChips = ['Under $100', 'In Stock'];
     this.conversationHistory = [];
+    this.activeHeadline = "Based on what you told me, I picked options that fit your request.";
     this.listeners = {};
 
     this._init();
@@ -116,11 +123,11 @@
           '<div class="sp-title-wrap">',
             '<div class="sp-title-row">',
               '<span class="sp-store-title" data-store-title>' + this.cfg.storeName + '</span>',
-              '<span class="sp-verified-badge" title="Verified Speako Agent">' + SVG.verified + '</span>',
+              '<span class="sp-verified-badge" title="Verified Speako AI Agent">' + SVG.verified + '</span>',
             '</div>',
             '<div class="sp-status-row">',
               '<span class="sp-agent-status-dot" data-status-dot></span>',
-              '<span class="sp-agent-status-label" data-status-label>Speako active</span>',
+              '<span class="sp-agent-status-label" data-status-label>' + (this.cfg.agentName || 'Speako') + ' active</span>',
             '</div>',
           '</div>',
         '</div>',
@@ -149,7 +156,7 @@
         '</div>',
       '</div>',
 
-      '<!-- 4. Global Toast System -->',
+      '<!-- 4. Global Toast & Status System -->',
       '<div class="sp-toast" data-toast role="status"></div>'
     ].join('');
 
@@ -208,15 +215,17 @@
     });
   };
 
-  /* ── Voice State Machine ── */
+  /* ── 7-State Voice Machine ── */
   proto.setVoiceState = function (state, text) {
     this.voiceState = state;
+    var _this = this;
     var vLabel = this.els.voiceLabel;
+    var sLabel = this.els.statusLabel;
     var wave = this.els.wave;
     var mic = this.els.micBtn;
     var bar = this.els.voicebar;
 
-    bar.classList.remove('sp-state-listening', 'sp-state-thinking', 'sp-state-speaking', 'sp-state-error');
+    bar.classList.remove('sp-state-listening', 'sp-state-thinking', 'sp-state-speaking', 'sp-state-error', 'sp-state-muted');
     wave.classList.remove('active', 'speaking', 'thinking');
     mic.classList.remove('listening');
 
@@ -225,26 +234,35 @@
       wave.classList.add('active');
       mic.classList.add('listening');
       vLabel.textContent = 'Listening…';
+      sLabel.textContent = 'Listening…';
       this.showTranscript(text || 'Listening…');
     } else if (state === 'thinking') {
       bar.classList.add('sp-state-thinking');
       wave.classList.add('thinking');
       vLabel.textContent = 'Finding best match…';
-      this.showTranscript('Checking options for you…');
+      sLabel.textContent = 'Checking options…';
+      this.showTranscript(text || 'Checking options for you…');
     } else if (state === 'speaking') {
       bar.classList.add('sp-state-speaking');
       wave.classList.add('speaking');
-      vLabel.textContent = (this.cfg.agentName || 'Speako') + ' is speaking';
+      vLabel.textContent = (this.cfg.agentName || 'Speako') + ' speaking';
+      sLabel.textContent = (this.cfg.agentName || 'Speako') + ' speaking';
       this.showTranscript(text || '');
     } else if (state === 'interrupted') {
-      this.setVoiceState('listening');
+      this.setVoiceState('listening', 'Listening…');
     } else if (state === 'error') {
       bar.classList.add('sp-state-error');
       vLabel.textContent = "Didn't catch that. Try again.";
+      sLabel.textContent = 'Voice error';
       setTimeout(function () { _this.setVoiceState('idle'); }, 3000);
+    } else if (state === 'muted') {
+      bar.classList.add('sp-state-muted');
+      vLabel.textContent = 'Microphone muted';
+      sLabel.textContent = 'Voice off';
     } else {
       // Idle
       vLabel.textContent = 'Tap to speak';
+      sLabel.textContent = (this.cfg.agentName || 'Speako') + ' active';
       this.hideTranscript();
     }
   };
@@ -269,7 +287,7 @@
     }
   };
 
-  /* ── Shell Navigation Control (Never Destroys Audio) ── */
+  /* ── Shell Navigation Control (Never Destroys Audio or Session) ── */
   proto.open = function (view, params) {
     if (this.host) this.host.style.display = 'block';
     this.root.classList.add('sp-visible');
@@ -331,8 +349,8 @@
     var _this = this;
     params = params || {};
     
-    var headline = params.headline || "Based on what you told me, I picked 4 options that fit your style and budget.";
-    var intentChips = params.intentChips || (this.intentChips.length ? this.intentChips : ['Under $100', 'Silk', 'Dinner', 'In Stock']);
+    var headline = params.headline || this.activeHeadline;
+    var intentChips = params.intentChips || this.intentChips;
     
     var items = (params.products && params.products.length) ? params.products : (this.products.length ? this.products : [
       {
@@ -346,10 +364,11 @@
         image: 'https://images.unsplash.com/photo-1595777457583-95e059d581b8?w=800',
         isSpeakoPick: true,
         pickReason: [
-          'Matches your dinner occasion',
-          'Fits your requested $100 budget',
-          'Available in your size (S)'
-        ]
+          'Matches your requested occasion',
+          'Fits your requested budget',
+          'Available in your size'
+        ],
+        offer: 'Bundle with Riviera Tote — Save $18'
       },
       {
         id: '102',
@@ -414,6 +433,7 @@
               (pickItem.compare ? '<span class="sp-pick-compare">$' + Number(pickItem.compare).toFixed(2) + '</span>' : ''),
               (pickItem.save ? '<span class="sp-badge-save">Save ' + pickItem.save + '%</span>' : ''),
             '</div>',
+            (pickItem.offer ? '<div class="sp-offer-callout">' + SVG.tag + ' ' + pickItem.offer + '</div>' : ''),
             '<div class="sp-pick-reasons-box">',
               '<div class="sp-reasons-title">Why I picked this:</div>',
               '<ul class="sp-reasons-list">',
@@ -515,14 +535,30 @@
               (saveAmount > 0 ? '<span class="sp-pdp-save-badge">Save $' + saveAmount.toFixed(2) + '</span>' : ''),
             '</div>',
 
+            '<!-- Merchant Bundle / Combo Offer -->',
+            (p.offer ? '<div class="sp-offer-callout">' + SVG.tag + ' ' + p.offer + '</div>' : ''),
+
             '<!-- AI Sales Advisor Take -->',
             '<div class="sp-advisor-take-card">',
               '<div class="sp-advisor-badge">' + SVG.sparkles + ' SPEAKO\'S TAKE</div>',
               '<p class="sp-advisor-text">"I\'d choose this for the dinner look you described — mulberry silk with fluid drape and a relaxed fit that pairs perfectly with sandals or mules."</p>',
             '</div>',
 
-            '<!-- Authentic Product Description -->',
-            '<p class="sp-pdp-desc-text">Bias-cut mulberry silk with a fluid drape and hand-finished seams. Designed for golden-hour dinners and slow coastal evenings.</p>',
+            '<!-- "Why This One" Structured Reasoning -->',
+            '<div class="sp-why-this-box">',
+              '<div class="sp-why-title">Why this one:</div>',
+              '<div class="sp-why-items">',
+                '<span>' + SVG.check + ' Matches your occasion</span>',
+                '<span>' + SVG.check + ' Fits your budget</span>',
+                '<span>' + SVG.check + ' Available in your size</span>',
+              '</div>',
+            '</div>',
+
+            '<!-- Authentic Product Store Details -->',
+            '<div class="sp-store-details-section">',
+              '<div class="sp-details-heading">Product Details</div>',
+              '<p class="sp-pdp-desc-text">Bias-cut mulberry silk with a fluid drape and hand-finished seams. Designed for golden-hour dinners and slow coastal evenings.</p>',
+            '</div>',
             
             '<!-- Colourway Selector -->',
             '<div class="sp-pdp-section-label">COLOURWAY</div>',
@@ -560,6 +596,7 @@
                 '<button class="sp-q-chip" data-q="Does this run true to size?">"Does this run true to size?"</button>',
                 '<button class="sp-q-chip" data-q="What is the fabric like?">"What\'s the fabric like?"</button>',
                 '<button class="sp-q-chip" data-q="How should I style this?">"How should I style this?"</button>',
+                '<button class="sp-q-chip" data-q="Compare with the Riviera Tote">"Compare with Riviera Tote"</button>',
               '</div>',
             '</div>',
 
@@ -568,11 +605,12 @@
       '</div>'
     ].join('');
 
-    // Variant Selection Event Handlers
+    // Variant Selection Handlers
     this.els.body.querySelectorAll('[data-color]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         _this.els.body.querySelectorAll('[data-color]').forEach(function (b) { b.classList.remove('active'); });
         btn.classList.add('active');
+        _this.currentVariant.color = btn.getAttribute('data-color');
         _this.updateVariantSelection();
       });
     });
@@ -581,6 +619,7 @@
       btn.addEventListener('click', function () {
         _this.els.body.querySelectorAll('[data-size]').forEach(function (b) { b.classList.remove('active'); });
         btn.classList.add('active');
+        _this.currentVariant.size = btn.getAttribute('data-size');
         _this.updateVariantSelection();
       });
     });
@@ -589,15 +628,18 @@
     this.els.body.querySelectorAll('[data-q]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var q = btn.getAttribute('data-q');
-        _this.chat(q);
+        if (q.indexOf('Compare') !== -1) {
+          _this.pushView('compare', { p1: p, p2: _this.products[1] || p });
+        } else {
+          _this.chat(q);
+        }
       });
     });
 
     // Cart and Checkout Buttons
     this.els.body.querySelector('[data-add-btn]').addEventListener('click', function () {
-      var color = _this.els.body.querySelector('[data-color].active').textContent;
-      var size = _this.els.body.querySelector('[data-size].active').textContent;
-      _this.addToCart(p, 1, color + ' / ' + size);
+      var variantLabel = _this.currentVariant.color + ' / ' + _this.currentVariant.size;
+      _this.addToCart(p, 1, variantLabel);
     });
 
     this.els.body.querySelector('[data-buy-btn]').addEventListener('click', function () {
@@ -606,13 +648,11 @@
   };
 
   proto.updateVariantSelection = function () {
-    var color = this.els.body.querySelector('[data-color].active');
-    var size = this.els.body.querySelector('[data-size].active');
+    var color = this.currentVariant.color;
+    var size = this.currentVariant.size;
     var stockLabel = this.els.body.querySelector('[data-stock-text]');
-    if (color && size && stockLabel) {
-      var cText = color.textContent.trim();
-      var sText = size.textContent.trim();
-      stockLabel.textContent = 'Live stock: available in ' + cText + ' · Size ' + sText;
+    if (stockLabel) {
+      stockLabel.textContent = 'Live stock: available in ' + color + ' · Size ' + size;
     }
   };
 
@@ -620,6 +660,7 @@
      3. COMPARE VIEW (Side-by-Side Key Attribute Decision Support)
      ══════════════════════════════════════════════════════════ */
   proto.renderCompare = function (params) {
+    var _this = this;
     params = params || {};
     var p1 = params.p1 || this.products[0];
     var p2 = params.p2 || this.products[1] || this.products[0];
@@ -627,14 +668,15 @@
     this.els.body.innerHTML = [
       '<div class="sp-compare-container">',
         '<h1 class="sp-compare-title">Side-by-Side Comparison</h1>',
-        '<p class="sp-compare-sub">Speako\'s breakdown to help you decide.</p>',
+        '<p class="sp-compare-sub">Speako\'s breakdown to help you make the best decision.</p>',
         '<div class="sp-compare-grid">',
           
-          '<div class="sp-compare-col">',
+          '<div class="sp-compare-col sp-comp-featured">',
+            '<div class="sp-comp-badge">' + SVG.sparkles + ' SPEAKO\'S PICK</div>',
             '<div class="sp-comp-media"><img src="' + p1.image + '" alt="' + p1.title + '"></div>',
             '<h2 class="sp-comp-title">' + p1.title + '</h2>',
             '<div class="sp-comp-price">$' + Number(p1.price).toFixed(2) + '</div>',
-            '<div class="sp-comp-attr"><strong>Best for:</strong> Golden-hour dinner, formal</div>',
+            '<div class="sp-comp-attr"><strong>Best for:</strong> Evening dinners & special occasions</div>',
             '<div class="sp-comp-attr"><strong>Material:</strong> 100% Mulberry Silk</div>',
             '<div class="sp-comp-attr"><strong>Fit:</strong> Relaxed fluid drape</div>',
             '<button class="sp-btn-pick-add" data-add-comp="1">Choose This One</button>',
@@ -644,15 +686,22 @@
             '<div class="sp-comp-media"><img src="' + p2.image + '" alt="' + p2.title + '"></div>',
             '<h2 class="sp-comp-title">' + p2.title + '</h2>',
             '<div class="sp-comp-price">$' + Number(p2.price).toFixed(2) + '</div>',
-            '<div class="sp-comp-attr"><strong>Best for:</strong> Daytime styling, versatile</div>',
+            '<div class="sp-comp-attr"><strong>Best for:</strong> Daytime & versatile styling</div>',
             '<div class="sp-comp-attr"><strong>Material:</strong> Handwoven Raffia & Leather</div>',
             '<div class="sp-comp-attr"><strong>Fit:</strong> Structured everyday</div>',
-            '<button class="sp-btn-pick-add" data-add-comp="2">Choose This One</button>',
+            '<button class="sp-btn-pick-view" data-add-comp="2">Choose This One</button>',
           '</div>',
 
         '</div>',
       '</div>'
     ].join('');
+
+    this.els.body.querySelector('[data-add-comp="1"]').addEventListener('click', function () {
+      _this.addToCart(p1, 1, 'Standard');
+    });
+    this.els.body.querySelector('[data-add-comp="2"]').addEventListener('click', function () {
+      _this.addToCart(p2, 1, 'Standard');
+    });
   };
 
   /* ══════════════════════════════════════════════════════════
@@ -718,7 +767,7 @@
     quantity = quantity || 1;
     this.toast('Adding to cart…');
     
-    // Add to local state
+    // Optimistically track
     this.cartCount += quantity;
     this.cartItems.push({
       id: product.id || Date.now(),
@@ -745,13 +794,13 @@
       });
     }
 
-    this.toast('✓ Added to cart: ' + product.title);
+    this.toast('✓ Added to cart: ' + product.title + ' (' + (variantTitle || 'Standard') + ')');
     this.emit('cartupdated', { count: this.cartCount, items: this.cartItems });
   };
 
   proto.directCheckout = function (product) {
     this.addToCart(product, 1);
-    this.toast('Taking you to checkout…');
+    this.toast('Taking you to secure checkout…');
     setTimeout(function () {
       location.href = '/checkout';
     }, 400);
@@ -772,11 +821,21 @@
     }
   };
 
-  /* ── AI Chat & Voice Assistant Engine ── */
+  /* ── Conversational Intelligence & Voice Processing ── */
   proto.chat = function (message) {
     var _this = this;
-    this.setVoiceState('thinking');
+    this.setVoiceState('thinking', 'Checking that for you…');
     
+    // Check for local conversational refinements
+    var lMsg = message.toLowerCase();
+    if (lMsg.indexOf('less flashy') !== -1 || lMsg.indexOf('minimal') !== -1) {
+      if (this.intentChips.indexOf('Minimal') === -1) this.intentChips.push('Minimal');
+      this.activeHeadline = "Updated for you: 4 more understated options that fit your request.";
+    } else if (lMsg.indexOf('under $80') !== -1 || lMsg.indexOf('under 80') !== -1) {
+      this.intentChips = ['Under $80', 'In Stock'];
+      this.activeHeadline = "Updated for you: options under $80.";
+    }
+
     fetch((this.cfg.apiBase || '') + '/api/v1/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -788,12 +847,15 @@
     })
     .then(function (r) { return r.json(); })
     .then(function (res) {
-      _this.setVoiceState('speaking', res.text || res.response_text || "Here's what I found for you.");
+      var speechText = res.text || res.response_text || "Here's what I found for you.";
+      _this.setVoiceState('speaking', speechText);
+      
       if (res.products && res.products.length) {
         _this.products = res.products;
         _this.pushView('discovery', {
           products: res.products,
-          headline: res.text || "Here are the top options tailored to your request."
+          headline: res.text || _this.activeHeadline,
+          intentChips: _this.intentChips
         });
       }
     })
@@ -806,7 +868,7 @@
     var t = this.els.toast;
     t.textContent = msg;
     t.classList.add('show');
-    setTimeout(function () { t.classList.remove('show'); }, 3000);
+    setTimeout(function () { t.classList.remove('show'); }, 3200);
   };
 
   // Global Bridge
