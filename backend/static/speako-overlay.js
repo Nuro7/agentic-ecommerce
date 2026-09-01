@@ -364,8 +364,8 @@
         image: 'https://images.unsplash.com/photo-1595777457583-95e059d581b8?w=800',
         isSpeakoPick: true,
         pickReason: [
-          'Matches your requested occasion',
-          'Fits your requested budget',
+          'Perfect for the dinner you described',
+          'Within your requested budget',
           'Available in your size'
         ],
         offer: 'Bundle with Riviera Tote — Save $18'
@@ -403,22 +403,19 @@
 
     this.products = items;
 
-    // Intent Chips Bar
-    var chipsHtml = '<div class="sp-intent-bar">' +
-      '<span class="sp-intent-label">You asked for:</span>' +
-      '<div class="sp-intent-chips">' + intentChips.map(function (c) {
-        return '<span class="sp-intent-chip">' + c + '</span>';
-      }).join('') + '</div>' +
+    // Intent Context & Hero Title
+    var contextText = intentChips.length ? intentChips.join(' · ') : 'what you told me';
+    var heroHtml = '<div class="sp-discovery-hero">' +
+      '<div class="sp-hero-context">Based on ' + contextText + ', I found a few options.</div>' +
+      '<h1 class="sp-hero-title">' + headline + '</h1>' +
     '</div>';
-
-    // Hero Intent Title
-    var heroHtml = '<div class="sp-discovery-hero"><h1 class="sp-hero-title">' + headline + '</h1></div>';
 
     // Featured "Speako's Pick" Card
     var pickItem = items.find(function (p) { return p.isSpeakoPick; }) || items[0];
     var pickHtml = '';
     if (pickItem) {
       var pickReasons = pickItem.pickReason || ['Closest match to your search', 'Fits your budget', 'In stock now'];
+      var offerText = pickItem.offer ? pickItem.offer.replace('Bundle with ', '') : '';
       pickHtml = [
         '<div class="sp-pick-card" data-handle="' + pickItem.handle + '">',
           '<div class="sp-pick-media">',
@@ -426,23 +423,22 @@
             '<span class="sp-pick-badge">' + SVG.sparkles + ' SPEAKO\'S PICK</span>',
           '</div>',
           '<div class="sp-pick-details">',
-            '<div class="sp-pick-vendor">' + (pickItem.vendor || _this.cfg.storeName) + '</div>',
             '<h2 class="sp-pick-title">' + pickItem.title + '</h2>',
             '<div class="sp-pick-price-row">',
               '<span class="sp-pick-price">$' + Number(pickItem.price).toFixed(2) + '</span>',
               (pickItem.compare ? '<span class="sp-pick-compare">$' + Number(pickItem.compare).toFixed(2) + '</span>' : ''),
               (pickItem.save ? '<span class="sp-badge-save">Save ' + pickItem.save + '%</span>' : ''),
             '</div>',
-            (pickItem.offer ? '<div class="sp-offer-callout">' + SVG.tag + ' ' + pickItem.offer + '</div>' : ''),
-            '<div class="sp-pick-reasons-box">',
-              '<div class="sp-reasons-title">Why I picked this:</div>',
+            '<div class="sp-why-this-compact">',
+              '<div class="sp-reasons-title">Why this one</div>',
               '<ul class="sp-reasons-list">',
                 pickReasons.map(function (r) { return '<li>' + SVG.check + ' ' + r + '</li>'; }).join(''),
               '</ul>',
             '</div>',
+            (offerText ? '<div class="sp-offer-subtle">Pairs well with this: ' + offerText + '</div>' : ''),
             '<div class="sp-pick-actions">',
-              '<button class="sp-btn-pick-view">View Details & Sizing</button>',
-              '<button class="sp-btn-pick-add" data-quick-add="' + pickItem.handle + '">Add to Cart</button>',
+              '<button class="sp-btn-pick-view">View details</button>',
+              '<button class="sp-btn-pick-add-secondary" data-quick-add="' + pickItem.handle + '">Add to cart</button>',
             '</div>',
           '</div>',
         '</div>'
@@ -450,23 +446,20 @@
     }
 
     // Grid of Alternative Product Options
-    var gridHtml = '<div class="sp-alternatives-header"><span>More recommendations for you</span></div>' +
+    var gridHtml = '<div class="sp-alternatives-header"><span>A few more options I think you\'ll like</span></div>' +
       '<div class="sp-grid">' + items.map(function (p) {
         var priceNum = Number(p.price || 0);
         var compNum = Number(p.compare || 0);
-        var badges = (p.save ? '<span class="sp-badge-sale">SAVE ' + p.save + '%</span>' : '') +
-                     (p.waitlist ? '<span class="sp-badge-waitlist">WAITLIST</span>' : '');
+        var badges = (p.waitlist ? '<span class="sp-badge-waitlist">WAITLIST</span>' : '');
 
         return [
           '<div class="sp-card" data-handle="' + p.handle + '">',
             '<div class="sp-card-media"><img src="' + p.image + '" alt="' + p.title + '">' + badges + '</div>',
             '<div class="sp-card-body">',
-              '<div class="sp-card-vendor">' + (p.vendor || _this.cfg.storeName) + '</div>',
               '<div class="sp-card-title">' + p.title + '</div>',
               '<div class="sp-card-bottom">',
                 '<div class="sp-card-pricerow">',
                   '<span class="sp-card-price">$' + priceNum.toFixed(2) + '</span>',
-                  (compNum > priceNum ? '<span class="sp-card-compare">$' + compNum.toFixed(2) + '</span>' : ''),
                 '</div>',
                 '<button class="sp-card-action-btn" data-open-pdp="' + p.handle + '" title="View product">&#43;</button>',
               '</div>',
@@ -475,7 +468,7 @@
         ].join('');
       }).join('') + '</div>';
 
-    this.els.body.innerHTML = heroHtml + chipsHtml + pickHtml + gridHtml;
+    this.els.body.innerHTML = heroHtml + pickHtml + gridHtml;
 
     // Attach card clicks
     this.els.body.querySelectorAll('[data-handle]').forEach(function (card) {
@@ -540,18 +533,17 @@
 
             '<!-- AI Sales Advisor Take -->',
             '<div class="sp-advisor-take-card">',
-              '<div class="sp-advisor-badge">' + SVG.sparkles + ' SPEAKO\'S TAKE</div>',
-              '<p class="sp-advisor-text">"I\'d choose this for the dinner look you described — mulberry silk with fluid drape and a relaxed fit that pairs perfectly with sandals or mules."</p>',
+              '<p class="sp-advisor-text">"I\'d choose this for the dinner look you described — mulberry silk with fluid drape and a relaxed fit that pairs perfectly with sandals."</p>',
             '</div>',
 
             '<!-- "Why This One" Structured Reasoning -->',
-            '<div class="sp-why-this-box">',
-              '<div class="sp-why-title">Why this one:</div>',
-              '<div class="sp-why-items">',
-                '<span>' + SVG.check + ' Matches your occasion</span>',
-                '<span>' + SVG.check + ' Fits your budget</span>',
-                '<span>' + SVG.check + ' Available in your size</span>',
-              '</div>',
+            '<div class="sp-why-this-compact">',
+              '<div class="sp-reasons-title">Why this one</div>',
+              '<ul class="sp-reasons-list">',
+                '<li>' + SVG.check + ' Perfect for the dinner you described</li>',
+                '<li>' + SVG.check + ' Within your requested budget</li>',
+                '<li>' + SVG.check + ' Available in your size</li>',
+              '</ul>',
             '</div>',
 
             '<!-- Authentic Product Store Details -->',

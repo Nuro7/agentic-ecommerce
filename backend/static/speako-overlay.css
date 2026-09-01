@@ -250,7 +250,8 @@
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  padding: 24px 32px 120px;
+  padding: 24px 32px 180px;
+  padding-bottom: calc(160px + env(safe-area-inset-bottom));
   max-width: 1240px;
   width: 100%;
   margin: 0 auto;
@@ -300,18 +301,19 @@
   display: grid;
   grid-template-columns: 280px 1fr;
   gap: 28px;
-  background: rgba(18, 22, 32, 0.90);
-  border: 1px solid rgba(59, 130, 246, 0.35);
+  background: rgba(18, 22, 32, 0.60);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 20px;
   padding: 16px;
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.5), 0 0 28px rgba(37, 99, 235, 0.20);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   margin-bottom: 32px;
   cursor: pointer;
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 .sp-pick-card:hover {
   transform: translateY(-3px);
-  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.6), 0 0 36px rgba(37, 99, 235, 0.30);
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.4);
 }
 
 .sp-pick-media {
@@ -350,14 +352,12 @@
   flex-direction: column;
   justify-content: center;
 }
-.sp-pick-vendor {
-  font-size: 11px;
+.sp-hero-context {
+  font-size: 13.5px;
   color: #9ca3af;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  font-weight: 700;
-  margin-bottom: 4px;
+  margin-bottom: 8px;
 }
+
 .sp-pick-title {
   font-size: 22px;
   font-weight: 700;
@@ -390,33 +390,19 @@
   font-weight: 700;
 }
 
-/* Merchant Bundle & Offer Callout */
-.sp-offer-callout {
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.35);
+.sp-offer-subtle {
+  font-size: 13px;
   color: #fbbf24;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   margin-bottom: 14px;
 }
-.sp-offer-callout svg { width: 14px; height: 14px; }
 
-.sp-pick-reasons-box {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: 12px 14px;
+.sp-why-this-compact {
   margin-bottom: 18px;
 }
 .sp-reasons-title {
   font-size: 11.5px;
   font-weight: 700;
-  color: #93c5fd;
+  color: #9ca3af;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin-bottom: 6px;
@@ -441,21 +427,6 @@
   gap: 12px;
 }
 .sp-btn-pick-view {
-  padding: 11px 20px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #ffffff;
-  border-radius: 10px;
-  font-size: 13.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.sp-btn-pick-view:hover {
-  background: rgba(255, 255, 255, 0.12);
-  border-color: rgba(255, 255, 255, 0.25);
-}
-.sp-btn-pick-add {
   padding: 11px 22px;
   background: #2563eb;
   border: none;
@@ -467,9 +438,24 @@
   box-shadow: 0 4px 16px rgba(37, 99, 235, 0.45);
   transition: all 0.15s ease;
 }
-.sp-btn-pick-add:hover {
+.sp-btn-pick-view:hover {
   background: #1d4ed8;
   transform: translateY(-1px);
+}
+.sp-btn-pick-add-secondary {
+  padding: 11px 22px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.sp-btn-pick-add-secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.25);
 }
 
 /* ── Alternatives Product Grid ── */
@@ -1074,7 +1060,7 @@
   -webkit-backdrop-filter: blur(24px) saturate(190%);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 9999px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
   display: flex;
   align-items: center;
   padding: 0 8px 0 18px;
@@ -1082,11 +1068,11 @@
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .sp-voicebar.sp-state-listening {
-  border-color: rgba(56, 189, 248, 0.6);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65), 0 0 24px rgba(56, 189, 248, 0.3);
+  border-color: rgba(56, 189, 248, 0.4);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5), 0 0 12px rgba(56, 189, 248, 0.2);
 }
 .sp-voicebar.sp-state-thinking {
-  border-color: rgba(168, 85, 247, 0.6);
+  border-color: rgba(168, 85, 247, 0.4);
 }
 
 .sp-voicebar-wave {
