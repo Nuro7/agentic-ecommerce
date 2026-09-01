@@ -156,12 +156,14 @@
   /* ── View Navigation ── */
   proto.open = function (view, params) {
     this.root.classList.add('sp-visible');
+    document.documentElement.style.overflow = 'hidden';
     document.body.style.overflow = 'hidden';
     this.pushView(view || 'discovery', params || {});
   };
 
   proto.close = function () {
     this.root.classList.remove('sp-visible');
+    document.documentElement.style.overflow = '';
     document.body.style.overflow = '';
     this.stack = [];
   };
