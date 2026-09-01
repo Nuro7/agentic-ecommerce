@@ -134,9 +134,6 @@
           '</div>',
         '</div>',
         '<div class="sp-header-right">',
-          '<button class="sp-btn sp-history-btn" data-act="history" title="Current Conversation" aria-label="View Current Conversation">',
-            SVG.history,
-          '</button>',
           '<button class="sp-btn sp-cart-badge-btn" data-act="cart" aria-label="View Cart">',
             SVG.cart,
             '<span class="sp-badge" data-badge>0</span>',
@@ -152,6 +149,11 @@
 
       '<!-- 3. Persistent Voice Control & Temporary Transcript Layer -->',
       '<div class="sp-voice-dock-container">',
+        '<!-- Subtle Contextual Conversation Review Affordance (Only visible when messages exist) -->',
+        '<button class="sp-history-affordance-btn" data-act="history" data-history-affordance style="display:none" aria-label="Review Conversation">',
+          '<span data-history-count-label>View conversation · 0 messages</span>',
+        '</button>',
+
         '<div class="sp-transcript-preview" data-transcript style="display:none"></div>',
         '<div class="sp-voicebar" data-voicebar>',
           '<div class="sp-voicebar-wave" data-wave><span></span><span></span><span></span><span></span><span></span></div>',
@@ -180,7 +182,9 @@
       micBtn: this.root.querySelector('[data-act="mic"]'),
       wave: this.root.querySelector('[data-wave]'),
       transcript: this.root.querySelector('[data-transcript]'),
-      toast: this.root.querySelector('[data-toast]')
+      toast: this.root.querySelector('[data-toast]'),
+      historyAffordance: this.root.querySelector('[data-history-affordance]'),
+      historyCountLabel: this.root.querySelector('[data-history-count-label]')
     };
   };
 
@@ -212,6 +216,14 @@
           _this.chat(q);
         }
       }
+    });
+
+    this.els.voiceInput.addEventListener('focus', function () {
+      _this.els.voiceInput.setAttribute('placeholder', 'Type to Speako…');
+    });
+
+    this.els.voiceInput.addEventListener('blur', function () {
+      _this.els.voiceInput.setAttribute('placeholder', "Tell Speako what you're looking for…");
     });
 
     document.addEventListener('keydown', function (e) {
@@ -313,6 +325,23 @@
       productContext: role === 'user' ? currentProdTitle : null,
       time: Date.now()
     });
+    this._updateHistoryAffordance();
+  };
+
+  proto._updateHistoryAffordance = function () {
+    var count = this.conversationHistory ? this.conversationHistory.length : 0;
+    var btn = this.els.historyAffordance;
+    var label = this.els.historyCountLabel;
+    if (!btn || !label) return;
+
+    var currentView = this.stack.length ? this.stack[this.stack.length - 1].view : '';
+    if (count > 0 && currentView !== 'welcome' && currentView !== 'history') {
+      var msgText = count === 1 ? '1 message' : count + ' messages';
+      label.textContent = 'View conversation · ' + msgText;
+      btn.style.display = 'inline-flex';
+    } else {
+      btn.style.display = 'none';
+    }
   };
 
   proto.openHistory = function () {
@@ -322,6 +351,7 @@
   proto.clearConversation = function () {
     this.conversationHistory = [];
     this.toast('Conversation history cleared.');
+    this._updateHistoryAffordance();
     this.popView();
   };
 
@@ -390,6 +420,8 @@
       this.els.backLabel.textContent = 'Back';
       this.renderDiscovery(top.params);
     }
+
+    this._updateHistoryAffordance();
   };
 
   /* ══════════════════════════════════════════════════════════

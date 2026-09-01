@@ -1308,6 +1308,31 @@
   gap: 8px;
 }
 
+.sp-history-affordance-btn {
+  background: rgba(14, 18, 26, 0.88);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  color: #93c5fd;
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  animation: sp-fade-in 0.2s ease;
+}
+.sp-history-affordance-btn:hover {
+  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(59, 130, 246, 0.45);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
 .sp-transcript-preview {
   background: rgba(14, 18, 26, 0.94);
   backdrop-filter: blur(24px) saturate(190%);
