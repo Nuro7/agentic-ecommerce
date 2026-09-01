@@ -612,6 +612,10 @@
         btn.classList.add('active');
         _this.currentVariant.color = btn.getAttribute('data-color');
         _this.updateVariantSelection();
+        if (p.images && p.images[_this.currentVariant.color]) {
+          var heroImg = _this.els.body.querySelector('[data-hero-img]');
+          if (heroImg) heroImg.src = p.images[_this.currentVariant.color];
+        }
       });
     });
 
@@ -767,18 +771,30 @@
     quantity = quantity || 1;
     this.toast('Adding to cart…');
     
-    // Optimistically track
-    this.cartCount += quantity;
-    this.cartItems.push({
-      id: product.id || Date.now(),
-      title: product.title,
-      price: Number(product.price),
-      image: product.image,
-      quantity: quantity,
-      variant: variantTitle || 'Standard'
-    });
+    var resolvedVariantId = product.variantId || product.id;
+    if (product.variants && product.variants.length) {
+      var match = product.variants.find(function(v) {
+        return variantTitle && v.title && variantTitle.split(' / ').every(function(part) {
+          return v.title.indexOf(part.trim()) !== -1;
+        });
+      });
+      if (match) resolvedVariantId = match.id;
+    }
 
-    this.els.badge.textContent = this.cartCount;
+    var commitLocalCart = function() {
+      _this.cartCount += quantity;
+      _this.cartItems.push({
+        id: resolvedVariantId || Date.now(),
+        title: product.title,
+        price: Number(product.price),
+        image: product.image,
+        quantity: quantity,
+        variant: variantTitle || 'Standard'
+      });
+      _this.els.badge.textContent = _this.cartCount;
+      _this.toast('✓ Added to cart: ' + product.title + ' (' + (variantTitle || 'Standard') + ')');
+      _this.emit('cartupdated', { count: _this.cartCount, items: _this.cartItems });
+    };
 
     // Mutate Shopify Cart via Storefront API
     if (this.cfg.platform === 'shopify') {
@@ -786,16 +802,24 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: product.variantId || product.id,
+          id: resolvedVariantId,
           quantity: quantity
         })
-      }).catch(function (e) {
-        console.warn('[Speako] Native cart add settled:', e);
+      })
+      .then(function(res) {
+        if (!res.ok) throw new Error('Network response was not ok');
+        return res.json();
+      })
+      .then(function() {
+        commitLocalCart();
+      })
+      .catch(function (e) {
+        console.warn('[Speako] Native cart add failed:', e);
+        _this.toast('Could not add item to cart. Please try again.');
       });
+    } else {
+      commitLocalCart();
     }
-
-    this.toast('✓ Added to cart: ' + product.title + ' (' + (variantTitle || 'Standard') + ')');
-    this.emit('cartupdated', { count: this.cartCount, items: this.cartItems });
   };
 
   proto.directCheckout = function (product) {
