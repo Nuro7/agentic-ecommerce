@@ -449,7 +449,7 @@
     this.els.backBtn.style.display = isRoot ? 'none' : 'inline-flex';
     this.els.avatar.style.display = isRoot ? 'block' : 'none';
 
-    if (top.view === 'welcome') {
+    if (top.view === 'welcome' || top.view === 'home') {
       this.els.backLabel.textContent = 'Back';
       this.renderWelcome(top.params);
     } else if (top.view === 'history') {
