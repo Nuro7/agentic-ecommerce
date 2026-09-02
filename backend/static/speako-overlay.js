@@ -81,6 +81,21 @@
     }
   };
 
+  proto._getApiUrl = function (path) {
+    var base = this.cfg.apiBase || '';
+    var url = base + path;
+    var qs = '';
+    if (this.cfg.platform === 'shopify' && this.cfg.shop) {
+      qs = 'shop=' + encodeURIComponent(this.cfg.shop);
+    } else if (this.cfg.shop) {
+      qs = 'tenant_id=' + encodeURIComponent(this.cfg.shop);
+    }
+    if (qs) {
+      url += (url.indexOf('?') === -1 ? '?' : '&') + qs;
+    }
+    return url;
+  };
+
   /* ── Mount Persistent Shell in Shadow DOM ── */
   proto._init = function () {
     if (document.getElementById('speako-overlay-host')) return;
@@ -109,6 +124,38 @@
     this._buildScaffold();
     this._bindEvents();
     this._fetchRealCart();
+    this._initSession();
+  };
+
+  proto._initSession = function () {
+    var _this = this;
+    fetch(this._getApiUrl('/api/v1/greet'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: this.sessionId,
+        store_name: this.cfg.storeName,
+        language: 'auto',
+        current_page: { url: window.location.href, title: document.title }
+      })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+      if (res.greeting_text) {
+        _this._addConversationMessage('speako', res.greeting_text);
+        if (_this.stack.length && _this.stack[_this.stack.length - 1].view === 'history') {
+          _this.renderHistory();
+        }
+      }
+      if (res.suggested_replies && res.suggested_replies.length > 0) {
+        _this.intentChips = res.suggested_replies;
+      }
+      if (res.has_cart && res.cart_summary) {
+        _this.cartCount = res.cart_summary.item_count || 0;
+        _this.els.badge.textContent = _this.cartCount;
+      }
+    })
+    .catch(function(e) { console.warn('[Speako] Greet failed:', e); });
   };
 
   /* ── Scaffold Persistent UI Skeleton ── */
@@ -1021,11 +1068,34 @@
   };
 
   proto.directCheckout = function (product) {
+    var _this = this;
     this.addToCart(product, 1);
     this.toast('Taking you to secure checkout…');
-    setTimeout(function () {
-      location.href = '/checkout';
-    }, 400);
+    
+    var lines = [{
+      product_id: parseInt(product.id, 10),
+      variant_id: parseInt(product.variantId || product.id, 10),
+      quantity: 1
+    }];
+    fetch(this._getApiUrl('/api/v1/cart/checkout'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: this.sessionId,
+        lines: lines
+      })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(res) {
+      if (res.ok && res.checkout_url) {
+        location.href = res.checkout_url;
+      } else {
+        setTimeout(function () { location.href = '/checkout'; }, 400);
+      }
+    })
+    .catch(function() {
+      setTimeout(function () { location.href = '/checkout'; }, 400);
+    });
   };
 
   proto._fetchRealCart = function () {
@@ -1056,23 +1126,14 @@
       this.renderHistory();
     }
 
-    // Check for local conversational refinements
-    var lMsg = message.toLowerCase();
-    if (lMsg.indexOf('less flashy') !== -1 || lMsg.indexOf('minimal') !== -1) {
-      if (this.intentChips.indexOf('Minimal') === -1) this.intentChips.push('Minimal');
-      this.activeHeadline = "Updated for you: 4 more understated options that fit your request.";
-    } else if (lMsg.indexOf('under $80') !== -1 || lMsg.indexOf('under 80') !== -1) {
-      this.intentChips = ['Under $80', 'In Stock'];
-      this.activeHeadline = "Updated for you: options under $80.";
-    }
-
-    fetch((this.cfg.apiBase || '') + '/api/v1/chat', {
+    fetch(this._getApiUrl('/api/v1/chat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: message,
         session_id: this.sessionId,
-        store: this.cfg.storeName
+        message: message,
+        store_name: this.cfg.storeName,
+        current_page: { url: window.location.href, title: document.title }
       })
     })
     .then(function (r) { return r.json(); })
@@ -1082,13 +1143,52 @@
       _this.setVoiceState('speaking', speechText);
       _this.showTranscript(speechText, 6000);
       
+      if (res.suggested_replies && res.suggested_replies.length > 0) {
+        _this.intentChips = res.suggested_replies;
+      }
+
+      var products = [];
+      if (res.ui_actions && res.ui_actions.length > 0) {
+        res.ui_actions.forEach(function(action) {
+          if ((action.type === 'show_products' || action.type === 'show_collections') && action.payload) {
+            var pl = Array.isArray(action.payload) ? action.payload : (action.payload.products || []);
+            if (pl && pl.length > 0) {
+              pl = pl.map(function(p) {
+                return {
+                  id: p.id,
+                  handle: p.handle || p.permalink || p.id,
+                  title: p.title || p.name || 'Product',
+                  price: p.price || 0,
+                  compare: p.compareAtPrice || p.compare_at_price || null,
+                  image: p.image || p.image_url || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png',
+                  vendor: p.vendor || _this.cfg.storeName || 'Store'
+                };
+              });
+              products = products.concat(pl);
+            }
+          }
+        });
+      } else if (res.products && res.products.length > 0) {
+        products = res.products.map(function(p) {
+          return {
+            id: p.id,
+            handle: p.handle || p.permalink || p.id,
+            title: p.title || p.name || 'Product',
+            price: p.price || 0,
+            compare: p.compareAtPrice || p.compare_at_price || null,
+            image: p.image || p.image_url || 'https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png',
+            vendor: p.vendor || _this.cfg.storeName || 'Store'
+          };
+        });
+      }
+
       if (isHistoryOpen) {
         _this.renderHistory();
-      } else if (res.products && res.products.length) {
-        _this.products = res.products;
+      } else if (products.length > 0) {
+        _this.products = products;
         _this.pushView('discovery', {
-          products: res.products,
-          headline: res.text || _this.activeHeadline,
+          products: products,
+          headline: speechText || _this.activeHeadline,
           intentChips: _this.intentChips
         });
       }
